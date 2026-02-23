@@ -600,11 +600,11 @@ describe('RAG MCP Server Integration Test - Phase 2', () => {
       expect(result.content[0].type).toBe('text')
 
       const files = JSON.parse(result.content[0].text)
-      expect(files.filesInBaseDir).toBeDefined()
-      expect(files.filesInBaseDir.length).toBe(3)
+      expect(files.files).toBeDefined()
+      expect(files.files.length).toBe(3)
 
       // Verify each ingested file contains required fields
-      for (const file of files.filesInBaseDir.filter((f: { ingested: boolean }) => f.ingested)) {
+      for (const file of files.files.filter((f: { ingested: boolean }) => f.ingested)) {
         expect(file.filePath).toBeDefined()
         expect(file.chunkCount).toBeDefined()
         expect(file.timestamp).toBeDefined()
@@ -616,7 +616,7 @@ describe('RAG MCP Server Integration Test - Phase 2', () => {
     it('list_files result accurately contains detailed information (filePath, chunkCount, timestamp) for each file', async () => {
       const result = await localRagServer.handleListFiles()
       const files = JSON.parse(result.content[0].text)
-      const { filesInBaseDir } = files
+      const { files: filesInBaseDir } = files
 
       // Verify test-file-1.txt information
       const testFile1Path = resolve(localTestDataDir, 'test-file-1.txt')
@@ -638,6 +638,26 @@ describe('RAG MCP Server Integration Test - Phase 2', () => {
       expect(file3).toBeDefined()
       expect(file3.chunkCount).toBeGreaterThan(0)
       expect(file3.timestamp).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/)
+    })
+
+    // AC interpretation: [Functional requirement] Supported file in BASE_DIR not yet ingested appears as ingested: false
+    // Validation: Place a file in BASE_DIR without ingesting it, list_files shows { filePath, ingested: false }
+    it('File in BASE_DIR not yet ingested appears with ingested: false in list_files', async () => {
+      const uningestedFile = resolve(localTestDataDir, 'not-yet-ingested.txt')
+      writeFileSync(uningestedFile, 'This file has not been ingested.')
+
+      try {
+        const result = await localRagServer.handleListFiles()
+        const files = JSON.parse(result.content[0].text)
+
+        const entry = files.files.find((f: { filePath: string }) => f.filePath === uningestedFile)
+        expect(entry).toBeDefined()
+        expect(entry.ingested).toBe(false)
+        expect(entry.chunkCount).toBeUndefined()
+        expect(entry.timestamp).toBeUndefined()
+      } finally {
+        rmSync(uningestedFile, { force: true })
+      }
     })
 
     // AC interpretation: [Functional requirement] System status displayed via status tool
@@ -701,9 +721,7 @@ describe('RAG MCP Server Integration Test - Phase 2', () => {
       // Validation: Only one file exists in file list
       const listResult = await localRagServer.handleListFiles()
       const files = JSON.parse(listResult.content[0].text)
-      const targetFiles = files.filesInBaseDir.filter(
-        (f: { filePath: string }) => f.filePath === testFile
-      )
+      const targetFiles = files.files.filter((f: { filePath: string }) => f.filePath === testFile)
       expect(targetFiles.length).toBe(1)
       // Validation: Chunk count matches new data (not old + new combined)
       expect(targetFiles[0].chunkCount).toBe(updatedChunkCount)
@@ -728,9 +746,7 @@ describe('RAG MCP Server Integration Test - Phase 2', () => {
       // Validation: Only one file exists in file list (no duplicates)
       const listResult = await localRagServer.handleListFiles()
       const files = JSON.parse(listResult.content[0].text)
-      const targetFiles = files.filesInBaseDir.filter(
-        (f: { filePath: string }) => f.filePath === testFile
-      )
+      const targetFiles = files.files.filter((f: { filePath: string }) => f.filePath === testFile)
       expect(targetFiles.length).toBe(1)
 
       // Validation: Chunk count matches new data only (not old + new)
@@ -761,9 +777,7 @@ describe('RAG MCP Server Integration Test - Phase 2', () => {
       // Validation: Only one file exists in file list (atomicity guaranteed)
       const listResult = await localRagServer.handleListFiles()
       const files = JSON.parse(listResult.content[0].text)
-      const targetFiles = files.filesInBaseDir.filter(
-        (f: { filePath: string }) => f.filePath === testFile
-      )
+      const targetFiles = files.files.filter((f: { filePath: string }) => f.filePath === testFile)
       expect(targetFiles.length).toBe(1)
 
       // Validation: Chunk count proves atomicity - only new data exists (not old + new)
@@ -792,9 +806,7 @@ describe('RAG MCP Server Integration Test - Phase 2', () => {
       // Validation: In normal case, no rollback occurs and new data exists
       const listResult = await localRagServer.handleListFiles()
       const files = JSON.parse(listResult.content[0].text)
-      const targetFiles = files.filesInBaseDir.filter(
-        (f: { filePath: string }) => f.filePath === testFile
-      )
+      const targetFiles = files.files.filter((f: { filePath: string }) => f.filePath === testFile)
       expect(targetFiles.length).toBe(1)
 
       // Validation: Chunk count confirms successful re-ingestion (not old + new)
@@ -824,9 +836,7 @@ describe('RAG MCP Server Integration Test - Phase 2', () => {
       // Validation: Original data is preserved (not deleted)
       const listResult = await localRagServer.handleListFiles()
       const files = JSON.parse(listResult.content[0].text)
-      const targetFiles = files.filesInBaseDir.filter(
-        (f: { filePath: string }) => f.filePath === testFile
-      )
+      const targetFiles = files.files.filter((f: { filePath: string }) => f.filePath === testFile)
       expect(targetFiles.length).toBe(1)
       expect(targetFiles[0].chunkCount).toBe(ingest1.chunkCount)
     })
@@ -990,9 +1000,9 @@ describe('RAG MCP Server Integration Test - Phase 2', () => {
       // Verify file exists before deletion
       const listBefore = await localRagServer.handleListFiles()
       const filesBefore = JSON.parse(listBefore.content[0].text)
-      expect(
-        filesBefore.filesInBaseDir.some((f: { filePath: string }) => f.filePath === testFile)
-      ).toBe(true)
+      expect(filesBefore.files.some((f: { filePath: string }) => f.filePath === testFile)).toBe(
+        true
+      )
 
       // Execute deletion
       await localRagServer.handleDeleteFile({ filePath: testFile })
@@ -1001,7 +1011,7 @@ describe('RAG MCP Server Integration Test - Phase 2', () => {
       const listAfter = await localRagServer.handleListFiles()
       const filesAfter = JSON.parse(listAfter.content[0].text)
       expect(
-        filesAfter.filesInBaseDir.some(
+        filesAfter.files.some(
           (f: { filePath: string; ingested: boolean }) => f.filePath === testFile && f.ingested
         )
       ).toBe(false)

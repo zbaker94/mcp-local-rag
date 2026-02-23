@@ -14,7 +14,7 @@ import {
 import { SemanticChunker } from '../chunker/index.js'
 import { Embedder } from '../embedder/index.js'
 import { parseHtml } from '../parser/html-parser.js'
-import { DocumentParser } from '../parser/index.js'
+import { DocumentParser, SUPPORTED_EXTENSIONS } from '../parser/index.js'
 import { extractMarkdownTitle, extractTxtTitle } from '../parser/title-extractor.js'
 import { type VectorChunk, VectorStore } from '../vectordb/index.js'
 import { formatErrorMessage } from './error-utils.js'
@@ -31,12 +31,15 @@ import {
 import { toolDefinitions } from './tool-definitions.js'
 import type {
   DeleteFileInput,
+  FileEntry,
   IngestDataInput,
   IngestFileInput,
   IngestResult,
+  ListFilesResult,
   QueryDocumentsInput,
   QueryResult,
   RAGServerConfig,
+  SourceEntry,
 } from './types.js'
 
 /** RAG server compliant with MCP Protocol */
@@ -434,57 +437,49 @@ export class RAGServer {
    */
   async handleListFiles(): Promise<{ content: [{ type: 'text'; text: string }] }> {
     try {
-      const SUPPORTED_EXTENSIONS = new Set(['.pdf', '.docx', '.txt', '.md'])
-
       // Get all ingested entries from the vector store
       const ingested = await this.vectorStore.listFiles()
       const ingestedMap = new Map(ingested.map((f) => [f.filePath, f]))
 
-      // Scan BASE_DIR recursively for supported files
-      let baseDirFiles: string[] = []
-      try {
-        const entries = await readdir(this.baseDir, { recursive: true, withFileTypes: true })
-        baseDirFiles = entries
-          .filter((e) => e.isFile() && SUPPORTED_EXTENSIONS.has(extname(e.name).toLowerCase()))
-          .map((e) => {
-            // parentPath is the Node 21+ name; path is the deprecated Node 20 alias
-            // biome-ignore lint/suspicious/noExplicitAny: parentPath not yet in @types/node@20
-            const dir = (e as any).parentPath ?? e.path
-            return join(dir, e.name)
-          })
-          .sort()
-      } catch (err) {
-        console.error('Failed to scan baseDir:', err)
-      }
+      // Scan BASE_DIR recursively for supported files.
+      // Errors propagate to the outer catch: if readdir fails, ingest_file and
+      // delete_file won't work either, so surfacing the error is appropriate.
+      const entries = await readdir(this.baseDir, { recursive: true, withFileTypes: true })
+      const baseDirFiles = entries
+        .filter((e) => e.isFile() && SUPPORTED_EXTENSIONS.has(extname(e.name).toLowerCase()))
+        .map((e) => {
+          // parentPath is the Node 21+ name; path is the deprecated Node 20 alias
+          // biome-ignore lint/suspicious/noExplicitAny: parentPath not yet in @types/node@20
+          const dir = (e as any).parentPath ?? e.path
+          return join(dir, e.name)
+        })
+        .sort()
 
       const baseDirSet = new Set(baseDirFiles)
 
       // Files in BASE_DIR with ingestion status
-      const filesInBaseDir = baseDirFiles.map((filePath) => {
+      const files: FileEntry[] = baseDirFiles.map((filePath) => {
         const entry = ingestedMap.get(filePath)
         return entry
           ? { filePath, ingested: true, chunkCount: entry.chunkCount, timestamp: entry.timestamp }
           : { filePath, ingested: false }
       })
 
-      // Ingested items that are not physical files in BASE_DIR (web pages, clipboard, etc.)
-      const otherIngested = ingested
+      // Content ingested via ingest_data (web pages, clipboard, etc.) plus any
+      // orphaned DB entries whose files no longer exist on disk
+      const sources: SourceEntry[] = ingested
         .filter((f) => !baseDirSet.has(f.filePath))
         .map((f) => {
           if (isRawDataPath(f.filePath)) {
             const source = extractSourceFromPath(f.filePath)
-            if (source) return { source, chunkCount: f.chunkCount }
+            if (source) return { source, chunkCount: f.chunkCount, timestamp: f.timestamp }
           }
-          return { filePath: f.filePath, chunkCount: f.chunkCount }
+          return { filePath: f.filePath, chunkCount: f.chunkCount, timestamp: f.timestamp }
         })
 
+      const result: ListFilesResult = { baseDir: this.baseDir, files, sources }
       return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify({ baseDir: this.baseDir, filesInBaseDir, otherIngested }, null, 2),
-          },
-        ],
+        content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
       }
     } catch (error) {
       console.error('Failed to list files:', error)
