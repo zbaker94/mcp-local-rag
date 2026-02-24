@@ -51,8 +51,7 @@ export class RAGServer {
   private readonly parser: DocumentParser
   private readonly dbPath: string
   private readonly baseDir: string
-  // Used by handleListFiles filter (Task 3)
-  // @ts-expect-error TS6133: field will be consumed by the exclusion filter in handleListFiles
+  // Used by handleListFiles filter to exclude system-managed directories
   private readonly excludePaths: string[]
 
   constructor(config: RAGServerConfig) {
@@ -457,6 +456,7 @@ export class RAGServer {
           const dir = (e as any).parentPath ?? e.path
           return join(dir, e.name)
         })
+        .filter((filePath) => !this.excludePaths.some((ep) => filePath.startsWith(ep)))
         .sort()
 
       const baseDirSet = new Set(baseDirFiles)
