@@ -270,6 +270,10 @@ interface SentencePatternConfig {
   minPages: number
   /** Number of pages to sample from center for pattern detection (default: 5) */
   samplePages: number
+  /** Block attribute hints for boosted threshold (from detectBlockAttributeCandidates) */
+  blockHints?: BlockAttributeHints
+  /** Boosted similarity threshold when block hints match (default: 0.75) */
+  boostedThreshold?: number
 }
 
 /** Default configuration for sentence-level pattern detection */
@@ -277,6 +281,7 @@ const DEFAULT_SENTENCE_PATTERN_CONFIG: SentencePatternConfig = {
   similarityThreshold: 0.85,
   minPages: 3,
   samplePages: 5,
+  boostedThreshold: 0.75,
 }
 
 // ============================================
@@ -465,7 +470,21 @@ export async function detectSentencePatterns(
     const medianSim = medianPairwiseSimilarity(embeddings)
     result.headerSimilarity = medianSim
 
-    if (medianSim >= cfg.similarityThreshold) {
+    // Determine effective threshold (boosted if block hints match)
+    let headerThreshold = cfg.similarityThreshold
+    if (cfg.blockHints) {
+      const firstSentenceYs = pageSentences
+        .filter((s) => s.length > 0)
+        .map((s) => Math.round(s[0]!.y))
+      const hasBlockHintMatch = firstSentenceYs.some((y) =>
+        cfg.blockHints!.headerCandidateYs.has(y)
+      )
+      if (hasBlockHintMatch) {
+        headerThreshold = cfg.boostedThreshold ?? 0.75
+      }
+    }
+
+    if (medianSim >= headerThreshold) {
       result.removeFirstSentence = true
       console.error(
         `Sentence header detected: sampled ${firstSentences.length} center pages (${startIndex + 1}-${endIndex}), median similarity: ${medianSim.toFixed(3)}`
@@ -479,7 +498,19 @@ export async function detectSentencePatterns(
     const medianSim = medianPairwiseSimilarity(embeddings)
     result.footerSimilarity = medianSim
 
-    if (medianSim >= cfg.similarityThreshold) {
+    // Determine effective threshold (boosted if block hints match)
+    let footerThreshold = cfg.similarityThreshold
+    if (cfg.blockHints) {
+      const lastSentenceYs = pageSentences
+        .filter((s) => s.length > 1)
+        .map((s) => Math.round(s[s.length - 1]!.y))
+      const hasBlockHintMatch = lastSentenceYs.some((y) => cfg.blockHints!.footerCandidateYs.has(y))
+      if (hasBlockHintMatch) {
+        footerThreshold = cfg.boostedThreshold ?? 0.75
+      }
+    }
+
+    if (medianSim >= footerThreshold) {
       result.removeLastSentence = true
       console.error(
         `Sentence footer detected: sampled ${lastSentences.length} center pages (${startIndex + 1}-${endIndex}), median similarity: ${medianSim.toFixed(3)}`
@@ -516,8 +547,11 @@ export async function filterPageBoundarySentences(
     return pages.map((page) => joinFilteredPages([page]))
   }
 
-  // Detect patterns
-  const patterns = await detectSentencePatterns(pages, embedder, cfg)
+  // Detect block attribute candidates for boosted threshold
+  const blockHints = detectBlockAttributeCandidates(pages, cfg)
+
+  // Detect patterns (with block hints for boosted threshold)
+  const patterns = await detectSentencePatterns(pages, embedder, { ...cfg, blockHints })
 
   // If no patterns detected, return normally joined text per page
   if (!patterns.removeFirstSentence && !patterns.removeLastSentence) {
