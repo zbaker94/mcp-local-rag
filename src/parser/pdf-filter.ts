@@ -21,6 +21,10 @@ interface TextItemWithPosition {
   y: number
   fontSize: number
   hasEOL: boolean
+  // New fields from mupdf (optional for backward compatibility)
+  fontName?: string
+  fontWeight?: string
+  blockBbox?: { x: number; y: number; w: number; h: number }
 }
 
 /**
