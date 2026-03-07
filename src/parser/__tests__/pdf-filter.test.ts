@@ -2,11 +2,11 @@
 
 import { describe, expect, it, vi } from 'vitest'
 import {
-  type EmbedderInterface,
-  type PageData,
   detectSentencePatterns,
+  type EmbedderInterface,
   filterPageBoundarySentences,
   joinFilteredPages,
+  type PageData,
 } from '../pdf-filter'
 
 describe('pdf-filter', () => {
