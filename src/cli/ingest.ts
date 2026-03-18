@@ -28,17 +28,136 @@ interface IngestSummary {
   totalChunks: number
 }
 
+interface CliOptions {
+  dbPath?: string | undefined
+  baseDir?: string | undefined
+  cacheDir?: string | undefined
+  modelName?: string | undefined
+  maxFileSize?: number | undefined
+}
+
+interface ParsedArgs {
+  positional: string | undefined
+  options: CliOptions
+  help: boolean
+}
+
+// ============================================
+// Defaults
+// ============================================
+
+const DEFAULTS = {
+  dbPath: './lancedb/',
+  cacheDir: './models/',
+  modelName: 'Xenova/all-MiniLM-L6-v2',
+  maxFileSize: 104857600,
+} as const
+
+// ============================================
+// Help
+// ============================================
+
+const HELP_TEXT = `Usage: mcp-local-rag ingest [options] <path>
+
+Ingest a single file or all supported files under a directory.
+
+Options:
+  --db-path <path>       LanceDB database path (default: ${DEFAULTS.dbPath})
+  --base-dir <path>      Base directory for documents (default: cwd)
+  --cache-dir <path>     Model cache directory (default: ${DEFAULTS.cacheDir})
+  --model-name <name>    Embedding model (default: ${DEFAULTS.modelName})
+  --max-file-size <n>    Max file size in bytes (default: ${DEFAULTS.maxFileSize})
+  -h, --help             Show this help`
+
+// ============================================
+// Arg Parsing
+// ============================================
+
+/**
+ * Parse CLI arguments into options and a positional path.
+ * Flags: --db-path, --base-dir, --cache-dir, --model-name, --max-file-size, -h/--help
+ */
+export function parseArgs(args: string[]): ParsedArgs {
+  const options: CliOptions = {}
+  let positional: string | undefined
+  let help = false
+
+  let i = 0
+  while (i < args.length) {
+    const arg = args[i]!
+    switch (arg) {
+      case '-h':
+      case '--help':
+        help = true
+        i++
+        break
+      case '--db-path':
+        options.dbPath = args[++i]
+        i++
+        break
+      case '--base-dir':
+        options.baseDir = args[++i]
+        i++
+        break
+      case '--cache-dir':
+        options.cacheDir = args[++i]
+        i++
+        break
+      case '--model-name':
+        options.modelName = args[++i]
+        i++
+        break
+      case '--max-file-size': {
+        const parsed = Number.parseInt(args[++i] ?? '', 10)
+        options.maxFileSize = Number.isNaN(parsed) ? undefined : parsed
+        i++
+        break
+      }
+      default:
+        if (arg.startsWith('-')) {
+          console.error(`Unknown option: ${arg}`)
+          console.error(HELP_TEXT)
+          process.exit(1)
+        }
+        positional = arg
+        i++
+        break
+    }
+  }
+
+  return { positional, options, help }
+}
+
+// ============================================
+// NaN Defense
+// ============================================
+
+/**
+ * Ensure maxFileSize is a valid number, falling back to default if NaN.
+ */
+function sanitizeMaxFileSize(value: number): number {
+  return Number.isNaN(value) ? DEFAULTS.maxFileSize : value
+}
+
 // ============================================
 // Config Resolution
 // ============================================
 
-function resolveConfig(): IngestConfig {
+/**
+ * Resolve config with priority: CLI flags > environment variables > defaults.
+ */
+function resolveConfig(cliOptions: CliOptions = {}): IngestConfig {
   return {
-    baseDir: process.env['BASE_DIR'] || process.cwd(),
-    dbPath: process.env['DB_PATH'] || './lancedb/',
-    cacheDir: process.env['CACHE_DIR'] || './models/',
-    modelName: process.env['MODEL_NAME'] || 'Xenova/all-MiniLM-L6-v2',
-    maxFileSize: Number.parseInt(process.env['MAX_FILE_SIZE'] || '104857600', 10),
+    baseDir: cliOptions.baseDir ?? process.env['BASE_DIR'] ?? process.cwd(),
+    dbPath: cliOptions.dbPath ?? process.env['DB_PATH'] ?? DEFAULTS.dbPath,
+    cacheDir: cliOptions.cacheDir ?? process.env['CACHE_DIR'] ?? DEFAULTS.cacheDir,
+    modelName: cliOptions.modelName ?? process.env['MODEL_NAME'] ?? DEFAULTS.modelName,
+    maxFileSize: sanitizeMaxFileSize(
+      cliOptions.maxFileSize ??
+        (process.env['MAX_FILE_SIZE']
+          ? Number.parseInt(process.env['MAX_FILE_SIZE'], 10)
+          : DEFAULTS.maxFileSize)
+    ),
   }
 }
 
@@ -156,17 +275,27 @@ async function ingestSingleFile(
 
 /**
  * Run the ingest CLI subcommand.
- * @param args - Arguments after "ingest" (e.g., file/directory paths)
+ * @param args - Arguments after "ingest" (e.g., option flags and file/directory path)
  */
 export async function runIngest(args: string[]): Promise<void> {
-  // Validate arguments
-  if (args.length !== 1) {
-    console.error('Usage: mcp-local-rag ingest <file|directory>')
+  // Parse CLI options
+  const { positional, options, help } = parseArgs(args)
+
+  // Handle --help
+  if (help) {
+    console.error(HELP_TEXT)
+    process.exit(0)
+  }
+
+  // Validate positional argument
+  if (!positional) {
+    console.error('Usage: mcp-local-rag ingest [options] <path>')
     console.error('  Ingest a single file or all supported files under a directory.')
+    console.error('  Run with --help for all options.')
     process.exit(1)
   }
 
-  const targetPath = args[0]!
+  const targetPath = positional
 
   // Validate path exists
   try {
@@ -176,8 +305,8 @@ export async function runIngest(args: string[]): Promise<void> {
     process.exit(1)
   }
 
-  // Resolve config from env vars
-  const config = resolveConfig()
+  // Resolve config: CLI flags > env vars > defaults
+  const config = resolveConfig(options)
   const excludePaths = [`${resolve(config.dbPath)}/`, `${resolve(config.cacheDir)}/`]
 
   // Collect files
@@ -242,7 +371,6 @@ export async function runIngest(args: string[]): Promise<void> {
   console.error(`Total chunks: ${summary.totalChunks}`)
 
   if (summary.failed > 0) {
-    process.exit(1)
+    process.exitCode = 1
   }
-  process.exit(0)
 }

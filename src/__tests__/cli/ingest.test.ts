@@ -21,8 +21,21 @@ const mocks = vi.hoisted(() => {
     embedBatch: vi.fn(),
     initialize: vi.fn(),
     deleteChunks: vi.fn(),
-    insertChunks: vi.fn(),
-    optimize: vi.fn(),
+    insertChunks: vi.fn().mockImplementation((chunks: unknown[]) => {
+      // Log chunk key fields to stderr for verification
+      for (const chunk of chunks) {
+        const c = chunk as Record<string, unknown>
+        console.error(
+          `[mock:insertChunks] filePath=${c.filePath} chunkIndex=${c.chunkIndex} text=${c.text} vectorLen=${Array.isArray(c.vector) ? c.vector.length : 'none'}`
+        )
+      }
+      return Promise.resolve(undefined)
+    }),
+    optimize: vi.fn().mockImplementation(() => {
+      // Log optimize call to stderr for verification
+      console.error('[mock:optimize] called')
+      return Promise.resolve(undefined)
+    }),
   }
 })
 
@@ -66,7 +79,7 @@ vi.mock('../../vectordb/index.js', () => ({
 }))
 
 // Import after mocks are set up
-import { runIngest } from '../../cli/ingest.js'
+import { parseArgs, runIngest } from '../../cli/ingest.js'
 
 // ============================================
 // Helpers
@@ -118,9 +131,9 @@ function setupSuccessfulIngestion() {
     [0.3, 0.4],
   ])
   mocks.deleteChunks.mockResolvedValue(undefined)
-  mocks.insertChunks.mockResolvedValue(undefined)
   mocks.initialize.mockResolvedValue(undefined)
-  mocks.optimize.mockResolvedValue(undefined)
+  // insertChunks and optimize use default implementations from mock setup
+  // that log to stderr for verification
 }
 
 // ============================================
@@ -142,6 +155,7 @@ describe('CLI ingest', () => {
 
   afterEach(() => {
     exitSpy.mockRestore()
+    process.exitCode = undefined
   })
 
   // --------------------------------------------
@@ -156,9 +170,9 @@ describe('CLI ingest', () => {
     // Act
     const { output, error } = await captureStderr(() => runIngest([filePath]))
 
-    // Assert: process.exit(0) was called
-    expect(error).toBeInstanceOf(Error)
-    expect((error as Error).message).toBe('process.exit(0)')
+    // Assert: returns normally without process.exit
+    expect(error).toBeUndefined()
+    expect(process.exitCode).toBeUndefined()
 
     // Assert: output shows success
     const joined = output.join('\n')
@@ -166,6 +180,24 @@ describe('CLI ingest', () => {
     expect(joined).toContain('Succeeded: 1')
     expect(joined).toContain('Failed:    0')
     expect(joined).toContain('Total chunks: 2')
+
+    // Assert: optimize was called exactly once (verified via stderr marker)
+    const optimizeLines = output.filter((line) => line.includes('[mock:optimize] called'))
+    expect(optimizeLines).toHaveLength(1)
+
+    // Assert: insertChunks received VectorChunk with expected structure
+    const insertLines = output.filter((line) => line.includes('[mock:insertChunks]'))
+    expect(insertLines).toHaveLength(2) // 2 chunks
+    // Verify chunk 0 has correct filePath, chunkIndex, text, and vector
+    expect(insertLines[0]).toContain(`filePath=${filePath}`)
+    expect(insertLines[0]).toContain('chunkIndex=0')
+    expect(insertLines[0]).toContain('text=chunk 1')
+    expect(insertLines[0]).toContain('vectorLen=2')
+    // Verify chunk 1
+    expect(insertLines[1]).toContain(`filePath=${filePath}`)
+    expect(insertLines[1]).toContain('chunkIndex=1')
+    expect(insertLines[1]).toContain('text=chunk 2')
+    expect(insertLines[1]).toContain('vectorLen=2')
   })
 
   // --------------------------------------------
@@ -189,9 +221,9 @@ describe('CLI ingest', () => {
     // Act
     const { output, error } = await captureStderr(() => runIngest([dirPath]))
 
-    // Assert: process.exit(0)
-    expect(error).toBeInstanceOf(Error)
-    expect((error as Error).message).toBe('process.exit(0)')
+    // Assert: returns normally without process.exit
+    expect(error).toBeUndefined()
+    expect(process.exitCode).toBeUndefined()
 
     // Assert: both files processed, optimize called once
     const joined = output.join('\n')
@@ -199,6 +231,10 @@ describe('CLI ingest', () => {
     expect(joined).toContain('[2/2]')
     expect(joined).toContain('Succeeded: 2')
     expect(joined).toContain('Total chunks: 4')
+
+    // Assert: optimize was called exactly once (not per-file)
+    const optimizeLines = output.filter((line) => line.includes('[mock:optimize] called'))
+    expect(optimizeLines).toHaveLength(1)
   })
 
   // --------------------------------------------
@@ -256,9 +292,9 @@ describe('CLI ingest', () => {
     // Act
     const { output, error } = await captureStderr(() => runIngest([dirPath]))
 
-    // Assert: exit(1) because of partial failure
-    expect(error).toBeInstanceOf(Error)
-    expect((error as Error).message).toBe('process.exit(1)')
+    // Assert: returns normally with exitCode=1 for partial failure
+    expect(error).toBeUndefined()
+    expect(process.exitCode).toBe(1)
 
     const joined = output.join('\n')
     expect(joined).toContain('FAILED: Parse error: corrupted file')
@@ -310,50 +346,6 @@ describe('CLI ingest', () => {
   })
 
   // --------------------------------------------
-  // Partial failure exit code
-  // --------------------------------------------
-  it('should exit with code 1 when some files fail', async () => {
-    // Arrange
-    const dirPath = '/tmp/test/docs'
-    mocks.stat.mockResolvedValueOnce(mockDirStat()).mockResolvedValueOnce(mockDirStat())
-
-    mocks.readdir.mockResolvedValue([
-      { name: 'ok.md', parentPath: '/tmp/test/docs', isFile: () => true },
-      { name: 'fail.md', parentPath: '/tmp/test/docs', isFile: () => true },
-    ])
-
-    setupSuccessfulIngestion()
-    // Override: second file fails
-    mocks.parseFile
-      .mockResolvedValueOnce({ content: 'ok content', title: 'OK' })
-      .mockRejectedValueOnce(new Error('Read error'))
-
-    // Act
-    const { error } = await captureStderr(() => runIngest([dirPath]))
-
-    // Assert: exit code 1
-    expect(error).toBeInstanceOf(Error)
-    expect((error as Error).message).toBe('process.exit(1)')
-  })
-
-  // --------------------------------------------
-  // All success exit code
-  // --------------------------------------------
-  it('should exit with code 0 when all files succeed', async () => {
-    // Arrange
-    const filePath = '/tmp/test/document.txt'
-    mocks.stat.mockResolvedValue(mockFileStat())
-    setupSuccessfulIngestion()
-
-    // Act
-    const { error } = await captureStderr(() => runIngest([filePath]))
-
-    // Assert: exit code 0
-    expect(error).toBeInstanceOf(Error)
-    expect((error as Error).message).toBe('process.exit(0)')
-  })
-
-  // --------------------------------------------
   // Progress output
   // --------------------------------------------
   it('should output progress in [N/Total] format to stderr', async () => {
@@ -372,14 +364,228 @@ describe('CLI ingest', () => {
     // Act
     const { output, error } = await captureStderr(() => runIngest([dirPath]))
 
-    // Assert: exit(0) for all success
-    expect(error).toBeInstanceOf(Error)
-    expect((error as Error).message).toBe('process.exit(0)')
+    // Assert: returns normally without process.exit
+    expect(error).toBeUndefined()
+    expect(process.exitCode).toBeUndefined()
 
     // Assert: progress format [N/Total]
     const joined = output.join('\n')
     expect(joined).toMatch(/\[1\/3\]/)
     expect(joined).toMatch(/\[2\/3\]/)
     expect(joined).toMatch(/\[3\/3\]/)
+  })
+
+  // --------------------------------------------
+  // --help shows usage and exits
+  // --------------------------------------------
+  it('should show help text and exit with code 0 when --help is passed', async () => {
+    // Act
+    const { output, error } = await captureStderr(() => runIngest(['--help']))
+
+    // Assert: exit(0)
+    expect(error).toBeInstanceOf(Error)
+    expect((error as Error).message).toBe('process.exit(0)')
+
+    // Assert: help text contains key information
+    const joined = output.join('\n')
+    expect(joined).toContain('Usage: mcp-local-rag ingest [options] <path>')
+    expect(joined).toContain('--db-path')
+    expect(joined).toContain('--base-dir')
+    expect(joined).toContain('--cache-dir')
+    expect(joined).toContain('--model-name')
+    expect(joined).toContain('--max-file-size')
+    expect(joined).toContain('-h, --help')
+    expect(joined).toContain('./lancedb/')
+    expect(joined).toContain('./models/')
+    expect(joined).toContain('Xenova/all-MiniLM-L6-v2')
+    expect(joined).toContain('104857600')
+  })
+
+  it('should show help text and exit with code 0 when -h is passed', async () => {
+    // Act
+    const { output, error } = await captureStderr(() => runIngest(['-h']))
+
+    // Assert: exit(0)
+    expect(error).toBeInstanceOf(Error)
+    expect((error as Error).message).toBe('process.exit(0)')
+
+    const joined = output.join('\n')
+    expect(joined).toContain('Usage: mcp-local-rag ingest [options] <path>')
+  })
+
+  // --------------------------------------------
+  // CLI flags override env vars
+  // --------------------------------------------
+  it('should use CLI flags over environment variables', async () => {
+    // Arrange: set env vars
+    process.env['DB_PATH'] = '/env/db'
+    process.env['BASE_DIR'] = '/env/base'
+    process.env['CACHE_DIR'] = '/env/cache'
+    process.env['MODEL_NAME'] = 'env-model'
+    process.env['MAX_FILE_SIZE'] = '999'
+
+    const filePath = '/tmp/test/document.md'
+    mocks.stat.mockResolvedValue(mockFileStat())
+    setupSuccessfulIngestion()
+
+    // Act: pass CLI flags that should override env vars
+    const { error } = await captureStderr(() =>
+      runIngest([
+        '--db-path',
+        '/cli/db',
+        '--base-dir',
+        '/cli/base',
+        '--cache-dir',
+        '/cli/cache',
+        '--model-name',
+        'cli-model',
+        '--max-file-size',
+        '555',
+        filePath,
+      ])
+    )
+
+    // Assert: returns normally without process.exit
+    expect(error).toBeUndefined()
+    expect(process.exitCode).toBeUndefined()
+
+    // Assert: VectorStore was called with CLI db-path, not env
+    const { VectorStore } = await import('../../vectordb/index.js')
+    expect(VectorStore).toHaveBeenCalledWith(expect.objectContaining({ dbPath: '/cli/db' }))
+
+    // Assert: Embedder was called with CLI model-name and cache-dir
+    const { Embedder } = await import('../../embedder/index.js')
+    expect(Embedder).toHaveBeenCalledWith(
+      expect.objectContaining({
+        modelPath: 'cli-model',
+        cacheDir: '/cli/cache',
+      })
+    )
+
+    // Assert: DocumentParser was called with CLI base-dir and max-file-size
+    const { DocumentParser } = await import('../../parser/index.js')
+    expect(DocumentParser).toHaveBeenCalledWith(
+      expect.objectContaining({
+        baseDir: '/cli/base',
+        maxFileSize: 555,
+      })
+    )
+
+    // Cleanup
+    delete process.env['DB_PATH']
+    delete process.env['BASE_DIR']
+    delete process.env['CACHE_DIR']
+    delete process.env['MODEL_NAME']
+    delete process.env['MAX_FILE_SIZE']
+  })
+
+  // --------------------------------------------
+  // CLI flags override defaults
+  // --------------------------------------------
+  it('should use CLI flags over default values', async () => {
+    // Arrange: ensure no env vars are set
+    delete process.env['DB_PATH']
+    delete process.env['BASE_DIR']
+    delete process.env['CACHE_DIR']
+    delete process.env['MODEL_NAME']
+    delete process.env['MAX_FILE_SIZE']
+
+    const filePath = '/tmp/test/document.md'
+    mocks.stat.mockResolvedValue(mockFileStat())
+    setupSuccessfulIngestion()
+
+    // Act: pass CLI flags
+    const { error } = await captureStderr(() =>
+      runIngest(['--model-name', 'custom/model', '--db-path', '/custom/db', filePath])
+    )
+
+    // Assert: returns normally without process.exit
+    expect(error).toBeUndefined()
+    expect(process.exitCode).toBeUndefined()
+
+    // Assert: VectorStore was called with CLI db-path
+    const { VectorStore } = await import('../../vectordb/index.js')
+    expect(VectorStore).toHaveBeenCalledWith(expect.objectContaining({ dbPath: '/custom/db' }))
+
+    // Assert: Embedder was called with CLI model-name
+    const { Embedder } = await import('../../embedder/index.js')
+    expect(Embedder).toHaveBeenCalledWith(expect.objectContaining({ modelPath: 'custom/model' }))
+  })
+
+  // --------------------------------------------
+  // parseArgs unit tests
+  // --------------------------------------------
+  describe('parseArgs', () => {
+    it('should parse positional argument only', () => {
+      const result = parseArgs(['/some/path'])
+      expect(result).toEqual({
+        positional: '/some/path',
+        options: {},
+        help: false,
+      })
+    })
+
+    it('should parse all flags with positional', () => {
+      const result = parseArgs([
+        '--db-path',
+        '/db',
+        '--base-dir',
+        '/base',
+        '--cache-dir',
+        '/cache',
+        '--model-name',
+        'my-model',
+        '--max-file-size',
+        '1024',
+        '/target',
+      ])
+
+      expect(result.positional).toBe('/target')
+      expect(result.options).toEqual({
+        dbPath: '/db',
+        baseDir: '/base',
+        cacheDir: '/cache',
+        modelName: 'my-model',
+        maxFileSize: 1024,
+      })
+      expect(result.help).toBe(false)
+    })
+
+    it('should parse --help flag', () => {
+      const result = parseArgs(['--help'])
+      expect(result.help).toBe(true)
+    })
+
+    it('should parse -h flag', () => {
+      const result = parseArgs(['-h'])
+      expect(result.help).toBe(true)
+    })
+
+    it('should handle flags before positional', () => {
+      const result = parseArgs(['--db-path', '/db', '/target'])
+      expect(result.positional).toBe('/target')
+      expect(result.options.dbPath).toBe('/db')
+    })
+
+    it('should handle flags after positional', () => {
+      const result = parseArgs(['/target', '--db-path', '/db'])
+      expect(result.positional).toBe('/target')
+      expect(result.options.dbPath).toBe('/db')
+    })
+  })
+
+  // --------------------------------------------
+  // No arguments shows usage
+  // --------------------------------------------
+  it('should show usage and exit with code 1 when no arguments provided', async () => {
+    // Act
+    const { output, error } = await captureStderr(() => runIngest([]))
+
+    // Assert: exit(1)
+    expect(error).toBeInstanceOf(Error)
+    expect((error as Error).message).toBe('process.exit(1)')
+
+    const joined = output.join('\n')
+    expect(joined).toContain('Usage: mcp-local-rag ingest')
   })
 })
