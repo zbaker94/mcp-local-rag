@@ -240,6 +240,17 @@ describe('CLI delete', () => {
   })
 
   // --------------------------------------------
+  // Path validation for file path argument
+  // --------------------------------------------
+  it('should reject sensitive system paths for file-path argument', async () => {
+    const { output, error } = await captureStderr(() => runDelete(['/etc/passwd']))
+
+    expect(error).toBeUndefined()
+    expect(process.exitCode).toBe(1)
+    expect(output.join('\n')).toContain('Refusing to use sensitive system path')
+  })
+
+  // --------------------------------------------
   // Unknown flags cause exit(1)
   // --------------------------------------------
   it('should error and exit with code 1 when unknown flags are passed', async () => {

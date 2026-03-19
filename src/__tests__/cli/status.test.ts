@@ -104,30 +104,7 @@ describe('CLI status', () => {
   // --------------------------------------------
   // Outputs JSON result to stdout
   // --------------------------------------------
-  it('should output JSON result to stdout via process.stdout.write', async () => {
-    const statusResult = {
-      documentCount: 5,
-      chunkCount: 42,
-      memoryUsage: 1024,
-    }
-    mocks.initialize.mockResolvedValue(undefined)
-    mocks.getStatus.mockResolvedValue(statusResult)
-
-    const { error } = await captureStderr(() => runStatus([]))
-
-    expect(error).toBeUndefined()
-    expect(process.exitCode).toBeUndefined()
-
-    // Verify JSON was written to stdout
-    expect(stdoutSpy).toHaveBeenCalledTimes(1)
-    const writtenData = stdoutSpy.mock.calls[0]![0] as string
-    expect(JSON.parse(writtenData)).toEqual(statusResult)
-  })
-
-  // --------------------------------------------
-  // Calls vectorStore.getStatus() and outputs result
-  // --------------------------------------------
-  it('should call vectorStore.getStatus() and output result', async () => {
+  it('should initialize VectorStore, call getStatus, and output JSON to stdout', async () => {
     const statusResult = {
       documentCount: 10,
       chunkCount: 100,
@@ -141,16 +118,12 @@ describe('CLI status', () => {
     const { error } = await captureStderr(() => runStatus([]))
 
     expect(error).toBeUndefined()
-    expect(mocks.getStatus).toHaveBeenCalledTimes(1)
+    expect(process.exitCode).toBeUndefined()
     expect(mocks.initialize).toHaveBeenCalledTimes(1)
+    expect(mocks.getStatus).toHaveBeenCalledTimes(1)
 
-    // Verify the full status object is output
     const writtenData = stdoutSpy.mock.calls[0]![0] as string
-    const parsed = JSON.parse(writtenData)
-    expect(parsed.documentCount).toBe(10)
-    expect(parsed.chunkCount).toBe(100)
-    expect(parsed.ftsIndexEnabled).toBe(true)
-    expect(parsed.searchMode).toBe('hybrid')
+    expect(JSON.parse(writtenData)).toEqual(statusResult)
   })
 
   // --------------------------------------------

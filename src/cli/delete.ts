@@ -9,7 +9,7 @@ import {
 } from '../utils/raw-data-utils.js'
 import { createVectorStore } from './common.js'
 import type { GlobalOptions } from './options.js'
-import { resolveGlobalConfig } from './options.js'
+import { resolveGlobalConfig, validatePath } from './options.js'
 
 // ============================================
 // Help
@@ -135,6 +135,14 @@ export async function runDelete(args: string[], globalOptions: GlobalOptions = {
     } else {
       // Use provided file path, resolve to absolute
       targetPath = resolve(parsed.filePath!)
+
+      // Validate path (reject sensitive system directories)
+      const pathError = validatePath(targetPath, '<file-path>')
+      if (pathError) {
+        console.error(pathError)
+        process.exitCode = 1
+        return
+      }
     }
 
     // Delete chunks from VectorStore
