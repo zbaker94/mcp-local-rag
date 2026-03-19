@@ -1,27 +1,37 @@
 # CLI Ingest Reference
 
+Basic usage is in SKILL.md. This covers options and config matching.
+
 ## Command
 
 ```bash
-npx mcp-local-rag ingest [options] <path>
+npx mcp-local-rag [global-options] ingest [options] <path>
 ```
 
-## Options
+## Global Options
+
+Shared across all CLI subcommands.
 
 | Option | Env Var | Default | Description |
 |--------|---------|---------|-------------|
 | `--db-path <path>` | `DB_PATH` | `./lancedb/` | LanceDB database path |
-| `--base-dir <path>` | `BASE_DIR` | cwd | Base directory for documents |
 | `--cache-dir <path>` | `CACHE_DIR` | `./models/` | Model cache directory |
 | `--model-name <name>` | `MODEL_NAME` | `Xenova/all-MiniLM-L6-v2` | Embedding model |
-| `--max-file-size <n>` | `MAX_FILE_SIZE` | `104857600` | Max file size in bytes |
-| `-h, --help` | — | — | Show usage with defaults |
+| `-h, --help` | — | — | Show global usage |
+
+## Ingest Options
+
+| Option | Env Var | Default | Description |
+|--------|---------|---------|-------------|
+| `--base-dir <path>` | `BASE_DIR` | cwd | Base directory for documents |
+| `--max-file-size <n>` | `MAX_FILE_SIZE` | `104857600` | Max file size in bytes (1–500MB) |
+| `-h, --help` | — | — | Show ingest usage |
 
 Priority: CLI flags > environment variables > defaults.
 
 ## Config Matching
 
-When ingesting into an existing database, options **must match** the MCP server config — especially `--model-name`. Using a different embedding model against an existing database produces vectors in a different space, silently degrading search quality.
+When ingesting into an existing database, options must match the MCP server config — especially `--model-name`. Using a different embedding model against an existing database produces vectors in a different space, silently degrading search quality.
 
 ## Output
 

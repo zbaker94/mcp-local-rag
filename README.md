@@ -124,20 +124,25 @@ HTML is automatically cleaned—you get the article content, not the boilerplate
 For ingesting multiple files or an entire directory, use the CLI command instead of calling `ingest_file` repeatedly:
 
 ```bash
-npx mcp-local-rag ingest --db-path ./lancedb --base-dir ./docs ./docs/
+npx mcp-local-rag --db-path ./lancedb ingest --base-dir ./docs ./docs/
 ```
 
 Supports PDF, DOCX, TXT, and Markdown (same as MCP tools). HTML is only supported via `ingest_data`, not CLI.
 
-Key options:
+Global options (must appear **before** the subcommand):
 
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--db-path <path>` | `./lancedb/` | LanceDB database path |
-| `--base-dir <path>` | cwd | Base directory for documents |
 | `--model-name <name>` | `Xenova/all-MiniLM-L6-v2` | Embedding model |
 | `--cache-dir <path>` | `./models/` | Model cache directory |
-| `--max-file-size <n>` | `104857600` | Max file size in bytes |
+
+Ingest-specific options:
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--base-dir <path>` | cwd | Base directory for documents |
+| `--max-file-size <n>` | `104857600` | Max file size in bytes (1–500MB) |
 
 This processes all supported files recursively and runs optimization once at the end — much faster than per-file ingestion for large batches.
 

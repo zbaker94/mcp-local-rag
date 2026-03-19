@@ -124,7 +124,7 @@ For multiple files or directory ingestion. Prefer over repeated `ingest_file` ca
 | Raw HTML/text content | `ingest_data` (CLI does not support stdin) |
 
 ```bash
-npx mcp-local-rag ingest [options] <path>
+npx mcp-local-rag [global-options] ingest [options] <path>
 ```
 
 - `<path>`: file or directory (recursively scans supported formats)
