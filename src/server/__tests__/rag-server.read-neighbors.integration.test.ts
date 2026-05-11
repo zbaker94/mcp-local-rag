@@ -1091,7 +1091,10 @@ describe('read_chunk_neighbors integration', () => {
           source: SOURCE,
           chunkIndex: 2,
         })
-      ).rejects.toMatchObject({ code: ErrorCode.InvalidParams })
+      ).rejects.toMatchObject({
+        code: ErrorCode.InvalidParams,
+        message: expect.stringContaining('not both'),
+      })
     })
 
     it('(d) rejects when both filePath and source are empty strings', async () => {
@@ -1101,7 +1104,10 @@ describe('read_chunk_neighbors integration', () => {
           source: '',
           chunkIndex: 2,
         })
-      ).rejects.toMatchObject({ code: ErrorCode.InvalidParams })
+      ).rejects.toMatchObject({
+        code: ErrorCode.InvalidParams,
+        message: expect.stringContaining('must be provided'),
+      })
     })
   })
 })

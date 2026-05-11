@@ -669,11 +669,11 @@ export class RAGServer {
       }
       const hasFilePath = typeof args.filePath === 'string' && args.filePath.trim().length > 0
       const hasSource = typeof args.source === 'string' && args.source.trim().length > 0
-      if (hasFilePath === hasSource) {
-        throw new McpError(
-          ErrorCode.InvalidParams,
-          'Either filePath or source must be provided, not both'
-        )
+      if (hasFilePath && hasSource) {
+        throw new McpError(ErrorCode.InvalidParams, 'Provide either filePath or source, not both')
+      }
+      if (!hasFilePath && !hasSource) {
+        throw new McpError(ErrorCode.InvalidParams, 'Either filePath or source must be provided')
       }
 
       // Dual-input resolution (mirrors handleDeleteFile).
