@@ -7,7 +7,7 @@ on:
     branches: [ main, develop ]
 
 jobs:
-  ci:
+  test:
     strategy:
       fail-fast: false
       matrix:
@@ -50,3 +50,14 @@ jobs:
 
     - name: Check production dependencies
       run: npx report-missing-dependencies
+
+  # Stable aggregate check. The `main` ruleset requires a status named `ci`,
+  # so this job keeps that name regardless of the test matrix dimensions.
+  ci:
+    needs: test
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+    - name: Verify the test matrix succeeded
+      if: needs.test.result != 'success'
+      run: exit 1
