@@ -8,16 +8,20 @@ on:
 
 jobs:
   ci:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+
+    env:
+      # Node honours TZ on every platform, so this replaces the Linux-only
+      # `timedatectl` step and keeps test behaviour consistent across runners.
+      TZ: Asia/Tokyo
 
     steps:
     - name: Checkout code
       uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-
-    - name: Set timezone
-      run: |
-        sudo timedatectl set-timezone Asia/Tokyo
-        echo "TZ=Asia/Tokyo" >> $GITHUB_ENV
 
     - name: Setup Node.js
       uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
