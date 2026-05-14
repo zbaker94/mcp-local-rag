@@ -35,6 +35,10 @@ export class EmbeddingError extends Error {
   }
 }
 
+// Cached across all Embedder instances in the process: once WebGPU fails (e.g. no GPU on CI),
+// subsequent instances skip the 3s timeout probe and go straight to CPU.
+let gpuAvailable: boolean | null = null
+
 // ============================================
 // Embedder Class
 // ============================================
@@ -66,40 +70,47 @@ export class Embedder {
       return
     }
 
-    try {
-      // Set cache directory BEFORE creating pipeline
-      env.cacheDir = this.config.cacheDir
+    // Set cache directory BEFORE creating pipeline
+    env.cacheDir = this.config.cacheDir
 
-      console.error(`Embedder: Setting cache directory to "${this.config.cacheDir}"`)
-      console.error(`Embedder: Loading model "${this.config.modelPath}"...`)
-      // Wrap WebGPU init in a timeout: on environments without WebGPU (e.g. Node.js on CI),
-      // the pipeline call hangs indefinitely instead of throwing. Race against a short
-      // deadline so we fall through to the CPU path without blocking the process.
-      const gpuLoad = pipeline('feature-extraction', this.config.modelPath, {
-        dtype: 'fp32',
-        device: 'webgpu',
-      })
-      const gpuTimeout = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('WebGPU init timed out')), 3_000)
-      )
-      this.model = await Promise.race([gpuLoad, gpuTimeout])
-      console.error('Embedder: Model loaded successfully (GPU)')
-    } catch (gpuError) {
-      console.error(
-        `Embedder: GPU unavailable (${(gpuError as Error).message}), falling back to CPU...`
-      )
+    console.error(`Embedder: Setting cache directory to "${this.config.cacheDir}"`)
+    console.error(`Embedder: Loading model "${this.config.modelPath}"...`)
+
+    if (gpuAvailable !== false) {
       try {
-        this.model = await pipeline('feature-extraction', this.config.modelPath, {
+        // Wrap WebGPU init in a timeout: on environments without WebGPU (e.g. Node.js on CI),
+        // the pipeline call hangs indefinitely instead of throwing. Race against a short
+        // deadline so we fall through to the CPU path without blocking the process.
+        const gpuLoad = pipeline('feature-extraction', this.config.modelPath, {
           dtype: 'fp32',
-          device: 'cpu',
+          device: 'webgpu',
         })
-        console.error('Embedder: Model loaded successfully (CPU fallback)')
-      } catch (error) {
-        throw new EmbeddingError(
-          `Failed to initialize Embedder: ${(error as Error).message}`,
-          error as Error
+        const gpuTimeout = new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('WebGPU init timed out')), 3_000)
+        )
+        this.model = await Promise.race([gpuLoad, gpuTimeout])
+        gpuAvailable = true
+        console.error('Embedder: Model loaded successfully (GPU)')
+        return
+      } catch (gpuError) {
+        gpuAvailable = false
+        console.error(
+          `Embedder: GPU unavailable (${(gpuError as Error).message}), falling back to CPU...`
         )
       }
+    }
+
+    try {
+      this.model = await pipeline('feature-extraction', this.config.modelPath, {
+        dtype: 'fp32',
+        device: 'cpu',
+      })
+      console.error('Embedder: Model loaded successfully (CPU fallback)')
+    } catch (error) {
+      throw new EmbeddingError(
+        `Failed to initialize Embedder: ${(error as Error).message}`,
+        error as Error
+      )
     }
   }
 
