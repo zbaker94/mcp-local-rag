@@ -72,15 +72,21 @@ export class Embedder {
 
       console.error(`Embedder: Setting cache directory to "${this.config.cacheDir}"`)
       console.error(`Embedder: Loading model "${this.config.modelPath}"...`)
-      // Use type assertion to avoid TS2590 (union type too complex with @types/jsdom)
-      this.model = await pipeline('feature-extraction', this.config.modelPath, {
+      // Wrap WebGPU init in a timeout: on environments without WebGPU (e.g. Node.js on CI),
+      // the pipeline call hangs indefinitely instead of throwing. Race against a short
+      // deadline so we fall through to the CPU path without blocking the process.
+      const gpuLoad = pipeline('feature-extraction', this.config.modelPath, {
         dtype: 'fp32',
         device: 'webgpu',
       })
+      const gpuTimeout = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('WebGPU init timed out')), 3_000)
+      )
+      this.model = await Promise.race([gpuLoad, gpuTimeout])
       console.error('Embedder: Model loaded successfully (GPU)')
     } catch (gpuError) {
       console.error(
-        `Embedder: GPU initialization failed (${(gpuError as Error).message}), falling back to CPU...`
+        `Embedder: GPU unavailable (${(gpuError as Error).message}), falling back to CPU...`
       )
       try {
         this.model = await pipeline('feature-extraction', this.config.modelPath, {

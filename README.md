@@ -444,7 +444,7 @@ PDF, DOCX, TXT, Markdown, and HTML (via `ingest_data`). Not yet: Excel, PowerPoi
 Yes, but you must delete your database and re-ingest all documents. Different models produce incompatible vector dimensions.
 
 **GPU acceleration?**
-Transformers.js runs on CPU. GPU support is experimental. CPU performance is adequate for most use cases.
+WebGPU is used by default with automatic CPU fallback. No configuration needed — if WebGPU is unavailable the embedder switches to CPU silently.
 
 **Multi-user support?**
 No. Designed for single-user, local access. Multi-user would require authentication/access control.
