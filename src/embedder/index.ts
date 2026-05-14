@@ -75,13 +75,25 @@ export class Embedder {
       // Use type assertion to avoid TS2590 (union type too complex with @types/jsdom)
       this.model = await pipeline('feature-extraction', this.config.modelPath, {
         dtype: 'fp32',
+        device: 'webgpu',
       })
-      console.error('Embedder: Model loaded successfully')
-    } catch (error) {
-      throw new EmbeddingError(
-        `Failed to initialize Embedder: ${(error as Error).message}`,
-        error as Error
+      console.error('Embedder: Model loaded successfully (GPU)')
+    } catch (gpuError) {
+      console.error(
+        `Embedder: GPU initialization failed (${(gpuError as Error).message}), falling back to CPU...`
       )
+      try {
+        this.model = await pipeline('feature-extraction', this.config.modelPath, {
+          dtype: 'fp32',
+          device: 'cpu',
+        })
+        console.error('Embedder: Model loaded successfully (CPU fallback)')
+      } catch (error) {
+        throw new EmbeddingError(
+          `Failed to initialize Embedder: ${(error as Error).message}`,
+          error as Error
+        )
+      }
     }
   }
 
