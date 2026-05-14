@@ -30,7 +30,15 @@ if (firstArg && SUBCOMMANDS.has(firstArg)) {
     console.error(error)
     process.exit(1)
   })
-} else {
+} else if (remainingArgs.length === 0) {
+  if (Object.keys(globalOptions).length > 0) {
+    console.error('Global CLI options are not supported when launching the MCP server directly.')
+    console.error(
+      'Use environment variables like DB_PATH, CACHE_DIR, MODEL_NAME, BASE_DIR, and MAX_FILE_SIZE instead.'
+    )
+    process.exit(1)
+  }
+
   // Default: start MCP server (env-only, no CLI flags)
   process.on('unhandledRejection', (reason, promise) => {
     console.error('Unhandled Rejection at:', promise, 'reason:', reason)
@@ -43,4 +51,8 @@ if (firstArg && SUBCOMMANDS.has(firstArg)) {
   })
 
   startServer()
+} else {
+  console.error(`Unknown command: ${firstArg}`)
+  console.error('Available commands: skills, ingest, list, query, status, delete, read-neighbors')
+  process.exit(1)
 }
