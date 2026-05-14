@@ -42,5 +42,5 @@ if (firstArg && SUBCOMMANDS.has(firstArg)) {
     process.exit(1)
   })
 
-  startServer()
+  startServer(globalOptions)
 }
