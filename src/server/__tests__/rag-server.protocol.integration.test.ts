@@ -28,8 +28,8 @@ describe('AC-001: MCP Protocol Integration', () => {
 
   afterAll(async () => {
     await ragServer.close()
-    rmSync(localTestDbPath, { recursive: true, force: true })
-    rmSync(localTestDataDir, { recursive: true, force: true })
+    rmSync(testDbPath, { recursive: true, force: true })
+    rmSync(testDataDir, { recursive: true, force: true })
   })
 
   // AC interpretation: [Error handling] Appropriate MCP error response returned when error occurs
@@ -84,8 +84,8 @@ describe('AC-005: Error Handling (Basic)', () => {
 
   afterAll(async () => {
     await ragServer.close()
-    rmSync(localTestDbPath, { recursive: true, force: true })
-    rmSync(localTestDataDir, { recursive: true, force: true })
+    rmSync(testDbPath, { recursive: true, force: true })
+    rmSync(testDataDir, { recursive: true, force: true })
   })
 
   // AC interpretation: [Error handling] Error message returned for non-existent file path
