@@ -87,9 +87,9 @@ jobs:
       env:
         RAG_DEVICE: ${{ matrix.device }}
         # Direct Dawn to use Vulkan (rather than D3D12) on Windows when running webgpu
-        # mode in CI, so SwiftShader can serve as the adapter.
+        # mode in CI, so SwiftShader/Lavapipe can serve as the adapter.
         WGPU_BACKEND: ${{ matrix.device == 'webgpu' && 'vulkan' || '' }}
-        VK_ICD_FILENAMES: ${{ matrix.device == 'webgpu' && runner.os == 'Windows' && 'C:\SwiftShader\vk_swiftshader_icd.json' || '' }}
+        VK_ICD_FILENAMES: ${{ matrix.device == 'webgpu' && (runner.os == 'Windows' && 'C:\SwiftShader\vk_swiftshader_icd.json' || '/usr/share/vulkan/icd.d/lvp_icd.json') || '' }}
       run: pnpm test
 
     - name: Check production dependencies
