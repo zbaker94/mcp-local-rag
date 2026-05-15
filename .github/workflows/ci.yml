@@ -46,20 +46,17 @@ jobs:
     - name: Install dependencies
       run: pnpm install
 
-    - name: Install Vulkan SDK and Software Rasterizer (webgpu only)
+    - name: Install Vulkan SDK and SwiftShader (webgpu only)
       if: matrix.device == 'webgpu'
       uses: jakoch/install-vulkan-sdk-action@3c53c378c9bfbb2ea122a1cc164a837d4004c871 # v1.5.2
       with:
         install_runtime: true
-        # install_swiftshader is used on Windows, install_lavapipe on Linux
-        install_swiftshader: ${{ runner.os == 'Windows' }}
-        install_lavapipe: ${{ runner.os == 'Linux' }}
+        install_swiftshader: true
 
-    - name: Install Vulkan and Mesa (Ubuntu, webgpu only)
-      if: matrix.device == 'webgpu' && runner.os == 'Linux'
+    - name: Verify Vulkan (webgpu only)
+      if: matrix.device == 'webgpu'
       run: |
-        sudo apt-get update
-        sudo apt-get install -y libvulkan1 mesa-vulkan-drivers vulkan-tools
+        vulkaninfo --summary || echo "vulkaninfo failed"
 
     # The integration tests use Xenova/all-MiniLM-L6-v2 via @huggingface/transformers,
     # which is downloaded on first use (~90MB). Caching it across runs avoids a
@@ -82,10 +79,6 @@ jobs:
     - name: Run tests
       env:
         RAG_DEVICE: ${{ matrix.device }}
-        # Direct Dawn to use Vulkan (rather than D3D12) on Windows when running webgpu
-        # mode in CI, so SwiftShader/Lavapipe can serve as the adapter.
-        WGPU_BACKEND: ${{ matrix.device == 'webgpu' && 'vulkan' || '' }}
-        VK_ICD_FILENAMES: ${{ matrix.device == 'webgpu' && (runner.os == 'Windows' && 'C:\SwiftShader\vk_swiftshader_icd.json' || '/usr/share/vulkan/icd.d/lvp_icd.x86_64.json') || '' }}
       run: pnpm test
 
     - name: Check production dependencies
