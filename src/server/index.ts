@@ -741,4 +741,12 @@ export class RAGServer {
     await this.server.connect(transport)
     console.error('RAGServer running on stdio transport')
   }
+
+  /**
+   * Stop the server and release resources
+   */
+  async close(): Promise<void> {
+    await this.vectorStore.close()
+    console.error('RAGServer stopped')
+  }
 }

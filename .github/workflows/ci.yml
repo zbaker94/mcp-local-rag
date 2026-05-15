@@ -36,6 +36,19 @@ jobs:
     - name: Install dependencies
       run: pnpm install
 
+    - name: Install Vulkan SDK (Windows)
+      if: runner.os == 'Windows'
+      uses: jakoch/install-vulkan-sdk-action@3c53c378c9bfbb2ea122a1cc164a837d4004c871 # v1.5.2
+      with:
+        install_runtime: true
+        install_swiftshader: true
+
+    - name: Install Vulkan & SwiftShader (Ubuntu)
+      if: runner.os == 'Linux'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libvulkan1 mesa-vulkan-drivers vulkan-tools
+
     # The integration tests use Xenova/all-MiniLM-L6-v2 via @huggingface/transformers,
     # which is downloaded on first use (~90MB). Caching it across runs avoids a
     # network round-trip on every CI build and prevents the first-touched beforeAll
@@ -56,6 +69,10 @@ jobs:
       run: pnpm run build
 
     - name: Run tests
+      env:
+        WGPU_BACKEND: vulkan
+        # Default SwiftShader location on Windows as per the action:
+        VK_ICD_FILENAMES: ${{ runner.os == 'Windows' && 'C:\SwiftShader\vk_swiftshader_icd.json' || '' }}
       run: pnpm test
 
     - name: Check production dependencies

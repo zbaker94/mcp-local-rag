@@ -85,8 +85,9 @@ export class Embedder {
           dtype: 'fp32',
           device: 'webgpu',
         })
+        const gpuTimeoutMs = process.env['CI'] ? 30_000 : 3_000
         const gpuTimeout = new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error('WebGPU init timed out')), 3_000)
+          setTimeout(() => reject(new Error('WebGPU init timed out')), gpuTimeoutMs)
         )
         const candidate = await Promise.race([gpuLoad, gpuTimeout])
         // Init "succeeded" but on CI Windows runners WebGPU sometimes returns a
@@ -96,8 +97,12 @@ export class Embedder {
         const warmup = (
           candidate as (text: string, options: unknown) => Promise<{ data: Float32Array }>
         )('warmup', { pooling: 'mean', normalize: true })
+        const warmupTimeoutMs = process.env['CI'] ? 30_000 : 2_000
         const warmupTimeout = new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error('GPU warmup too slow (>2s)')), 2_000)
+          setTimeout(
+            () => reject(new Error(`GPU warmup too slow (>${warmupTimeoutMs}ms)`)),
+            warmupTimeoutMs
+          )
         )
         await Promise.race([warmup, warmupTimeout])
         this.model = candidate

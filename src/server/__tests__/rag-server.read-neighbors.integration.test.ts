@@ -117,7 +117,8 @@ describe('read_chunk_neighbors integration', () => {
       expect(ingest.chunkCount).toBeGreaterThanOrEqual(7)
     }, 60000)
 
-    afterAll(() => {
+    afterAll(async () => {
+      await ragServer.close()
       rmSync(testDbPath, { recursive: true, force: true })
       rmSync(testDataDir, { recursive: true, force: true })
     })
@@ -308,7 +309,8 @@ describe('read_chunk_neighbors integration', () => {
       expect(ingest.chunkCount).toBeGreaterThanOrEqual(4)
     }, 60000)
 
-    afterAll(() => {
+    afterAll(async () => {
+      await ragServer.close()
       rmSync(testDbPath, { recursive: true, force: true })
       rmSync(testDataDir, { recursive: true, force: true })
     })
@@ -402,7 +404,8 @@ describe('read_chunk_neighbors integration', () => {
       expect(chunkCount).toBeGreaterThanOrEqual(3)
     }, 60000)
 
-    afterAll(() => {
+    afterAll(async () => {
+      await ragServer.close()
       rmSync(testDbPath, { recursive: true, force: true })
       rmSync(testDataDir, { recursive: true, force: true })
     })
@@ -499,7 +502,8 @@ describe('read_chunk_neighbors integration', () => {
       expect(ingest.chunkCount).toBeGreaterThanOrEqual(3)
     }, 60000)
 
-    afterAll(() => {
+    afterAll(async () => {
+      await ragServer.close()
       rmSync(testDbPath, { recursive: true, force: true })
       rmSync(testDataDir, { recursive: true, force: true })
     })
@@ -590,7 +594,8 @@ describe('read_chunk_neighbors integration', () => {
       await ragServer.handleIngestFile({ filePath: fileBackedPath })
     }, 60000)
 
-    afterAll(() => {
+    afterAll(async () => {
+      await ragServer.close()
       rmSync(testDbPath, { recursive: true, force: true })
       rmSync(testDataDir, { recursive: true, force: true })
     })
@@ -738,7 +743,8 @@ describe('read_chunk_neighbors integration', () => {
       await vectorStore.optimize()
     }, 120000)
 
-    afterAll(() => {
+    afterAll(async () => {
+      await ragServer.close()
       rmSync(testDbPath, { recursive: true, force: true })
       rmSync(testDataDir, { recursive: true, force: true })
     })
@@ -824,7 +830,8 @@ describe('read_chunk_neighbors integration', () => {
       expect(chunkCount).toBeGreaterThan(0)
     }, 60000)
 
-    afterAll(() => {
+    afterAll(async () => {
+      await ragServer.close()
       rmSync(testDbPath, { recursive: true, force: true })
       rmSync(testDataDir, { recursive: true, force: true })
     })
@@ -888,7 +895,8 @@ describe('read_chunk_neighbors integration', () => {
       await ragServer.handleIngestFile({ filePath: ingestedFilePath })
     }, 60000)
 
-    afterAll(() => {
+    afterAll(async () => {
+      await ragServer.close()
       rmSync(testDbPath, { recursive: true, force: true })
       rmSync(testDataDir, { recursive: true, force: true })
     })
@@ -956,7 +964,8 @@ describe('read_chunk_neighbors integration', () => {
       await ragServer.handleIngestFile({ filePath: ingestedFilePath })
     }, 60000)
 
-    afterAll(() => {
+    afterAll(async () => {
+      await ragServer.close()
       rmSync(testDbPath, { recursive: true, force: true })
       rmSync(testDataDir, { recursive: true, force: true })
     })
@@ -1044,7 +1053,8 @@ describe('read_chunk_neighbors integration', () => {
       expect(dataIngest.chunkCount).toBeGreaterThanOrEqual(3)
     }, 60000)
 
-    afterAll(() => {
+    afterAll(async () => {
+      await ragServer.close()
       rmSync(testDbPath, { recursive: true, force: true })
       rmSync(testDataDir, { recursive: true, force: true })
     })

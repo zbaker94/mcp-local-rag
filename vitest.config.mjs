@@ -10,8 +10,8 @@ export default defineConfig({
     globals: true,
     environment: 'node',
     // Process management improvements
-    testTimeout: 10000,        // 10 second timeout
-    hookTimeout: 10000,        // Hook processing timeout 10 seconds
+    testTimeout: 60000,        // 60 second timeout
+    hookTimeout: 120000,       // Hook processing timeout 120 seconds
     teardownTimeout: 5000,     // Teardown timeout 5 seconds
     pool: 'forks',             // Use forks instead of threads for onnxruntime-node compatibility
     maxWorkers: 1,             // Single process execution to avoid onnxruntime-node threading issues
