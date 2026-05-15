@@ -21,7 +21,9 @@ function resolveDevice(): DeviceType {
   const raw = process.env['RAG_DEVICE']?.trim()
   if (!raw) return 'cpu'
   if ((VALID_DEVICES as readonly string[]).includes(raw)) return raw as DeviceType
-  throw new Error(`RAG_DEVICE="${raw}" is not a valid device. Valid: ${VALID_DEVICES.join(', ')}`)
+  throw new EmbeddingError(
+    `RAG_DEVICE="${raw}" is not a valid device. Valid: ${VALID_DEVICES.join(', ')}`
+  )
 }
 
 // ============================================
@@ -91,9 +93,6 @@ export class Embedder {
     // Set cache directory BEFORE creating pipeline
     env.cacheDir = this.config.cacheDir
 
-    // RAG_DEVICE selects the execution provider. Default 'cpu' is safe everywhere.
-    // The user picks from the transformers.js device list (cpu, webgpu, dml, cuda,
-    // coreml, wasm, auto, gpu, etc.) — we validate the string and pass it through.
     // No fallback — if the requested device fails, init throws.
     const device = resolveDevice()
 
