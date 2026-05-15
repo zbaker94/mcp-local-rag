@@ -34,6 +34,7 @@ describe('ingest_data Tool', () => {
   }, 120000) // 2 minutes for model download
 
   afterAll(async () => {
+    await server.close()
     await rm(testDbPath, { recursive: true, force: true })
   })
 

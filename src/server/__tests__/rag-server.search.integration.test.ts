@@ -41,6 +41,7 @@ describe('AC-004: Vector Search', () => {
   })
 
   afterAll(async () => {
+    await localRagServer.close()
     rmSync(localTestDbPath, { recursive: true, force: true })
     rmSync(localTestDataDir, { recursive: true, force: true })
   })
@@ -117,17 +118,20 @@ describe('AC-004: Vector Search', () => {
       maxFileSize: 100 * 1024 * 1024,
     })
 
-    await emptyServer.initialize()
+    try {
+      await emptyServer.initialize()
 
-    const result = await emptyServer.handleQueryDocuments({
-      query: 'xyzabc123randomstring',
-    })
+      const result = await emptyServer.handleQueryDocuments({
+        query: 'xyzabc123randomstring',
+      })
 
-    const results = JSON.parse(result.content[0].text)
-    expect(Array.isArray(results)).toBe(true)
-    expect(results.length).toBe(0)
-
-    rmSync(emptyDbPath, { recursive: true, force: true })
+      const results = JSON.parse(result.content[0].text)
+      expect(Array.isArray(results)).toBe(true)
+      expect(results.length).toBe(0)
+    } finally {
+      await emptyServer.close()
+      rmSync(emptyDbPath, { recursive: true, force: true })
+    }
   })
 
   // Edge Case: limit boundary values

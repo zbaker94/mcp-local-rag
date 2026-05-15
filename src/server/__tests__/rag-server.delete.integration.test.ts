@@ -27,6 +27,7 @@ describe('AC-010: File Deletion', () => {
   })
 
   afterAll(async () => {
+    await localRagServer.close()
     rmSync(localTestDbPath, { recursive: true, force: true })
     rmSync(localTestDataDir, { recursive: true, force: true })
   })

@@ -29,6 +29,7 @@ describe('AC-006: Additional Format Support (Phase 2)', () => {
   }, 60000)
 
   afterAll(async () => {
+    await localRagServer.close()
     rmSync(localTestDbPath, { recursive: true, force: true })
     rmSync(localTestDataDir, { recursive: true, force: true })
   })
@@ -141,6 +142,7 @@ describe('AC-007: File Management', () => {
   }, 120000)
 
   afterAll(async () => {
+    await localRagServer.close()
     rmSync(localTestDbPath, { recursive: true, force: true })
     rmSync(localTestDataDir, { recursive: true, force: true })
   })
@@ -317,8 +319,9 @@ describe('AC-007: File Management', () => {
 
       writeFileSync(resolve(siblingData, 'sibling-file.txt'), 'File in sibling baseDir')
 
+      let siblingServer: RAGServer | null = null
       try {
-        const siblingServer = new RAGServer({
+        siblingServer = new RAGServer({
           dbPath: siblingDb,
           modelName: 'Xenova/all-MiniLM-L6-v2',
           cacheDir: siblingCache,
@@ -336,6 +339,9 @@ describe('AC-007: File Management', () => {
         expect(filePaths).toContain(resolve(siblingData, 'sibling-file.txt'))
         expect(parsed.files.length).toBe(1)
       } finally {
+        if (siblingServer) {
+          await siblingServer.close()
+        }
         rmSync(siblingBase, { recursive: true, force: true })
       }
     })

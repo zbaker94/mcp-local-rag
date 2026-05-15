@@ -27,8 +27,9 @@ describe('Ingest Rollback', () => {
     await ragServer.initialize()
   })
 
-  afterAll(() => {
+  afterAll(async () => {
     vi.restoreAllMocks()
+    await ragServer.close()
     rmSync(testDbPath, { recursive: true, force: true })
     rmSync(testDataDir, { recursive: true, force: true })
   })
