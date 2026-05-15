@@ -21,6 +21,8 @@ dist/
 # Runtime data
 coverage
 test-output.json
+lancedb/
+models/
 
 # IDE and editor specific files
 .vscode/

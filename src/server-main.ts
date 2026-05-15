@@ -83,10 +83,12 @@ export function parseChunkMinLength(value: string | undefined): ParseResult<numb
 
 /**
  * Start the RAG MCP Server
+ * Configuration is read from environment variables only (no CLI flags).
+ * This ensures the bare `mcp-local-rag` launch is suitable for MCP clients.
  */
 export async function startServer(): Promise<void> {
   try {
-    // RAGServer configuration
+    // RAGServer configuration (env-only for MCP client compatibility)
     const config: ConstructorParameters<typeof RAGServer>[0] = {
       dbPath: process.env['DB_PATH'] || './lancedb/',
       modelName: process.env['MODEL_NAME'] || 'Xenova/all-MiniLM-L6-v2',
