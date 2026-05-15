@@ -320,6 +320,7 @@ The MCP server is configured by environment variables only — pass them through
 | `MODEL_NAME` | `--model-name` | `Xenova/all-MiniLM-L6-v2` | HuggingFace model ID ([available models](https://huggingface.co/models?library=transformers.js&pipeline_tag=feature-extraction)) |
 | `MAX_FILE_SIZE` | `--max-file-size` | `104857600` (100MB) | Maximum file size in bytes |
 | `CHUNK_MIN_LENGTH` | `--chunk-min-length` | `50` | Minimum chunk length in characters (1–10000) |
+| `RAG_DEVICE` | — | `cpu` | Execution device. Pass straight to ONNX Runtime. Recommended values: `cpu` (default), `webgpu` (cross-platform GPU offload), `dml` (Windows max-perf), `cuda` (Linux x64 NVIDIA), `coreml` (macOS). Also accepts `wasm`, `auto`, `gpu`. |
 
 **Model choice tips:**
 - Multilingual docs → e.g., `onnx-community/embeddinggemma-300m-ONNX` (100+ languages)
@@ -444,7 +445,7 @@ PDF, DOCX, TXT, Markdown, and HTML (via `ingest_data`). Not yet: Excel, PowerPoi
 Yes, but you must delete your database and re-ingest all documents. Different models produce incompatible vector dimensions.
 
 **GPU acceleration?**
-WebGPU is used by default with automatic CPU fallback. No configuration needed — if WebGPU is unavailable the embedder switches to CPU silently.
+Opt-in via `RAG_DEVICE`. `webgpu` works on Windows, macOS, and Linux and offloads compute to the GPU. For maximum throughput pick the platform-native EP: `dml` (Windows), `cuda` (Linux x64 with NVIDIA), `coreml` (macOS). Default is `cpu`. The server throws if the requested device fails — set `RAG_DEVICE=cpu` to revert.
 
 **Multi-user support?**
 No. Designed for single-user, local access. Multi-user would require authentication/access control.

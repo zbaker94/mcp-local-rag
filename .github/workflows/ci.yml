@@ -12,6 +12,16 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
+        # We test the two RAG_DEVICE branches we own the code for:
+        #   cpu     — onnxruntime-node native CPU (default; works everywhere).
+        #   webgpu  — onnxruntime-node's WebGPU EP, exercised via software Vulkan
+        #             (SwiftShader on Windows, Mesa llvmpipe on Linux) since CI
+        #             runners have no real GPU.
+        # Verified locally that the WebGPU EP does compile and dispatch WGSL to
+        # the selected adapter (nvidia-smi shows node.exe on the GPU during a run),
+        # so SwiftShader is a real software substitute, not a CPU-fallback fake.
+        # Native EPs (dml/cuda/coreml) need real hardware and aren't covered here.
+        device: [cpu, webgpu]
     runs-on: ${{ matrix.os }}
 
     env:
@@ -36,23 +46,22 @@ jobs:
     - name: Install dependencies
       run: pnpm install
 
-    - name: Install Vulkan SDK (Windows)
-      if: runner.os == 'Windows'
+    - name: Install Vulkan SDK with SwiftShader (Windows, webgpu only)
+      if: matrix.device == 'webgpu' && runner.os == 'Windows'
       uses: jakoch/install-vulkan-sdk-action@3c53c378c9bfbb2ea122a1cc164a837d4004c871 # v1.5.2
       with:
         install_runtime: true
         install_swiftshader: true
 
-    - name: Install Vulkan & SwiftShader (Ubuntu)
-      if: runner.os == 'Linux'
+    - name: Install Vulkan and Mesa (Ubuntu, webgpu only)
+      if: matrix.device == 'webgpu' && runner.os == 'Linux'
       run: |
         sudo apt-get update
         sudo apt-get install -y libvulkan1 mesa-vulkan-drivers vulkan-tools
 
     # The integration tests use Xenova/all-MiniLM-L6-v2 via @huggingface/transformers,
     # which is downloaded on first use (~90MB). Caching it across runs avoids a
-    # network round-trip on every CI build and prevents the first-touched beforeAll
-    # from blowing its 30s hook timeout on slower Windows runners.
+    # network round-trip on every CI build.
     - name: Cache HuggingFace model
       uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
       with:
@@ -70,9 +79,11 @@ jobs:
 
     - name: Run tests
       env:
-        WGPU_BACKEND: vulkan
-        # Default SwiftShader location on Windows as per the action:
-        VK_ICD_FILENAMES: ${{ runner.os == 'Windows' && 'C:\SwiftShader\vk_swiftshader_icd.json' || '' }}
+        RAG_DEVICE: ${{ matrix.device }}
+        # Direct Dawn to use Vulkan (rather than D3D12) on Windows when running webgpu
+        # mode in CI, so SwiftShader can serve as the adapter.
+        WGPU_BACKEND: ${{ matrix.device == 'webgpu' && 'vulkan' || '' }}
+        VK_ICD_FILENAMES: ${{ matrix.device == 'webgpu' && runner.os == 'Windows' && 'C:\SwiftShader\vk_swiftshader_icd.json' || '' }}
       run: pnpm test
 
     - name: Check production dependencies

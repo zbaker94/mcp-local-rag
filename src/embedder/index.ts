@@ -1,6 +1,28 @@
 // Embedder implementation with Transformers.js
 
-import { env, pipeline } from '@huggingface/transformers'
+import { type DeviceType, env, pipeline } from '@huggingface/transformers'
+
+const VALID_DEVICES: readonly DeviceType[] = [
+  'auto',
+  'gpu',
+  'cpu',
+  'wasm',
+  'webgpu',
+  'cuda',
+  'dml',
+  'coreml',
+  'webnn',
+  'webnn-npu',
+  'webnn-gpu',
+  'webnn-cpu',
+] as const
+
+function resolveDevice(): DeviceType {
+  const raw = process.env['RAG_DEVICE']?.trim()
+  if (!raw) return 'cpu'
+  if ((VALID_DEVICES as readonly string[]).includes(raw)) return raw as DeviceType
+  throw new Error(`RAG_DEVICE="${raw}" is not a valid device. Valid: ${VALID_DEVICES.join(', ')}`)
+}
 
 // ============================================
 // Type Definitions
@@ -34,10 +56,6 @@ export class EmbeddingError extends Error {
     this.name = 'EmbeddingError'
   }
 }
-
-// Cached across all Embedder instances in the process: once WebGPU fails (e.g. no GPU on CI),
-// subsequent instances skip the 3s timeout probe and go straight to CPU.
-let gpuAvailable: boolean | null = null
 
 // ============================================
 // Embedder Class
@@ -73,59 +91,25 @@ export class Embedder {
     // Set cache directory BEFORE creating pipeline
     env.cacheDir = this.config.cacheDir
 
-    console.error(`Embedder: Setting cache directory to "${this.config.cacheDir}"`)
-    console.error(`Embedder: Loading model "${this.config.modelPath}"...`)
+    // RAG_DEVICE selects the execution provider. Default 'cpu' is safe everywhere.
+    // The user picks from the transformers.js device list (cpu, webgpu, dml, cuda,
+    // coreml, wasm, auto, gpu, etc.) — we validate the string and pass it through.
+    // No fallback — if the requested device fails, init throws.
+    const device = resolveDevice()
 
-    if (gpuAvailable !== false) {
-      try {
-        // Wrap WebGPU init in a timeout: on environments without WebGPU (e.g. Node.js on CI),
-        // the pipeline call hangs indefinitely instead of throwing. Race against a short
-        // deadline so we fall through to the CPU path without blocking the process.
-        const gpuLoad = pipeline('feature-extraction', this.config.modelPath, {
-          dtype: 'fp32',
-          device: 'webgpu',
-        })
-        const gpuTimeoutMs = process.env['CI'] ? 30_000 : 3_000
-        const gpuTimeout = new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error('WebGPU init timed out')), gpuTimeoutMs)
-        )
-        const candidate = await Promise.race([gpuLoad, gpuTimeout])
-        // Init "succeeded" but on CI Windows runners WebGPU sometimes returns a
-        // pipeline that runs inference via slow software emulation. A single
-        // warmup call on a real GPU is ~50ms; if it takes >2s we treat this as
-        // a broken GPU and fall back to CPU.
-        const warmup = (
-          candidate as (text: string, options: unknown) => Promise<{ data: Float32Array }>
-        )('warmup', { pooling: 'mean', normalize: true })
-        const warmupTimeoutMs = process.env['CI'] ? 30_000 : 2_000
-        const warmupTimeout = new Promise<never>((_, reject) =>
-          setTimeout(
-            () => reject(new Error(`GPU warmup too slow (>${warmupTimeoutMs}ms)`)),
-            warmupTimeoutMs
-          )
-        )
-        await Promise.race([warmup, warmupTimeout])
-        this.model = candidate
-        gpuAvailable = true
-        console.error('Embedder: Model loaded successfully (GPU)')
-        return
-      } catch (gpuError) {
-        gpuAvailable = false
-        console.error(
-          `Embedder: GPU unavailable (${(gpuError as Error).message}), falling back to CPU...`
-        )
-      }
-    }
+    console.error(`Embedder: Setting cache directory to "${this.config.cacheDir}"`)
+    console.error(`Embedder: Loading model "${this.config.modelPath}" on device "${device}"...`)
 
     try {
       this.model = await pipeline('feature-extraction', this.config.modelPath, {
         dtype: 'fp32',
-        device: 'cpu',
+        device,
       })
-      console.error('Embedder: Model loaded successfully (CPU fallback)')
+      console.error(`Embedder: Model loaded successfully (device=${device})`)
     } catch (error) {
       throw new EmbeddingError(
-        `Failed to initialize Embedder: ${(error as Error).message}`,
+        `Failed to initialize Embedder on device "${device}": ${(error as Error).message}\n\n` +
+          'Set RAG_DEVICE=cpu to force CPU. Other values: gpu (auto per platform), dml, cuda, coreml, webgpu, wasm, auto.',
         error as Error
       )
     }
