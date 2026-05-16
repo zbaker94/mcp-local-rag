@@ -90,10 +90,12 @@ vi.mock('../../chunker/index.js', async (importOriginal) => {
 })
 
 vi.mock('../../embedder/index.js', () => ({
+  // Structurally complete (see CONTRIBUTING.md "Writing tests").
   Embedder: vi.fn().mockImplementation(function (this: Record<string, unknown>) {
     this.initialize = mocks.embedInitialize
     this.embed = mocks.embed
     this.embedBatch = mocks.embedBatch
+    this.dispose = vi.fn()
   }),
 }))
 
@@ -101,11 +103,14 @@ vi.mock('../../vectordb/index.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../vectordb/index.js')>()
   return {
     ...actual,
+    // Structurally complete (see CONTRIBUTING.md "Writing tests").
     VectorStore: vi.fn().mockImplementation(function (this: Record<string, unknown>) {
       this.initialize = mocks.initialize
+      this.close = vi.fn()
       this.listFiles = mocks.listFiles
       this.search = mocks.search
       this.deleteChunks = mocks.deleteChunks
+      this.deleteFiles = vi.fn()
       this.insertChunks = mocks.insertChunks
       this.optimize = mocks.optimize
       this.getChunksByRange = mocks.getChunksByRange

@@ -96,10 +96,14 @@ vi.mock('../../chunker/index.js', async (importOriginal) => {
 })
 
 vi.mock('../../embedder/index.js', () => ({
+  // Structurally complete: every public method on the real Embedder is stubbed.
+  // Missing methods cause cross-file leak under isolate: false to surface as
+  // `is not a function` in unrelated tests (e.g. afterAll-time `dispose()`).
   Embedder: vi.fn().mockImplementation(function (this: Record<string, unknown>) {
     this.initialize = mocks.embedInitialize
     this.embed = mocks.embed
     this.embedBatch = mocks.embedBatch
+    this.dispose = vi.fn()
   }),
 }))
 
@@ -107,11 +111,16 @@ vi.mock('../../vectordb/index.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../vectordb/index.js')>()
   return {
     ...actual,
+    // Structurally complete: every public method on the real VectorStore is
+    // stubbed. Missing methods (notably close/deleteFiles) cause cross-file
+    // leak under isolate: false to break unrelated tests at teardown time.
     VectorStore: vi.fn().mockImplementation(function (this: Record<string, unknown>) {
       this.initialize = mocks.initialize
+      this.close = vi.fn()
       this.listFiles = mocks.listFiles
       this.search = mocks.search
       this.deleteChunks = mocks.deleteChunks
+      this.deleteFiles = vi.fn()
       this.insertChunks = mocks.insertChunks
       this.optimize = mocks.optimize
       this.getChunksByRange = mocks.getChunksByRange
