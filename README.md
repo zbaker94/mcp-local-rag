@@ -119,6 +119,28 @@ Supports PDF, DOCX, TXT, and Markdown. The server extracts text, splits it into 
 
 Re-ingesting the same file replaces the old version automatically.
 
+##### Ingesting PDFs with figures (visual mode)
+
+PDFs whose meaning depends on charts, tables, or diagrams can be enriched with VLM-generated captions so visual content becomes searchable through the same vector + FTS pipeline.
+
+**Via MCP**:
+```
+"Ingest /Users/me/docs/api-spec.pdf with visual: true"
+```
+
+**Via CLI**:
+```bash
+npx mcp-local-rag ingest ./docs/spec.pdf --visual
+```
+
+Captions are inlined into the corresponding page's chunks as `[Visual content on page N: …]`. They flow through the existing chunker and embedder unchanged — no schema differences, no separate index.
+
+Visual mode is opt-in; normal ingest does not load the VLM. When visual mode is enabled, the default VLM is `onnx-community/granite-docling-258M-ONNX` using the default `q4` variant, and it is cached under `CACHE_DIR` (default: `./models/`). The first download is hundreds of MB and depends on `VLM_DTYPE` plus upstream model files. Override the model with `VLM_MODEL_NAME`. Per-page VLM failures are tolerated — that page proceeds with text only.
+
+To choose another VLM, start from the Hugging Face model search filtered to [Transformers.js + ONNX + Image-Text-to-Text](https://huggingface.co/models?library=transformers.js%2Connx&pipeline_tag=image-text-to-text&sort=trending). Prefer model cards that show Transformers.js usage with `AutoProcessor` and `AutoModelForImageTextToText`. Not every Hugging Face vision or image-to-text model is compatible with this visual ingest path, so test custom models on a small PDF first.
+
+> **Security note**: Visual captions are derived from PDF contents and may inherit attacker-controlled text. Downstream LLM consumers should treat retrieved chunks as untrusted data, not as instructions. The `[Visual content on page N: …]` envelope helps consumers distinguish caption text from prose.
+
 #### Ingesting HTML Content
 
 Use `ingest_data` to ingest HTML content retrieved by your AI assistant (via web fetch, curl, browser tools, etc.):
@@ -318,6 +340,8 @@ The MCP server is configured by environment variables only — pass them through
 | `DB_PATH` | `--db-path` | `./lancedb/` | Vector database location |
 | `CACHE_DIR` | `--cache-dir` | `./models/` | Model cache directory |
 | `MODEL_NAME` | `--model-name` | `Xenova/all-MiniLM-L6-v2` | HuggingFace model ID ([available models](https://huggingface.co/models?library=transformers.js&pipeline_tag=feature-extraction)) |
+| `VLM_MODEL_NAME` | — | `onnx-community/granite-docling-258M-ONNX` | VLM model used by `--visual` / `visual: true` ingest. Browse [Transformers.js + ONNX image-text-to-text models](https://huggingface.co/models?library=transformers.js%2Connx&pipeline_tag=image-text-to-text&sort=trending). Custom models must load with `AutoProcessor` + `AutoModelForImageTextToText` |
+| `VLM_DTYPE` | — | empty → `q4` | ONNX quantization variant passed to the VLM. The selected model repo must provide this variant. Valid values may contain only letters, numbers, and `_` (for example `q4`, `fp16`, `fp32`) |
 | `MAX_FILE_SIZE` | `--max-file-size` | `104857600` (100MB) | Maximum file size in bytes |
 | `CHUNK_MIN_LENGTH` | `--chunk-min-length` | `50` | Minimum chunk length in characters (1–10000) |
 | `RAG_DEVICE` | — | `cpu` | Execution device. Passed straight to ONNX Runtime. See the [Transformers.js device source code](https://github.com/huggingface/transformers.js/blob/main/packages/transformers/src/utils/devices.js) for the live list of supported backend names. If initialization fails, the server throws an error. |
@@ -433,7 +457,7 @@ Ensure file paths are within `BASE_DIR`. Use absolute paths.
 Yes. After model download, nothing leaves your machine. Verify with network monitoring.
 
 **Can I use this offline?**
-Yes, after the first model download (~90MB).
+Yes, after the required models are cached locally. Text ingest/search needs the embedding model. PDF visual mode is opt-in and also needs the VLM model on first use; the download is hundreds of MB for the default `q4` variant and is cached under `CACHE_DIR` (default: `./models/`).
 
 **How does this compare to cloud RAG?**
 Cloud services offer better accuracy at scale but require sending data externally. This trades some accuracy for complete privacy and zero runtime cost.

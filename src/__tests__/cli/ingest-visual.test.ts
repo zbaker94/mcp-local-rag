@@ -8,8 +8,8 @@
 // Test Type: Integration Test (in-process cli ingest dispatch + pdf-visual mocked)
 // Implementation Timing: Phase 4 (alongside dispatch-site wiring)
 //
-// Budget Used: 2/3 integration (this file)
-// Lane: integration
+// Lane: integration. Justification: AC-002/004/005/006/007 — visual-mode
+// behavior witnesses that require end-to-end dispatch through ingestSingleFile.
 //
 // vi.hoisted note: Required by isolate: false (vitest.config.mjs:16-18).
 // The mock of '../../pdf-visual/index.js' is a REAL-SHAPED mock — each

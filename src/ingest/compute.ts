@@ -60,6 +60,13 @@ export async function buildChunksAndEmbeddings(
   embedder: EmbedderInterface
 ): Promise<BuildChunksAndEmbeddingsResult> {
   const chunks = await chunker.chunkText(text, embedder)
+  // F5: Skip `embedBatch` entirely on zero chunks. `embedBatch` runs
+  // `ensureInitialized()` (which triggers the ~90MB MiniLM download on a
+  // cold cache) BEFORE checking for the empty-array short-circuit, so an
+  // empty file would otherwise pay the model-load cost for no work.
+  if (chunks.length === 0) {
+    return { chunks: [], embeddings: [], title }
+  }
   const embeddings = await embedder.embedBatch(chunks.map((chunk) => chunk.text))
   return { chunks, embeddings, title }
 }

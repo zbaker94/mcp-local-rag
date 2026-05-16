@@ -290,9 +290,15 @@ export class DocumentParser {
    *   - feed `metadataTitle` + `pages[0].page1FontHint` into `extractPdfTitle`
    *     after `buildChunksAndEmbeddings` returns.
    *
-   * Caller owns disposal — wrap call sites in
-   * `try { ... } finally { doc.destroy() }`. This method does NOT call
-   * `doc.destroy()`. See DD § `parser.parsePdfPages` contract.
+   * Disposal contract (asymmetric — read carefully):
+   *   - SUCCESS path: this method returns the open `doc` handle. The caller
+   *     owns disposal and MUST wrap the call site in
+   *     `try { ... } finally { doc.destroy() }`.
+   *   - ERROR path: when this method throws, `doc` has already been destroyed
+   *     internally before the exception propagates (so the caller never
+   *     receives a handle it would not know to clean up). Callers MUST NOT
+   *     call `doc.destroy()` on an error from this method.
+   * See DD § `parser.parsePdfPages` contract.
    *
    * This method does NOT compute the final title and does NOT decide visual
    * candidates — those are the dispatch site's and `pdf-visual/detector`'s
@@ -303,7 +309,7 @@ export class DocumentParser {
    * @returns Open mupdf `Document`, `metadataTitle`, and per-page records.
    *          `page1FontHint` (largest-font line on page 1) is present only on `pages[0]`.
    * @throws ValidationError - Path traversal, size exceeded
-   * @throws FileOperationError - File read or parse failed
+   * @throws FileOperationError - File read or parse failed (after destroying `doc` internally)
    */
   async parsePdfPages(
     filePath: string,

@@ -20,8 +20,10 @@
 //          `page.text` unchanged.
 //        - non-null → mutate `page.text` to
 //          `page.text + (page.text ? '\n\n' : '') + '[Visual content on page N: caption]'`.
-//        - thrown error → `console.error` naming the page and including
-//          `err.message`; leave `page.text` unchanged.
+//        - thrown error → `console.warn` naming the page and including
+//          `err.message`; leave `page.text` unchanged. Per DD §FR-3, a
+//          per-page captioner failure is a warning-level event (the file
+//          ingest as a whole succeeds), not an error-level one.
 //   3. Return the (possibly mutated) `pages` array.
 //
 // DPI is NOT a parameter of this function. The renderer owns DPI as a
@@ -117,7 +119,10 @@ export async function enrichPagesWithCaptions(
       page.text = `${page.text}${separator}[Visual content on page ${page.pageNum}: ${caption}]`
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
-      console.error(`VLM caption failed for page ${page.pageNum}: ${message}`)
+      // Per DD §FR-3 ("logs a warning"), a per-page captioner failure is
+      // emitted at warn-level. The file ingest as a whole completes
+      // successfully — only this single page degrades to text-only.
+      console.warn(`VLM caption failed for page ${page.pageNum}: ${message}`)
       // page.text intentionally left unchanged — AC-004.
     }
   }

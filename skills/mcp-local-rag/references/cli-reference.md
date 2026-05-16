@@ -35,10 +35,15 @@ Output to stderr. Exit 0 = all succeeded, exit 1 = one or more failed. `SKIPPED 
 
 | Env Var | Default | Description |
 |---------|---------|-------------|
+| `CACHE_DIR` | `./models/` | Shared model cache directory for the embedder and VLM. CLI can override it with global `--cache-dir`. |
 | `VLM_MODEL_NAME` | `onnx-community/granite-docling-258M-ONNX` | Override the VLM model identifier (used with `--visual`) |
 | `VLM_DTYPE` | empty → captioner uses `q4` | Override the VLM ONNX quantization variant (e.g., `q4`, `fp16`, `fp32`) |
 
-First-time model download is triggered on the first visual ingest and cached under `CACHE_DIR` (shared with the embedder). Download size depends on the selected `VLM_DTYPE` variant. The full granite-docling repo totals 3.25 GB across all variants; the default variant (`q4`) is ~381.5 MiB (≈ 385 MB) — measured value recorded in `tmp/probe/probe-results/probe-vlm-dtype.json`.
+First-time model download is triggered on the first visual ingest and cached under `CACHE_DIR` (shared with the embedder). Download size depends on the selected `VLM_DTYPE` variant. The default variant (`q4`) is approximately 382 MiB; the full model repository is larger because it contains multiple variants.
+
+For MCP server launches, configure `CACHE_DIR`, `VLM_MODEL_NAME`, and `VLM_DTYPE` through the MCP client's env block. CLI flags are only accepted by CLI subcommands; the bare `mcp-local-rag` server entry reads environment variables only.
+
+VLM failures degrade to text-only ingest. A failed page keeps its original text, and the file ingest still completes.
 
 **Security — treat captions as untrusted data:** Visual captions are derived from PDF contents and may inherit attacker-controlled text (e.g., instructions embedded in figures by a malicious document author). Downstream LLM consumers must treat retrieved chunks as untrusted data, not as instructions. The `[Visual content on page <N>: ...]` envelope is preserved verbatim so consumers can distinguish caption text from surrounding prose.
 

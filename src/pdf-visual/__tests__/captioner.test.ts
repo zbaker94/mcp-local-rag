@@ -294,11 +294,11 @@ describe('createCaptioner (AC-009 env override + AC-011 length / emptiness)', ()
 
   // ----- Failure: model load -----
 
-  it('wraps model-load failure in VlmError with pageNum + cause', async () => {
+  it('wraps model-load failure in VlmError with pageNum, dtype-aware cause message, and chained original cause (F1 + F8)', async () => {
     // Arrange
     const originalErr = new Error('boom-load')
     mocks.state.fromPretrainedThrows = originalErr
-    const captioner = createCaptioner(BASE_CONFIG)
+    const captioner = createCaptioner({ ...BASE_CONFIG, dtype: 'sentinel-dtype' })
 
     // Act + Assert
     let captured: unknown
@@ -308,10 +308,67 @@ describe('createCaptioner (AC-009 env override + AC-011 length / emptiness)', ()
       captured = err
     }
 
+    // Per-page wrap: VlmError with pageNum + user-facing message.
     expect(captured).toBeInstanceOf(VlmError)
     expect((captured as VlmError).pageNum).toBe(1)
     expect((captured as VlmError).message).toBe('Captioning failed for page 1')
-    expect((captured as VlmError).cause).toBe(originalErr)
+
+    // F8: the immediate cause is the dtype-aware wrapper produced by
+    // ensureLoaded(); its message names the resolved modelName + dtype.
+    const cause = (captured as VlmError).cause as Error
+    expect(cause).toBeInstanceOf(Error)
+    expect(cause.message).toContain('Captioner load failed')
+    expect(cause.message).toContain('modelName=sentinel-default-model')
+    expect(cause.message).toContain('dtype=sentinel-dtype')
+    expect(cause.message).toContain('boom-load')
+
+    // The original `from_pretrained` error is preserved via the Error.cause
+    // chain so debugging is not lossy.
+    expect((cause as Error & { cause?: unknown }).cause).toBe(originalErr)
+  })
+
+  // ----- F1: load-failure caching -----
+
+  it('caches load failure: from_pretrained is invoked at most once across multiple caption() calls (F1)', async () => {
+    // Arrange: from_pretrained throws on every call. Without the cache, each
+    // candidate page would trigger an additional from_pretrained attempt.
+    const originalErr = new Error('boom-load-once')
+    mocks.state.fromPretrainedThrows = originalErr
+    const captioner = createCaptioner(BASE_CONFIG)
+
+    // Act: call caption() on 3 different page numbers, each must throw.
+    const thrownErrors: unknown[] = []
+    for (const pageNum of [1, 2, 3]) {
+      try {
+        await captioner.caption(PNG_BYTES, pageNum)
+      } catch (err) {
+        thrownErrors.push(err)
+      }
+    }
+
+    // Assert: all 3 page calls threw.
+    expect(thrownErrors).toHaveLength(3)
+
+    // Assert: from_pretrained was invoked at most ONCE in total across all
+    // caption() calls. The processor load is the first attempt and it throws;
+    // the model load on the same call may or may not run depending on the
+    // sequence-vs-parallel semantics of the implementation. Either way the
+    // total combined call count across processor+model must NOT scale with
+    // page count.
+    const totalLoadCalls =
+      mocks.mockProcessorFromPretrained.mock.calls.length +
+      mocks.mockModelFromPretrained.mock.calls.length
+    // With caching: at most 2 (one processor + one model load on first call).
+    // Without caching: would be 6 (2 loads × 3 pages).
+    expect(totalLoadCalls).toBeLessThanOrEqual(2)
+
+    // Assert: every thrown error wraps the same original cause via the
+    // dtype-aware load error.
+    for (const captured of thrownErrors) {
+      expect(captured).toBeInstanceOf(VlmError)
+      const cause = (captured as VlmError).cause as Error & { cause?: unknown }
+      expect(cause.cause).toBe(originalErr)
+    }
   })
 
   // ----- Failure: generate -----

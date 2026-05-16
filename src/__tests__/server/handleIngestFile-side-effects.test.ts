@@ -6,10 +6,10 @@
 // Test Type: Integration Test (in-process server handler)
 // Implementation Timing: Phase 0 (must pass before Phase 4 wiring)
 //
-// Lane: integration. Budget Used: this file is the AC-008a witness — a
-// separate concern from the Phase 0 equivalence file
-// (ingest-phase0-equivalence.test.ts). Both files are named explicitly by
-// the DD §Existing Codebase Analysis → Implementation Path Mapping.
+// Lane: integration. Justification: AC-008a witness for the server wrapper's
+// side effects — separate from the Phase 0 equivalence concern covered by
+// ingest-phase0-equivalence.test.ts. Both files are named explicitly by the
+// DD §Existing Codebase Analysis → Implementation Path Mapping.
 //
 // Mocking strategy (must read before changing this file):
 //   Required by `isolate: false` (vitest.config.mjs:18): module mocks can

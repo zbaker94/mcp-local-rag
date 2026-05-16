@@ -2,7 +2,7 @@
 
 import { randomUUID } from 'node:crypto'
 import { readdir, readFile, unlink } from 'node:fs/promises'
-import { basename, extname, join, resolve, sep } from 'node:path'
+import { extname, join, resolve, sep } from 'node:path'
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import {
@@ -15,13 +15,10 @@ import {
 import { DEFAULT_MIN_CHUNK_LENGTH, SemanticChunker } from '../chunker/index.js'
 import { Embedder } from '../embedder/index.js'
 import { buildChunksAndEmbeddings } from '../ingest/compute.js'
+import { prepareVisualPdfChunks } from '../ingest/visual.js'
 import { parseHtml } from '../parser/html-parser.js'
 import { DocumentParser, SUPPORTED_EXTENSIONS } from '../parser/index.js'
-import {
-  extractMarkdownTitle,
-  extractPdfTitle,
-  extractTxtTitle,
-} from '../parser/title-extractor.js'
+import { extractMarkdownTitle, extractTxtTitle } from '../parser/title-extractor.js'
 import {
   type ContentFormat,
   extractSourceFromPath,
@@ -265,11 +262,11 @@ export class RAGServer {
     args: IngestFileInput
   ): Promise<{ content: [{ type: 'text'; text: string }] }> {
     // Runtime validation (AC-012): the MCP JSON Schema declares `visual` as a
-    // boolean, but tool arguments arrive as `unknown` at the SDK boundary so we
-    // re-check here. Validation MUST fire BEFORE any parser/chunker/embedder
-    // / vectorStore access. Read via a narrow `unknown` cast so this file
-    // doesn't widen the `IngestFileInput` interface (Target Files scope).
-    const visualArg = (args as unknown as { visual?: unknown }).visual
+    // boolean and `IngestFileInput.visual` types it as `boolean | undefined`,
+    // but tool arguments arrive as `unknown` at the SDK boundary so the
+    // structural type is not enforced by the compiler. Validation MUST fire
+    // BEFORE any parser/chunker/embedder/vectorStore access.
+    const visualArg: unknown = args.visual
     if (visualArg !== undefined && typeof visualArg !== 'boolean') {
       throw new McpError(ErrorCode.InvalidParams, "'visual' must be a boolean if provided")
     }
@@ -298,58 +295,27 @@ export class RAGServer {
           this.embedder
         ))
       } else if (visualArg === true && isPdf) {
-        // Visual dispatch — mirrors T4.5's CLI-side algorithm, with this
-        // handler's persistence semantics (backup/rollback/optimize) preserved
-        // below. NFR-1: load `pdf-visual` via dynamic `await import` ONLY when
-        // visual mode is requested on a PDF; the default path must never
-        // statically reference `pdf-visual` (AC-001).
-        const pdfVisual = await import('../pdf-visual/index.js')
-        const captioner = pdfVisual.createCaptioner({
-          modelName: this.vlmModelName,
-          cacheDir: this.cacheDir,
-          dtype: this.vlmDtype,
-        })
-
-        const { doc, metadataTitle, pages } = await this.parser.parsePdfPages(
+        // Visual dispatch — delegates to the shared `prepareVisualPdfChunks`
+        // helper (NFR-1: the `pdf-visual` dynamic import lives inside that
+        // helper, not here, so the default path's Proxy sentinel — AC-001 —
+        // still observes `pdf-visual` untouched). This handler keeps its
+        // backup/rollback/optimize/response-shaping persistence semantics
+        // (preserved below).
+        const visualResult = await prepareVisualPdfChunks(
           args.filePath,
-          this.embedder
+          this.parser,
+          this.chunker,
+          this.embedder,
+          {
+            modelName: this.vlmModelName,
+            cacheDir: this.cacheDir,
+            dtype: this.vlmDtype,
+          }
         )
-        try {
-          const candidates = pdfVisual.detectVisualCandidates(
-            pages.map((p) => ({ pageNum: p.pageNum, stextJson: p.stextJson }))
-          )
-          const enrichedPages = await pdfVisual.enrichPagesWithCaptions(
-            pages,
-            candidates,
-            doc,
-            captioner
-          )
-          text = enrichedPages
-            .map((p) => p.text)
-            .filter((t) => t.length > 0)
-            .join('\n\n')
-
-          // Chunk + embed once on the joined visual+text content. Title is
-          // derived AFTER chunking from `chunks[0]?.text` (DD §Title resolution).
-          ;({ chunks, embeddings } = await buildChunksAndEmbeddings(
-            text,
-            null,
-            this.chunker,
-            this.embedder
-          ))
-
-          const titleResult = extractPdfTitle(
-            metadataTitle,
-            chunks[0]?.text,
-            basename(args.filePath),
-            pages[0]?.page1FontHint
-          )
-          title = titleResult.title || null
-        } finally {
-          // Caller owns `doc` per `parsePdfPages` contract (AC-013) — release the
-          // mupdf WASM handle on both success and error paths.
-          doc.destroy()
-        }
+        chunks = visualResult.chunks
+        embeddings = visualResult.embeddings
+        text = visualResult.text
+        title = visualResult.title
       } else if (isPdf) {
         const result = await this.parser.parsePdf(args.filePath, this.embedder)
         text = result.content
