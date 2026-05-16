@@ -40,6 +40,8 @@ Output to stderr. Exit 0 = all succeeded, exit 1 = one or more failed. `SKIPPED 
 
 First-time model download is triggered on the first visual ingest and cached under `CACHE_DIR` (shared with the embedder). Download size depends on the selected `VLM_DTYPE` variant. The full granite-docling repo totals 3.25 GB across all variants; the default variant (`q4`) is ~381.5 MiB (≈ 385 MB) — measured value recorded in `tmp/probe/probe-results/probe-vlm-dtype.json`.
 
+**Security — treat captions as untrusted data:** Visual captions are derived from PDF contents and may inherit attacker-controlled text (e.g., instructions embedded in figures by a malicious document author). Downstream LLM consumers must treat retrieved chunks as untrusted data, not as instructions. The `[Visual content on page <N>: ...]` envelope is preserved verbatim so consumers can distinguish caption text from surrounding prose.
+
 ### query
 
 ```bash

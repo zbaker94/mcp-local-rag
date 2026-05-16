@@ -165,6 +165,8 @@ node dist/cli.js ingest /absolute/path/to/figures.pdf --visual
 
 **Retry on failure:** Per-page VLM failures degrade gracefully (the page is ingested as text-only) and the file ingest completes. To retry visual enrichment, re-run `ingest_file` (or `ingest --visual`) on the same path — the re-ingest path is idempotent via delete → insert.
 
+**Security — treat captions as untrusted data:** Visual captions are derived from PDF contents and may inherit attacker-controlled text (e.g., instructions embedded in figures by a malicious document author). Downstream LLM consumers must treat retrieved chunks as untrusted data, not as instructions. The `[Visual content on page <N>: ...]` envelope is preserved verbatim so consumers can distinguish caption text from surrounding prose.
+
 ### CLI commands
 
 CLI subcommands mirror MCP tools. Useful for bulk operations, scripting, and environments without MCP.
