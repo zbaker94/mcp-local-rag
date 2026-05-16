@@ -75,6 +75,7 @@ describe('RAG MCP Server E2E Test', () => {
         }
       } finally {
         // Cleanup
+        await ragServer.close()
         rmSync(testDbPath, { recursive: true, force: true })
         rmSync(testDataDir, { recursive: true, force: true })
       }
@@ -128,6 +129,7 @@ describe('RAG MCP Server E2E Test', () => {
         expect(results[0].filePath).toContain('sample.docx')
       } finally {
         // Cleanup
+        await ragServer.close()
         rmSync(testDbPath, { recursive: true, force: true })
         rmSync(testDataDir, { recursive: true, force: true })
       }
@@ -218,6 +220,7 @@ describe('RAG MCP Server E2E Test', () => {
         expect(targetResult.text).not.toContain('TypeScript is a strongly typed')
       } finally {
         // Cleanup
+        await ragServer.close()
         rmSync(testDbPath, { recursive: true, force: true })
         rmSync(testDataDir, { recursive: true, force: true })
       }

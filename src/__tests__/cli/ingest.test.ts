@@ -69,12 +69,14 @@ vi.mock('../../chunker/index.js', () => ({
 vi.mock('../../cli/common.js', () => ({
   createEmbedder: vi.fn().mockImplementation(() => ({
     embedBatch: mocks.embedBatch,
+    dispose: vi.fn(),
   })),
   createVectorStore: vi.fn().mockImplementation(() => ({
     initialize: mocks.initialize,
     deleteChunks: mocks.deleteChunks,
     insertChunks: mocks.insertChunks,
     optimize: mocks.optimize,
+    close: vi.fn(),
   })),
 }))
 

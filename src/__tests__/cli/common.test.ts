@@ -62,11 +62,20 @@ describe('createVectorStore', () => {
 })
 
 describe('createEmbedder', () => {
+  const originalDevice = process.env['RAG_DEVICE']
+
   afterEach(() => {
     mocks.Embedder.mockReset()
+    if (originalDevice === undefined) {
+      delete process.env['RAG_DEVICE']
+    } else {
+      process.env['RAG_DEVICE'] = originalDevice
+    }
   })
 
-  it('should map modelName to modelPath in Embedder config', () => {
+  it('defaults device to cpu when RAG_DEVICE is unset', () => {
+    delete process.env['RAG_DEVICE']
+
     createEmbedder(makeConfig({ modelName: 'custom/model', cacheDir: '/custom/cache' }))
 
     expect(mocks.Embedder).toHaveBeenCalledOnce()
@@ -74,6 +83,15 @@ describe('createEmbedder', () => {
       modelPath: 'custom/model',
       batchSize: 16,
       cacheDir: '/custom/cache',
+      device: 'cpu',
     })
+  })
+
+  it('passes RAG_DEVICE through to the Embedder', () => {
+    process.env['RAG_DEVICE'] = 'webgpu'
+
+    createEmbedder(makeConfig({ modelName: 'custom/model', cacheDir: '/custom/cache' }))
+
+    expect(mocks.Embedder).toHaveBeenCalledWith(expect.objectContaining({ device: 'webgpu' }))
   })
 })

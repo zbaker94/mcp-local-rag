@@ -486,6 +486,7 @@ export class VectorStore {
       await this.db.close()
       this.db = null
       this.table = null
+      this.ftsEnabled = false
       console.error('VectorStore connection closed')
     }
   }
