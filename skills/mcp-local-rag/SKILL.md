@@ -138,6 +138,33 @@ Source URLs are normalized: query strings and fragments are stripped. See [html-
 
 Re-ingest same source to update. Use same source in `delete_file` to remove.
 
+### Visual content (PDFs)
+
+Opt-in visual ingest enriches PDF chunks with text descriptions of figures, charts, and tables produced by a local Vision Language Model (VLM). Captions are appended to the originating page's text before chunking, so they flow through the same embedder/search pipeline as regular text — no schema change, no separate retrieval path.
+
+```
+ingest_file({ filePath: "/absolute/path/to/figures.pdf", visual: true })
+```
+
+```
+node dist/cli.js ingest /absolute/path/to/figures.pdf --visual
+```
+
+- `visual` defaults to `false`. Without it, ingest behavior is identical to before; no VLM is loaded and no model is downloaded.
+- `visual: true` only takes effect for `.pdf` files. For non-PDFs (`.md`, `.docx`, `.txt`), the flag is silently ignored.
+- Captioned content is embedded inline as `[Visual content on page <N>: <caption>]` within the same page's chunks — searchable via `query_documents` like any other text.
+
+**Environment variables:**
+
+| Env | Default | Purpose |
+|-----|---------|---------|
+| `VLM_MODEL_NAME` | `onnx-community/granite-docling-258M-ONNX` | VLM model identifier (HuggingFace repo) |
+| `VLM_DTYPE` | empty → captioner uses `q4` | ONNX quantization variant (e.g., `q4`, `fp16`, `fp32`) |
+
+**First-time model download:** The model is downloaded on the first visual ingest and cached under `CACHE_DIR` (shared with the embedder). Download size depends on the selected `VLM_DTYPE` variant. The full granite-docling repo totals 3.25 GB across all variants; the default variant (`q4`) is ~381.5 MiB (≈ 385 MB) — measured value recorded in `tmp/probe/probe-results/probe-vlm-dtype.json`.
+
+**Retry on failure:** Per-page VLM failures degrade gracefully (the page is ingested as text-only) and the file ingest completes. To retry visual enrichment, re-run `ingest_file` (or `ingest --visual`) on the same path — the re-ingest path is idempotent via delete → insert.
+
 ### CLI commands
 
 CLI subcommands mirror MCP tools. Useful for bulk operations, scripting, and environments without MCP.
