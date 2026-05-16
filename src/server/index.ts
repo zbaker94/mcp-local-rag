@@ -2,7 +2,7 @@
 
 import { randomUUID } from 'node:crypto'
 import { readdir, readFile, unlink } from 'node:fs/promises'
-import { extname, join, resolve, sep } from 'node:path'
+import { basename, extname, join, resolve, sep } from 'node:path'
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import {
@@ -394,9 +394,9 @@ export class RAGServer {
           text: chunk.text,
           vector: embedding,
           metadata: {
-            fileName: args.filePath.split('/').pop() || args.filePath,
+            fileName: basename(args.filePath),
             fileSize: text.length,
-            fileType: args.filePath.split('.').pop() || '',
+            fileType: extname(args.filePath).slice(1),
           },
           fileTitle: title || null,
           timestamp,
