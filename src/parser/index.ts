@@ -224,7 +224,11 @@ export class DocumentParser {
       const mupdf = await import('mupdf')
       const doc = mupdf.Document.openDocument(buffer, 'application/pdf')
 
-      const { pages, metadataTitle, page1FontHint } = await extractPdfPages(doc, embedder)
+      const { pages, metadataTitle, page1FontHint } = await extractPdfPages(
+        doc,
+        embedder,
+        'preserve-whitespace'
+      )
       const text = pages
         .map((p) => p.text)
         .filter((t) => t.length > 0)
@@ -260,6 +264,94 @@ export class DocumentParser {
     } catch (error) {
       throw new FileOperationError(`Failed to parse PDF: ${filePath}`, error as Error)
     }
+  }
+
+  /**
+   * Per-page PDF parsing for the visual-enrichment path.
+   *
+   * Opens a mupdf `Document`, delegates per-page extraction to the shared
+   * `extractPdfPages` helper with the `'preserve-whitespace,preserve-images'`
+   * stext option string so mupdf emits `block.type === 'image'` blocks for
+   * the downstream visual-candidate detector (Phase 1 probe finding).
+   *
+   * Returns the open `Document` handle alongside the per-page records and
+   * title-resolution materials so the caller can:
+   *   - run the renderer (`page.toPixmap()`) on the same handle,
+   *   - feed `metadataTitle` + `pages[0].page1FontHint` into `extractPdfTitle`
+   *     after `buildChunksAndEmbeddings` returns.
+   *
+   * Caller owns disposal — wrap call sites in
+   * `try { ... } finally { doc.destroy() }`. This method does NOT call
+   * `doc.destroy()`. See DD § `parser.parsePdfPages` contract.
+   *
+   * This method does NOT compute the final title and does NOT decide visual
+   * candidates — those are the dispatch site's and `pdf-visual/detector`'s
+   * responsibilities, respectively.
+   *
+   * @param filePath - PDF file path (validated against BASE_DIR and size limit)
+   * @param embedder - Embedder for semantic header/footer detection
+   * @returns Open mupdf `Document`, `metadataTitle`, and per-page records.
+   *          `page1FontHint` (largest-font line on page 1) is present only on `pages[0]`.
+   * @throws ValidationError - Path traversal, size exceeded
+   * @throws FileOperationError - File read or parse failed
+   */
+  async parsePdfPages(
+    filePath: string,
+    embedder: EmbedderInterface
+  ): Promise<{
+    doc: MupdfDocument
+    metadataTitle: string | undefined
+    pages: Array<{
+      pageNum: number
+      text: string
+      stextJson: unknown
+      page1FontHint?: { text: string; fontSize: number }
+    }>
+  }> {
+    // Validation (mirrors parsePdf's entry-point contract so the visual path
+    // does not bypass BASE_DIR / size checks).
+    await this.validateFilePath(filePath)
+    this.validateFileSize(filePath)
+
+    // Open the doc and run per-page extraction. Per the task scope boundary
+    // and AC-013, `parsePdfPages` does NOT call `doc.destroy()` — disposal is
+    // the caller's responsibility on the success path. On the error path
+    // before the caller receives the handle, disposal is intentionally left
+    // out of scope here (the DD's caller-owned-disposal contract is for the
+    // success path; an error-path safeguard is not in T2.2 scope).
+    let extracted: ExtractedPdf
+    let doc: MupdfDocument
+    try {
+      const buffer = await readFile(filePath)
+      const mupdf = await import('mupdf')
+      doc = mupdf.Document.openDocument(buffer, 'application/pdf') as MupdfDocument
+      extracted = await extractPdfPages(doc, embedder, 'preserve-whitespace,preserve-images')
+    } catch (error) {
+      throw new FileOperationError(`Failed to parse PDF pages: ${filePath}`, error as Error)
+    }
+
+    const { pages: helperPages, metadataTitle, page1FontHint } = extracted
+
+    // Adapt the helper's top-level `page1FontHint` onto `pages[0]` per the
+    // public contract (DD § Component `parser.parsePdfPages`).
+    const pages = helperPages.map((p, idx) =>
+      idx === 0 && page1FontHint !== undefined
+        ? {
+            pageNum: p.pageNum,
+            text: p.text,
+            stextJson: p.stextJson as unknown,
+            page1FontHint,
+          }
+        : {
+            pageNum: p.pageNum,
+            text: p.text,
+            stextJson: p.stextJson as unknown,
+          }
+    )
+
+    console.error(`Parsed PDF pages: ${filePath} (${pages.length} pages; caller owns doc disposal)`)
+
+    return { doc, metadataTitle, pages }
   }
 
   /**
@@ -372,9 +464,8 @@ interface ExtractedPage {
  *   2. `filterPageBoundarySentences` for header/footer removal;
  *   3. title-resolution materials (`metadataTitle` and `page1FontHint`).
  *
- * `parsePdf` consumes this directly; the upcoming `parsePdfPages` (T2.2) will
- * also consume it after adding a `stextOptions` parameter so the visual path
- * can request `'preserve-whitespace,preserve-images'`.
+ * Both `parsePdf` and `parsePdfPages` consume this helper; they differ only
+ * in the `stextOptions` argument they pass to `page.toStructuredText(...)`.
  */
 interface ExtractedPdf {
   pages: ExtractedPage[]
@@ -383,21 +474,28 @@ interface ExtractedPdf {
 }
 
 /**
- * Per-page extraction shared by `parsePdf` (and, in T2.2, `parsePdfPages`).
+ * Per-page extraction shared by `parsePdf` and `parsePdfPages`.
  *
  * Takes an already-open mupdf `Document` and:
  *   - reads `info:Title` once,
- *   - iterates pages calling `toStructuredText('preserve-whitespace')`,
+ *   - iterates pages calling `toStructuredText(stextOptions)`,
  *   - builds `PageData` items (only `block.type === 'text'` lines),
  *   - runs `filterPageBoundarySentences` to drop semantic headers/footers,
  *   - derives `page1FontHint` from page 1's largest-font lines.
+ *
+ * The two callers differ ONLY in `stextOptions`: `parsePdf` passes
+ * `'preserve-whitespace'` (default-mode invariance — AC-001 / NFR-1);
+ * `parsePdfPages` passes `'preserve-whitespace,preserve-images'` so mupdf
+ * emits `block.type === 'image'` entries for the downstream visual-candidate
+ * detector (probe-verified — see DD §Probe Results).
  *
  * Lifecycle: this helper does NOT call `doc.destroy()` — disposal stays
  * with the caller (T2.3 will add a `try/finally` in `parsePdf`).
  */
 async function extractPdfPages(
   doc: MupdfDocument,
-  embedder: EmbedderInterface
+  embedder: EmbedderInterface,
+  stextOptions: string
 ): Promise<ExtractedPdf> {
   const numPages = doc.countPages()
   const metadataTitle = doc.getMetaData('info:Title') || undefined
@@ -408,7 +506,7 @@ async function extractPdfPages(
     const page = doc.loadPage(i)
     const bounds = page.getBounds() // [x0, y0, x1, y1]
     const pageHeight = bounds[3] - bounds[1]
-    const stext = page.toStructuredText('preserve-whitespace')
+    const stext = page.toStructuredText(stextOptions)
     const json = JSON.parse(stext.asJSON()) as StextJson
 
     const items: Array<{
