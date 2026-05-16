@@ -2,7 +2,7 @@
 
 import { randomUUID } from 'node:crypto'
 import { opendir, stat } from 'node:fs/promises'
-import { extname, join, resolve, sep } from 'node:path'
+import { basename, extname, join, resolve, sep } from 'node:path'
 
 import { SemanticChunker } from '../chunker/index.js'
 import type { Embedder } from '../embedder/index.js'
@@ -396,9 +396,9 @@ export async function ingestSingleFile(
         text: chunk.text,
         vector: embedding,
         metadata: {
-          fileName: filePath.split('/').pop() || filePath,
+          fileName: basename(filePath),
           fileSize: visualResult.text.length,
-          fileType: filePath.split('.').pop() || '',
+          fileType: extname(filePath).slice(1),
         },
         fileTitle: title,
         timestamp,
@@ -440,9 +440,9 @@ export async function ingestSingleFile(
       text: chunk.text,
       vector: embedding,
       metadata: {
-        fileName: filePath.split('/').pop() || filePath,
+        fileName: basename(filePath),
         fileSize: text.length,
-        fileType: filePath.split('.').pop() || '',
+        fileType: extname(filePath).slice(1),
       },
       fileTitle: title,
       timestamp,
