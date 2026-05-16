@@ -2,12 +2,13 @@
 
 import { randomUUID } from 'node:crypto'
 import { opendir, stat } from 'node:fs/promises'
-import { extname, join, resolve, sep } from 'node:path'
+import { basename, extname, join, resolve, sep } from 'node:path'
 
 import { SemanticChunker } from '../chunker/index.js'
 import type { Embedder } from '../embedder/index.js'
 import { buildChunksAndEmbeddings } from '../ingest/compute.js'
 import { DocumentParser, SUPPORTED_EXTENSIONS } from '../parser/index.js'
+import { extractPdfTitle } from '../parser/title-extractor.js'
 import type { VectorChunk, VectorStore } from '../vectordb/index.js'
 import { createEmbedder, createVectorStore } from './common.js'
 import type { GlobalOptions, ResolvedGlobalConfig } from './options.js'
@@ -47,6 +48,7 @@ interface IngestCliOptions {
   baseDir?: string | undefined
   maxFileSize?: number | undefined
   chunkMinLength?: number | undefined
+  visual?: boolean | undefined
 }
 
 interface ParsedArgs {
@@ -75,12 +77,17 @@ Options:
   --base-dir <path>        Base directory for documents (default: cwd)
   --max-file-size <n>      Max file size in bytes (default: ${INGEST_DEFAULTS.maxFileSize})
   --chunk-min-length <n>   Minimum chunk length in characters (default: 50, range: 1-10000)
+  --visual                 Enable VLM captioning for PDF figure pages (PDFs only; no effect on other types)
   -h, --help               Show this help
 
 Global options (must appear before "ingest"):
   --db-path <path>         LanceDB database path
   --cache-dir <path>       Model cache directory
-  --model-name <name>      Embedding model`
+  --model-name <name>      Embedding model
+
+Env vars:
+  VLM_MODEL_NAME           Override the VLM model identifier (used with --visual)
+  VLM_DTYPE                Override the VLM ONNX quantization variant (used with --visual)`
 
 // ============================================
 // Arg Parsing
@@ -145,6 +152,11 @@ export function parseArgs(args: string[]): ParsedArgs {
         i++
         break
       }
+      case '--visual':
+        // Boolean toggle: no value consumed. Mirrors the -h/--help pattern.
+        options.visual = true
+        i++
+        break
       default:
         if (arg.startsWith('-')) {
           console.error(`Unknown option: ${arg}`)
@@ -307,19 +319,119 @@ async function collectFiles(targetPath: string, excludePaths: string[]): Promise
 /**
  * Ingest a single file: parse, chunk, embed, delete old chunks, insert new chunks.
  * Returns the number of chunks inserted.
+ *
+ * When `options.visual === true` AND the file is a `.pdf`, routes through the
+ * visual-enrichment path: `parsePdfPages` + VLM captioning (`pdf-visual`
+ * orchestrator) + joined-text chunking. `pdf-visual` is loaded via dynamic
+ * `await import('../pdf-visual/index.js')` so the default (non-visual) path
+ * never pulls the VLM module into the bundle (NFR-1 dynamic-import discipline,
+ * verified by AC-001 Proxy sentinel in T4.6).
+ *
+ * Non-visual, non-PDF, and `visual: true` + non-PDF (silently falls through
+ * to the default branch — AC-006) paths are byte-identical to the post-T0.3
+ * state and never load `pdf-visual`.
  */
 export async function ingestSingleFile(
   filePath: string,
   parser: DocumentParser,
   chunker: SemanticChunker,
   embedder: Embedder,
-  vectorStore: VectorStore
+  vectorStore: VectorStore,
+  options?: {
+    visual?: boolean | undefined
+    vlmModelName?: string | undefined
+    vlmDtype?: string | undefined
+  }
 ): Promise<number> {
   // Parse file
   const isPdf = filePath.toLowerCase().endsWith('.pdf')
   let text: string
   let title: string | null = null
-  if (isPdf) {
+  if (options?.visual === true && isPdf) {
+    // Visual dispatch — mirrors T4.4's MCP-side algorithm minus
+    // backup/rollback/optimize/response-shaping. The CLI persistence model
+    // below (delete + insert; bulk-loop optimize) is preserved.
+    const vlmModelName = options?.vlmModelName ?? 'onnx-community/granite-docling-258M-ONNX'
+    // `dtype` is intentionally pass-through here — empty string is normalized to
+    // `DEFAULT_VLM_DTYPE` inside `createCaptioner` (DD §Captioner contract step 2).
+    const vlmDtype = options?.vlmDtype ?? ''
+
+    // Dynamic import — load-bearing for NFR-1. The default path must never reach
+    // a static `pdf-visual` reference; AC-001 Proxy sentinel verifies this.
+    const pdfVisual = await import('../pdf-visual/index.js')
+
+    const captioner = pdfVisual.createCaptioner({
+      modelName: vlmModelName,
+      cacheDir: process.env['CACHE_DIR'] ?? './models/',
+      dtype: vlmDtype,
+    })
+
+    const { doc, metadataTitle, pages } = await parser.parsePdfPages(filePath, embedder)
+    try {
+      const candidates = pdfVisual.detectVisualCandidates(
+        pages.map((p) => ({ pageNum: p.pageNum, stextJson: p.stextJson }))
+      )
+      const enrichedPages = await pdfVisual.enrichPagesWithCaptions(
+        pages,
+        candidates,
+        doc,
+        captioner
+      )
+      text = enrichedPages
+        .map((p) => p.text)
+        .filter((t) => t.length > 0)
+        .join('\n\n')
+
+      // Chunk + embed once on the joined visual+text content. Title is derived
+      // post-chunking via `extractPdfTitle(metadataTitle, chunks[0]?.text,
+      // fileName, page1FontHint)` — same helper + same inputs as `parsePdf`
+      // uses internally (DD §Title resolution).
+      const { chunks, embeddings } = await buildChunksAndEmbeddings(text, null, chunker, embedder)
+      if (chunks.length === 0) {
+        console.error(`  Warning: 0 chunks generated (file may be empty or too short)`)
+        return 0
+      }
+
+      const titleResult = extractPdfTitle(
+        metadataTitle,
+        chunks[0]?.text,
+        basename(filePath),
+        pages[0]?.page1FontHint
+      )
+      title = titleResult.title || null
+
+      // Persistence — identical to the default branch below; inlined here so
+      // chunks/embeddings produced on the visual path persist correctly.
+      await vectorStore.deleteChunks(filePath)
+      const timestamp = new Date().toISOString()
+      const vectorChunks: VectorChunk[] = chunks.map((chunk, index) => {
+        const embedding = embeddings[index]
+        if (!embedding) {
+          throw new Error(`Missing embedding for chunk ${index}`)
+        }
+        return {
+          id: randomUUID(),
+          filePath,
+          chunkIndex: chunk.index,
+          text: chunk.text,
+          vector: embedding,
+          metadata: {
+            fileName: filePath.split('/').pop() || filePath,
+            fileSize: text.length,
+            fileType: filePath.split('.').pop() || '',
+          },
+          fileTitle: title,
+          timestamp,
+        }
+      })
+      await vectorStore.insertChunks(vectorChunks)
+      return vectorChunks.length
+    } finally {
+      // Caller owns `doc` per `parsePdfPages` contract — release the mupdf WASM
+      // handle on both success and error paths.
+      doc.destroy()
+    }
+  } else if (isPdf) {
     const result = await parser.parsePdf(filePath, embedder)
     text = result.content
     title = result.title || null
@@ -440,7 +552,21 @@ export async function runIngest(args: string[], globalOptions: GlobalOptions = {
       const label = `[${i + 1}/${files.length}]`
 
       try {
-        const chunkCount = await ingestSingleFile(filePath, parser, chunker, embedder, vectorStore)
+        // Forward visual + VLM env-resolved options into the per-file ingestor.
+        // `ingestSingleFile` routes through the visual path when
+        // `options.visual === true && filePath.endsWith('.pdf')`.
+        const chunkCount = await ingestSingleFile(
+          filePath,
+          parser,
+          chunker,
+          embedder,
+          vectorStore,
+          {
+            visual: options.visual,
+            vlmModelName: globalConfig.vlmModelName,
+            vlmDtype: globalConfig.vlmDtype,
+          }
+        )
         if (chunkCount === 0) {
           // 0 chunks is a skip/warning, not a failure
           console.error(`${label} ${filePath} ... SKIPPED (0 chunks)`)
