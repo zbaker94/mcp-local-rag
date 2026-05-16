@@ -6,6 +6,7 @@ import { extname, join, resolve, sep } from 'node:path'
 
 import { SemanticChunker } from '../chunker/index.js'
 import type { Embedder } from '../embedder/index.js'
+import { buildChunksAndEmbeddings } from '../ingest/compute.js'
 import { DocumentParser, SUPPORTED_EXTENSIONS } from '../parser/index.js'
 import type { VectorChunk, VectorStore } from '../vectordb/index.js'
 import { createEmbedder, createVectorStore } from './common.js'
@@ -307,7 +308,7 @@ async function collectFiles(targetPath: string, excludePaths: string[]): Promise
  * Ingest a single file: parse, chunk, embed, delete old chunks, insert new chunks.
  * Returns the number of chunks inserted.
  */
-async function ingestSingleFile(
+export async function ingestSingleFile(
   filePath: string,
   parser: DocumentParser,
   chunker: SemanticChunker,
@@ -328,15 +329,12 @@ async function ingestSingleFile(
     title = result.title || null
   }
 
-  // Chunk text
-  const chunks = await chunker.chunkText(text, embedder)
+  // Chunk text + generate embeddings via the shared computation layer (Phase 0).
+  const { chunks, embeddings } = await buildChunksAndEmbeddings(text, title, chunker, embedder)
   if (chunks.length === 0) {
     console.error(`  Warning: 0 chunks generated (file may be empty or too short)`)
     return 0
   }
-
-  // Generate embeddings
-  const embeddings = await embedder.embedBatch(chunks.map((c) => c.text))
 
   // Delete existing chunks for this file
   await vectorStore.deleteChunks(filePath)
