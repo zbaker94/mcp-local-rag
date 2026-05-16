@@ -27,8 +27,18 @@ npx mcp-local-rag [global-options] ingest [options] <path>
 |--------|---------|---------|-------------|
 | `--base-dir <path>` | `BASE_DIR` | cwd | Base directory for documents |
 | `--max-file-size <n>` | `MAX_FILE_SIZE` | `104857600` | Max file size in bytes (1–500MB) |
+| `--visual` | — | `false` | Enable VLM captioning for PDF figure pages (PDFs only; no effect on other types) |
 
 Output to stderr. Exit 0 = all succeeded, exit 1 = one or more failed. `SKIPPED (0 chunks)` = empty or too-short file, counted as success.
+
+**Env Vars (Visual ingest)** — used only when `--visual` is set:
+
+| Env Var | Default | Description |
+|---------|---------|-------------|
+| `VLM_MODEL_NAME` | `onnx-community/granite-docling-258M-ONNX` | Override the VLM model identifier (used with `--visual`) |
+| `VLM_DTYPE` | empty → captioner uses `q4` | Override the VLM ONNX quantization variant (e.g., `q4`, `fp16`, `fp32`) |
+
+First-time model download is triggered on the first visual ingest and cached under `CACHE_DIR` (shared with the embedder). Download size depends on the selected `VLM_DTYPE` variant. The full granite-docling repo totals 3.25 GB across all variants; the default variant (`q4`) is ~381.5 MiB (≈ 385 MB) — measured value recorded in `tmp/probe/probe-results/probe-vlm-dtype.json`.
 
 ### query
 
