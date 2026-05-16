@@ -341,6 +341,7 @@ export async function ingestSingleFile(
     visual?: boolean | undefined
     vlmModelName?: string | undefined
     vlmDtype?: string | undefined
+    cacheDir?: string | undefined
   }
 ): Promise<number> {
   // Parse file
@@ -360,9 +361,14 @@ export async function ingestSingleFile(
     // a static `pdf-visual` reference; AC-001 Proxy sentinel verifies this.
     const pdfVisual = await import('../pdf-visual/index.js')
 
+    // `cacheDir` is sourced from the options bag so the caller can pass the
+    // already-validated `globalConfig.cacheDir` (validated via `validatePath`
+    // at CLI entry in `resolveGlobalConfig`). This mirrors the MCP path's
+    // `this.cacheDir` pattern (src/server/index.ts) where the captioner reads
+    // from the server's validated config, not raw env.
     const captioner = pdfVisual.createCaptioner({
       modelName: vlmModelName,
-      cacheDir: process.env['CACHE_DIR'] ?? './models/',
+      cacheDir: options?.cacheDir ?? './models/',
       dtype: vlmDtype,
     })
 
@@ -565,6 +571,10 @@ export async function runIngest(args: string[], globalOptions: GlobalOptions = {
             visual: options.visual,
             vlmModelName: globalConfig.vlmModelName,
             vlmDtype: globalConfig.vlmDtype,
+            // Pass the already-validated cacheDir so the captioner does not
+            // re-read process.env['CACHE_DIR'] raw (bypassing the validatePath
+            // check that resolveGlobalConfig applied at entry).
+            cacheDir: globalConfig.cacheDir,
           }
         )
         if (chunkCount === 0) {

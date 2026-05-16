@@ -323,45 +323,49 @@ export class DocumentParser {
     await this.validateFilePath(filePath)
     this.validateFileSize(filePath)
 
-    // Open the doc and run per-page extraction. Per the task scope boundary
-    // and AC-013, `parsePdfPages` does NOT call `doc.destroy()` — disposal is
-    // the caller's responsibility on the success path. On the error path
-    // before the caller receives the handle, disposal is intentionally left
-    // out of scope here (the DD's caller-owned-disposal contract is for the
-    // success path; an error-path safeguard is not in T2.2 scope).
-    let extracted: ExtractedPdf
-    let doc: MupdfDocument
+    // Open the doc and run per-page extraction. Success-path disposal of
+    // `doc` stays with the caller (AC-013, DD § caller-owned-disposal).
+    // For the error-path window between `openDocument` and the return below,
+    // destroy `doc` here before re-throwing so a failure in `extractPdfPages`
+    // (or any future pre-return step) does not leak the mupdf WASM handle.
+    let doc: MupdfDocument | undefined
     try {
       const buffer = await readFile(filePath)
       const mupdf = await import('mupdf')
       doc = mupdf.Document.openDocument(buffer, 'application/pdf') as MupdfDocument
-      extracted = await extractPdfPages(doc, embedder, 'preserve-whitespace,preserve-images')
+      const extracted = await extractPdfPages(doc, embedder, 'preserve-whitespace,preserve-images')
+
+      const { pages: helperPages, metadataTitle, page1FontHint } = extracted
+
+      // Adapt the helper's top-level `page1FontHint` onto `pages[0]` per the
+      // public contract (DD § Component `parser.parsePdfPages`).
+      const pages = helperPages.map((p, idx) =>
+        idx === 0 && page1FontHint !== undefined
+          ? {
+              pageNum: p.pageNum,
+              text: p.text,
+              stextJson: p.stextJson as unknown,
+              page1FontHint,
+            }
+          : {
+              pageNum: p.pageNum,
+              text: p.text,
+              stextJson: p.stextJson as unknown,
+            }
+      )
+
+      console.error(
+        `Parsed PDF pages: ${filePath} (${pages.length} pages; caller owns doc disposal)`
+      )
+
+      return { doc, metadataTitle, pages }
     } catch (error) {
+      // `doc` is undefined when `openDocument` itself threw — nothing to free.
+      // When it is defined, dispose before re-throwing so the caller never
+      // receives the handle and cannot be expected to clean it up.
+      doc?.destroy()
       throw new FileOperationError(`Failed to parse PDF pages: ${filePath}`, error as Error)
     }
-
-    const { pages: helperPages, metadataTitle, page1FontHint } = extracted
-
-    // Adapt the helper's top-level `page1FontHint` onto `pages[0]` per the
-    // public contract (DD § Component `parser.parsePdfPages`).
-    const pages = helperPages.map((p, idx) =>
-      idx === 0 && page1FontHint !== undefined
-        ? {
-            pageNum: p.pageNum,
-            text: p.text,
-            stextJson: p.stextJson as unknown,
-            page1FontHint,
-          }
-        : {
-            pageNum: p.pageNum,
-            text: p.text,
-            stextJson: p.stextJson as unknown,
-          }
-    )
-
-    console.error(`Parsed PDF pages: ${filePath} (${pages.length} pages; caller owns doc disposal)`)
-
-    return { doc, metadataTitle, pages }
   }
 
   /**
