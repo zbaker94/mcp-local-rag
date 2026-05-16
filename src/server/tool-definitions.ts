@@ -40,6 +40,11 @@ export const toolDefinitions: Tool[] = [
           description:
             'Absolute path to the file to ingest. Example: "/Users/user/documents/manual.pdf"',
         },
+        visual: {
+          type: 'boolean',
+          description:
+            'If true and the file is a PDF, run VLM captioning on figure pages. No effect on non-PDF files.',
+        },
       },
       required: ['filePath'],
     },
