@@ -15,7 +15,7 @@
 // mocks of `src/pdf-visual/index.js` so the dispatch branch can actually run.
 
 import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js'
-import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 // ============================================
 // Mock Setup (vi.hoisted for isolate: false)
@@ -68,7 +68,11 @@ const mocks = vi.hoisted(() => {
   }
 })
 
-vi.mock('../../parser/index.js', () => ({
+// NOTE: factories are installed via `vi.doMock` in `beforeAll` and removed
+// via `vi.doUnmock` in `afterAll`, so they cannot leak to sibling test files
+// through the shared module registry under `isolate: false`.
+
+const parserFactory = () => ({
   DocumentParser: vi.fn().mockImplementation(function (this: Record<string, unknown>) {
     this.parseFile = mocks.parseFile
     this.parsePdf = mocks.parsePdf
@@ -77,33 +81,35 @@ vi.mock('../../parser/index.js', () => ({
     this.validateFileSize = mocks.validateFileSize
   }),
   SUPPORTED_EXTENSIONS: new Set(['.pdf', '.docx', '.txt', '.md']),
-}))
+})
 
-vi.mock('../../chunker/index.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../../chunker/index.js')>()
+const chunkerFactory = async (
+  importOriginal: () => Promise<typeof import('../../chunker/index.js')>
+) => {
+  const actual = await importOriginal()
   return {
     ...actual,
     SemanticChunker: vi.fn().mockImplementation(function (this: Record<string, unknown>) {
       this.chunkText = mocks.chunkText
     }),
   }
-})
+}
 
-vi.mock('../../embedder/index.js', () => ({
-  // Structurally complete (see CONTRIBUTING.md "Writing tests").
+const embedderFactory = () => ({
   Embedder: vi.fn().mockImplementation(function (this: Record<string, unknown>) {
     this.initialize = mocks.embedInitialize
     this.embed = mocks.embed
     this.embedBatch = mocks.embedBatch
     this.dispose = vi.fn()
   }),
-}))
+})
 
-vi.mock('../../vectordb/index.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../../vectordb/index.js')>()
+const vectordbFactory = async (
+  importOriginal: () => Promise<typeof import('../../vectordb/index.js')>
+) => {
+  const actual = await importOriginal()
   return {
     ...actual,
-    // Structurally complete (see CONTRIBUTING.md "Writing tests").
     VectorStore: vi.fn().mockImplementation(function (this: Record<string, unknown>) {
       this.initialize = mocks.initialize
       this.close = vi.fn()
@@ -117,15 +123,21 @@ vi.mock('../../vectordb/index.js', async (importOriginal) => {
       this.getStatus = mocks.getStatus
     }),
   }
-})
+}
 
-// Real-shaped mock of the pdf-visual barrel for the `visual: true` positive
-// case. The handler reaches this via `await import('../pdf-visual/index.js')`.
-vi.mock('../../pdf-visual/index.js', () => ({
+const pdfVisualFactory = () => ({
   createCaptioner: mocks.createCaptioner,
   detectVisualCandidates: mocks.detectVisualCandidates,
   enrichPagesWithCaptions: mocks.enrichPagesWithCaptions,
-}))
+})
+
+const MOCKED_PATHS = [
+  '../../parser/index.js',
+  '../../chunker/index.js',
+  '../../embedder/index.js',
+  '../../vectordb/index.js',
+  '../../pdf-visual/index.js',
+] as const
 
 // ============================================
 // Imports (after mocks)
@@ -166,8 +178,18 @@ function buildServer(): InstanceType<RAGServerCtor> {
 describe('handleIngestFile - `visual` Runtime Validation (AC-012)', () => {
   beforeAll(async () => {
     vi.resetModules()
+    vi.doMock('../../parser/index.js', parserFactory)
+    vi.doMock('../../chunker/index.js', chunkerFactory)
+    vi.doMock('../../embedder/index.js', embedderFactory)
+    vi.doMock('../../vectordb/index.js', vectordbFactory)
+    vi.doMock('../../pdf-visual/index.js', pdfVisualFactory)
     const mod = await import('../../server/index.js')
     RAGServer = mod.RAGServer
+  })
+
+  afterAll(() => {
+    for (const p of MOCKED_PATHS) vi.doUnmock(p)
+    vi.resetModules()
   })
 
   beforeEach(() => {

@@ -31,7 +31,7 @@
 // module).
 
 import type { Document as MupdfDocument } from 'mupdf'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 // ============================================
 // Mocks (vi.hoisted — required for `../renderer` and `../captioner`)
@@ -69,22 +69,25 @@ const mocks = vi.hoisted(() => {
   return { state, renderSpy, captionSpy }
 })
 
-vi.mock('../renderer.js', () => ({
-  renderPdfPage: mocks.renderSpy,
-}))
+// Mock factories — installed via `vi.doMock` in `beforeAll` and removed via
+// `vi.doUnmock` in `afterAll`. See `.claude/skills/project-context/SKILL.md`.
 
-vi.mock('../captioner.js', () => ({
+const rendererFactory = () => ({
+  renderPdfPage: mocks.renderSpy,
+})
+
+const captionerFactory = () => ({
   // The orchestrator imports `Captioner` from `../types.js`, not from here,
   // so we only need to ensure this module load resolves cleanly during tests
   // that may transitively import it. Provide a no-op `createCaptioner`.
   createCaptioner: vi.fn(),
-}))
+})
 
-// Import the SUT AFTER the mocks are installed. ESM hoists `import`, but
-// `vi.mock` is also hoisted by vitest's transformer, so this ordering is the
-// project-wide convention.
-import { enrichPagesWithCaptions } from '../index.js'
+const MOCKED_PATHS = ['../renderer.js', '../captioner.js'] as const
+
 import type { Captioner } from '../types.js'
+
+let enrichPagesWithCaptions: typeof import('../index.js').enrichPagesWithCaptions
 
 // ============================================
 // Helpers
@@ -119,6 +122,18 @@ const fakeDoc = { _sentinel: 'mupdf-doc' } as unknown as MupdfDocument
 describe('enrichPagesWithCaptions', () => {
   let warnSpy: ReturnType<typeof vi.spyOn>
   let errorSpy: ReturnType<typeof vi.spyOn>
+
+  beforeAll(async () => {
+    vi.resetModules()
+    vi.doMock('../renderer.js', rendererFactory)
+    vi.doMock('../captioner.js', captionerFactory)
+    ;({ enrichPagesWithCaptions } = await import('../index.js'))
+  })
+
+  afterAll(() => {
+    for (const p of MOCKED_PATHS) vi.doUnmock(p)
+    vi.resetModules()
+  })
 
   beforeEach(() => {
     // Reset shared state between tests.

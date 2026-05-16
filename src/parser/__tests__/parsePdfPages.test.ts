@@ -21,29 +21,36 @@
 
 import { mkdir, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { DocumentParser } from '../index'
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 // ============================================
-// Mocks (vi.hoisted — required for `mupdf` per project-wide constraint)
+// Mocks
 // ============================================
+// Installed via `vi.doMock` in `beforeAll` and removed via `vi.doUnmock` in
+// `afterAll`. See `.claude/skills/project-context/SKILL.md`.
 
 const { mockOpenDocument, mockFilterPageBoundarySentences } = vi.hoisted(() => ({
   mockOpenDocument: vi.fn(),
   mockFilterPageBoundarySentences: vi.fn(),
 }))
 
-vi.mock('mupdf', () => ({
+const mupdfFactory = () => ({
   Document: { openDocument: mockOpenDocument },
-}))
+})
 
-vi.mock('../pdf-filter.js', async (importOriginal) => {
-  const original = await importOriginal<typeof import('../pdf-filter.js')>()
+const pdfFilterFactory = async (
+  importOriginal: () => Promise<typeof import('../pdf-filter.js')>
+) => {
+  const original = await importOriginal()
   return {
     ...original,
     filterPageBoundarySentences: mockFilterPageBoundarySentences,
   }
-})
+}
+
+const MOCKED_PATHS = ['mupdf', '../pdf-filter.js'] as const
+
+let DocumentParser: typeof import('../index.js').DocumentParser
 
 // ============================================
 // Test suite
@@ -53,7 +60,19 @@ describe('parsePdfPages return shape', () => {
   const testDir = join(process.cwd(), 'tmp', 'test-parsePdfPages-shape')
   const maxFileSize = 100 * 1024 * 1024 // 100MB
   const mockEmbedder = { embed: vi.fn() }
-  let parser: DocumentParser
+  let parser: InstanceType<typeof DocumentParser>
+
+  beforeAll(async () => {
+    vi.resetModules()
+    vi.doMock('mupdf', mupdfFactory)
+    vi.doMock('../pdf-filter.js', pdfFilterFactory)
+    ;({ DocumentParser } = await import('../index.js'))
+  })
+
+  afterAll(() => {
+    for (const p of MOCKED_PATHS) vi.doUnmock(p)
+    vi.resetModules()
+  })
 
   beforeEach(async () => {
     vi.clearAllMocks()

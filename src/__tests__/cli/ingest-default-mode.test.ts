@@ -77,15 +77,19 @@ const mocks = vi.hoisted(() => {
   }
 })
 
-// Proxy sentinel — any property access flips `accessed.touched`. Returning
-// `undefined` (rather than a throwing function) matches the task body
-// specification: the default path must not reach this module at all, so the
-// behavior on a hypothetical access is academic — the assertion is the
-// `touched` flag itself. If production code did try to call a property it
-// would TypeError on `undefined(...)`, which naturally surfaces the
-// regression at the call site.
-vi.mock('../../pdf-visual/index.js', () => {
-  return new Proxy(
+// NOTE: vi.mock factories used to live at module top-level. Under
+// `isolate: false` they were hoisted into the *shared* module registry and
+// leaked to unrelated test files (e.g. `src/__tests__/server/ingest-data.test.ts`)
+// that import real parser/chunker/embedder/vectordb. We now install the same
+// factories with `vi.doMock` inside `beforeAll` so they are scoped to the
+// dynamic import below, and we `vi.doUnmock` them in `afterAll` to clear the
+// registry before sibling files load.
+//
+// Factory definitions are kept as functions so they can be passed to both
+// `vi.doMock` (in beforeAll) and to local tests if needed.
+
+const pdfVisualFactory = () =>
+  new Proxy(
     {},
     {
       get(_target, prop) {
@@ -95,9 +99,8 @@ vi.mock('../../pdf-visual/index.js', () => {
       },
     }
   )
-})
 
-vi.mock('../../parser/index.js', () => ({
+const parserFactory = () => ({
   DocumentParser: vi.fn().mockImplementation(function (this: Record<string, unknown>) {
     this.parseFile = mocks.parseFile
     this.parsePdf = mocks.parsePdf
@@ -106,33 +109,35 @@ vi.mock('../../parser/index.js', () => ({
     this.validateFileSize = mocks.validateFileSize
   }),
   SUPPORTED_EXTENSIONS: new Set(['.pdf', '.docx', '.txt', '.md']),
-}))
+})
 
-vi.mock('../../chunker/index.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../../chunker/index.js')>()
+const chunkerFactory = async (
+  importOriginal: () => Promise<typeof import('../../chunker/index.js')>
+) => {
+  const actual = await importOriginal()
   return {
     ...actual,
     SemanticChunker: vi.fn().mockImplementation(function (this: Record<string, unknown>) {
       this.chunkText = mocks.chunkText
     }),
   }
-})
+}
 
-vi.mock('../../embedder/index.js', () => ({
-  // Structurally complete (see CONTRIBUTING.md "Writing tests").
+const embedderFactory = () => ({
   Embedder: vi.fn().mockImplementation(function (this: Record<string, unknown>) {
     this.initialize = mocks.embedInitialize
     this.embed = mocks.embed
     this.embedBatch = mocks.embedBatch
     this.dispose = vi.fn()
   }),
-}))
+})
 
-vi.mock('../../vectordb/index.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../../vectordb/index.js')>()
+const vectordbFactory = async (
+  importOriginal: () => Promise<typeof import('../../vectordb/index.js')>
+) => {
+  const actual = await importOriginal()
   return {
     ...actual,
-    // Structurally complete (see CONTRIBUTING.md "Writing tests").
     VectorStore: vi.fn().mockImplementation(function (this: Record<string, unknown>) {
       this.initialize = mocks.initialize
       this.close = vi.fn()
@@ -146,7 +151,15 @@ vi.mock('../../vectordb/index.js', async (importOriginal) => {
       this.getStatus = mocks.getStatus
     }),
   }
-})
+}
+
+const MOCKED_PATHS = [
+  '../../pdf-visual/index.js',
+  '../../parser/index.js',
+  '../../chunker/index.js',
+  '../../embedder/index.js',
+  '../../vectordb/index.js',
+] as const
 
 // ============================================
 // Imports (after mocks)
@@ -221,6 +234,11 @@ function buildServer(): InstanceType<RAGServerCtor> {
 describe('VLM PDF Enrichment - Default Mode (no --visual)', () => {
   beforeAll(async () => {
     vi.resetModules()
+    vi.doMock('../../pdf-visual/index.js', pdfVisualFactory)
+    vi.doMock('../../parser/index.js', parserFactory)
+    vi.doMock('../../chunker/index.js', chunkerFactory)
+    vi.doMock('../../embedder/index.js', embedderFactory)
+    vi.doMock('../../vectordb/index.js', vectordbFactory)
     const serverMod = await import('../../server/index.js')
     RAGServer = serverMod.RAGServer
     const cliMod = await import('../../cli/ingest.js')
@@ -256,40 +274,12 @@ describe('VLM PDF Enrichment - Default Mode (no --visual)', () => {
   })
 
   afterAll(() => {
-    // Defensive: clear the sentinel so its state cannot leak to a sibling
-    // file that imports this module before its own beforeEach runs.
     accessed.touched = false
     accessed.prop = undefined
-
-    // Under `isolate: false` (vitest.config.mjs:18) the mock factories above
-    // (`vi.mock('../../parser/index.js', ...)` etc.) remain installed for
-    // sibling test files in the same fork. Sibling files that rely on real
-    // parser/chunker/embedder/vectordb behavior (e.g.,
-    // `rag-server.protocol.integration.test.ts`) self-protect by calling
-    // `vi.resetModules()` in their own `beforeAll` and re-importing — but
-    // any test that does NOT reset modules would receive our mocks. To make
-    // accidental leakage loud rather than silent (which previously produced
-    // false-positive ingest successes on non-existent files), reset every
-    // hoisted mock to its default-rejecting / undefined state. Any sibling
-    // that ends up consuming these mocks will get an explicit failure rather
-    // than synthetic ingest output.
-    mocks.parseFile.mockReset()
-    mocks.parsePdf.mockReset()
-    mocks.parsePdfPages.mockReset()
-    mocks.validateFilePath.mockReset()
-    mocks.validateFileSize.mockReset()
-    mocks.chunkText.mockReset()
-    mocks.embedInitialize.mockReset()
-    mocks.embed.mockReset()
-    mocks.embedBatch.mockReset()
-    mocks.initialize.mockReset()
-    mocks.listFiles.mockReset()
-    mocks.search.mockReset()
-    mocks.deleteChunks.mockReset()
-    mocks.insertChunks.mockReset()
-    mocks.optimize.mockReset()
-    mocks.getChunksByRange.mockReset()
-    mocks.getStatus.mockReset()
+    // Unregister the mocks installed in beforeAll so they cannot leak to
+    // sibling files via the shared module registry under `isolate: false`.
+    for (const p of MOCKED_PATHS) vi.doUnmock(p)
+    vi.resetModules()
   })
 
   // AC-001: "With no --visual flag and no `visual` argument, ingesting a PDF

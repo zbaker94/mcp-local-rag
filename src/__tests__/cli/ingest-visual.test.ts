@@ -23,7 +23,7 @@
 // loaded — parser.parsePdfPages is mocked at the parser boundary.
 
 import { resolve } from 'node:path'
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 // ============================================
 // Mock Setup (vi.hoisted for isolate: false)
@@ -67,34 +67,35 @@ const mocks = vi.hoisted(() => {
   }
 })
 
-// Mock fs/promises (only `stat` is touched on the single-file path).
-vi.mock('node:fs/promises', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('node:fs/promises')>()
+// Mock factories — installed via `vi.doMock` in `beforeAll` and removed via
+// `vi.doUnmock` in `afterAll`. See `.claude/skills/project-context/SKILL.md`.
+
+const fsPromisesFactory = async (
+  importOriginal: () => Promise<typeof import('node:fs/promises')>
+) => {
+  const actual = await importOriginal()
   return {
     ...actual,
     stat: mocks.stat,
   }
-})
+}
 
-// Mock DocumentParser — wire instance methods to the hoisted spies.
-vi.mock('../../parser/index.js', () => ({
+const parserFactory = () => ({
   DocumentParser: vi.fn().mockImplementation(function (this: Record<string, unknown>) {
     this.parseFile = mocks.parseFile
     this.parsePdf = mocks.parsePdf
     this.parsePdfPages = mocks.parsePdfPages
   }),
   SUPPORTED_EXTENSIONS: new Set(['.pdf', '.docx', '.txt', '.md']),
-}))
+})
 
-// Mock SemanticChunker.
-vi.mock('../../chunker/index.js', () => ({
+const chunkerFactory = () => ({
   SemanticChunker: vi.fn().mockImplementation(function (this: Record<string, unknown>) {
     this.chunkText = mocks.chunkText
   }),
-}))
+})
 
-// Mock cli/common.js factories.
-vi.mock('../../cli/common.js', () => ({
+const cliCommonFactory = () => ({
   createEmbedder: vi.fn().mockImplementation(() => ({
     embedBatch: mocks.embedBatch,
     dispose: vi.fn(),
@@ -106,21 +107,15 @@ vi.mock('../../cli/common.js', () => ({
     optimize: mocks.optimize,
     close: vi.fn(),
   })),
-}))
+})
 
-// Real-shaped mock of the pdf-visual barrel.
-//
-// `detectVisualCandidates` reflects `captionerSpy.candidatePages`. The default
-// fixture page count is 3 — the default candidate set is {2}; AC-004 widens it
-// to {2, 3} so the test can prove that other candidate pages keep their
-// captions when page 2 throws.
-//
-// `enrichPagesWithCaptions` mirrors the production orchestrator's per-page
-// failure contract: a per-page throw or whole-VLM throw leaves `page.text`
-// unchanged AND emits a warn-level log line that names the failed page. Other
-// candidate pages still get `[Visual content on page N: synthetic caption text]`
-// appended with the documented `'\n\n'` separator.
-vi.mock('../../pdf-visual/index.js', () => ({
+// Real-shaped pdf-visual barrel. `detectVisualCandidates` reflects
+// `captionerSpy.candidatePages`. `enrichPagesWithCaptions` mirrors the
+// production orchestrator's per-page failure contract: a per-page throw or
+// whole-VLM throw leaves `page.text` unchanged AND emits a warn-level log line
+// naming the failed page. Other candidates still get `[Visual content on page
+// N: synthetic caption text]` appended with the documented `'\n\n'` separator.
+const pdfVisualFactory = () => ({
   detectVisualCandidates: (pages: { pageNum: number; stextJson: unknown }[]) =>
     pages.map((p) => ({
       pageNum: p.pageNum,
@@ -137,10 +132,6 @@ vi.mock('../../pdf-visual/index.js', () => ({
       if (!candidateSet.has(page.pageNum)) continue
       captionerSpy.calls.push({ pageNum: page.pageNum })
       if (captionerSpy.throwAll || captionerSpy.throwOn === page.pageNum) {
-        // Mirror production: warn-log (so AC-004/AC-005 can assert it) and leave
-        // page.text unchanged. We use console.warn for the per-page warning to
-        // match the orchestrator's "fail-fast within page, tolerate across pages"
-        // contract.
         console.warn(`VLM caption failed for page ${page.pageNum}: simulated failure`)
         continue
       }
@@ -152,7 +143,15 @@ vi.mock('../../pdf-visual/index.js', () => ({
   createCaptioner: () => ({
     caption: async () => 'synthetic caption text',
   }),
-}))
+})
+
+const MOCKED_PATHS = [
+  'node:fs/promises',
+  '../../parser/index.js',
+  '../../chunker/index.js',
+  '../../cli/common.js',
+  '../../pdf-visual/index.js',
+] as const
 
 // Dynamically imported after vi.resetModules() in beforeAll. This is the
 // load-bearing isolation mechanism under vitest's `isolate: false`: a sibling
@@ -276,14 +275,18 @@ describe('VLM PDF Enrichment - Visual Mode', () => {
   let exitSpy: ReturnType<typeof vi.spyOn>
 
   beforeAll(async () => {
-    // Under vitest `isolate: false` (vitest.config.mjs), the module registry is
-    // shared across files. A sibling like `ingest.test.ts` also vi.mock's
-    // `../../cli/common.js`; whichever file's factory binds runIngest's
-    // closures first wins, breaking the loser. Resetting the registry here and
-    // dynamically importing AFTER the vi.mock factories above have been
-    // hoisted forces THIS file's factories to be the ones runIngest sees.
     vi.resetModules()
+    vi.doMock('node:fs/promises', fsPromisesFactory)
+    vi.doMock('../../parser/index.js', parserFactory)
+    vi.doMock('../../chunker/index.js', chunkerFactory)
+    vi.doMock('../../cli/common.js', cliCommonFactory)
+    vi.doMock('../../pdf-visual/index.js', pdfVisualFactory)
     ;({ runIngest } = await import('../../cli/ingest.js'))
+  })
+
+  afterAll(() => {
+    for (const p of MOCKED_PATHS) vi.doUnmock(p)
+    vi.resetModules()
   })
 
   beforeEach(() => {

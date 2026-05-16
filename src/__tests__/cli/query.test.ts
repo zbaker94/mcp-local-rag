@@ -2,7 +2,7 @@
 // Test Type: Unit Test
 // Tests runQuery functionality with mocked dependencies
 
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 // ============================================
 // Mock Setup (vi.hoisted for isolate: false)
@@ -19,8 +19,10 @@ const mocks = vi.hoisted(() => {
   }
 })
 
-// Mock cli/common.js (createVectorStore / createEmbedder factories)
-vi.mock('../../cli/common.js', () => ({
+// Mock factories — installed via `vi.doMock` in `beforeAll` and removed via
+// `vi.doUnmock` in `afterAll`. See `.claude/skills/project-context/SKILL.md`.
+
+const cliCommonFactory = () => ({
   createEmbedder: vi.fn().mockImplementation(() => ({
     embedBatch: mocks.embedBatch,
     dispose: vi.fn(),
@@ -30,19 +32,20 @@ vi.mock('../../cli/common.js', () => ({
     search: mocks.search,
     close: vi.fn(),
   })),
-}))
+})
 
-// Mock raw-data-utils
-vi.mock('../../utils/raw-data-utils.js', () => ({
+const rawDataUtilsFactory = () => ({
   isRawDataPath: vi.fn().mockImplementation((filePath: string) => filePath.includes('/raw-data/')),
   extractSourceFromPath: vi.fn().mockImplementation((filePath: string) => {
     if (!filePath.includes('/raw-data/')) return null
     return 'https://example.com/page'
   }),
-}))
+})
 
-// Import after mocks are set up
-import { parseArgs, runQuery } from '../../cli/query.js'
+const MOCKED_PATHS = ['../../cli/common.js', '../../utils/raw-data-utils.js'] as const
+
+let parseArgs: typeof import('../../cli/query.js').parseArgs
+let runQuery: typeof import('../../cli/query.js').runQuery
 
 // ============================================
 // Helpers
@@ -81,6 +84,18 @@ function captureOutput(
 
 describe('CLI query', () => {
   let exitSpy: ReturnType<typeof vi.spyOn>
+
+  beforeAll(async () => {
+    vi.resetModules()
+    vi.doMock('../../cli/common.js', cliCommonFactory)
+    vi.doMock('../../utils/raw-data-utils.js', rawDataUtilsFactory)
+    ;({ parseArgs, runQuery } = await import('../../cli/query.js'))
+  })
+
+  afterAll(() => {
+    for (const p of MOCKED_PATHS) vi.doUnmock(p)
+    vi.resetModules()
+  })
 
   beforeEach(() => {
     vi.clearAllMocks()

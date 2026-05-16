@@ -2,7 +2,7 @@
 // Test Type: Unit Test
 // Tests runDelete functionality with mocked dependencies
 
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 // ============================================
 // Mock Setup (vi.hoisted for isolate: false)
@@ -19,27 +19,32 @@ const mocks = vi.hoisted(() => {
   }
 })
 
-// Mock cli/common.js (createVectorStore factory)
-vi.mock('../../cli/common.js', () => ({
+// Mock factories — installed via `vi.doMock` in `beforeAll` and removed via
+// `vi.doUnmock` in `afterAll`. See `.claude/skills/project-context/SKILL.md`.
+
+const cliCommonFactory = () => ({
   createVectorStore: vi.fn().mockImplementation(() => ({
     initialize: mocks.initialize,
     deleteChunks: mocks.deleteChunks,
     optimize: mocks.optimize,
   })),
-}))
+})
 
-// Mock node:fs/promises (unlink for raw-data cleanup)
-vi.mock('node:fs/promises', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('node:fs/promises')>()
+const fsPromisesFactory = async (
+  importOriginal: () => Promise<typeof import('node:fs/promises')>
+) => {
+  const actual = await importOriginal()
   return {
     ...actual,
     unlink: mocks.unlink,
   }
-})
+}
 
-// Import after mocks are set up
+const MOCKED_PATHS = ['../../cli/common.js', 'node:fs/promises'] as const
+
 import { resolve } from 'node:path'
-import { runDelete } from '../../cli/delete.js'
+
+let runDelete: typeof import('../../cli/delete.js').runDelete
 
 // ============================================
 // Helpers
@@ -70,6 +75,18 @@ function captureStderr(fn: () => Promise<void>): Promise<{ output: string[]; err
 describe('CLI delete', () => {
   let exitSpy: ReturnType<typeof vi.spyOn>
   let stdoutSpy: ReturnType<typeof vi.spyOn>
+
+  beforeAll(async () => {
+    vi.resetModules()
+    vi.doMock('../../cli/common.js', cliCommonFactory)
+    vi.doMock('node:fs/promises', fsPromisesFactory)
+    ;({ runDelete } = await import('../../cli/delete.js'))
+  })
+
+  afterAll(() => {
+    for (const p of MOCKED_PATHS) vi.doUnmock(p)
+    vi.resetModules()
+  })
 
   beforeEach(() => {
     vi.clearAllMocks()

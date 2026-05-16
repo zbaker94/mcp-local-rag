@@ -28,7 +28,7 @@
 //   mocks.
 
 import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js'
-import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 // ============================================
 // Mock Setup (vi.hoisted for isolate: false)
@@ -75,7 +75,11 @@ const mocks = vi.hoisted(() => {
   }
 })
 
-vi.mock('../../parser/index.js', () => ({
+// NOTE: factories are installed via `vi.doMock` in `beforeAll` and removed
+// via `vi.doUnmock` in `afterAll`, so they cannot leak to sibling test files
+// through the shared module registry under `isolate: false`.
+
+const parserFactory = () => ({
   DocumentParser: vi.fn().mockImplementation(function (this: Record<string, unknown>) {
     this.parseFile = mocks.parseFile
     this.parsePdf = mocks.parsePdf
@@ -83,37 +87,35 @@ vi.mock('../../parser/index.js', () => ({
     this.validateFileSize = mocks.validateFileSize
   }),
   SUPPORTED_EXTENSIONS: new Set(['.pdf', '.docx', '.txt', '.md']),
-}))
+})
 
-vi.mock('../../chunker/index.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../../chunker/index.js')>()
+const chunkerFactory = async (
+  importOriginal: () => Promise<typeof import('../../chunker/index.js')>
+) => {
+  const actual = await importOriginal()
   return {
     ...actual,
     SemanticChunker: vi.fn().mockImplementation(function (this: Record<string, unknown>) {
       this.chunkText = mocks.chunkText
     }),
   }
-})
+}
 
-vi.mock('../../embedder/index.js', () => ({
-  // Structurally complete: every public method on the real Embedder is stubbed.
-  // Missing methods cause cross-file leak under isolate: false to surface as
-  // `is not a function` in unrelated tests (e.g. afterAll-time `dispose()`).
+const embedderFactory = () => ({
   Embedder: vi.fn().mockImplementation(function (this: Record<string, unknown>) {
     this.initialize = mocks.embedInitialize
     this.embed = mocks.embed
     this.embedBatch = mocks.embedBatch
     this.dispose = vi.fn()
   }),
-}))
+})
 
-vi.mock('../../vectordb/index.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../../vectordb/index.js')>()
+const vectordbFactory = async (
+  importOriginal: () => Promise<typeof import('../../vectordb/index.js')>
+) => {
+  const actual = await importOriginal()
   return {
     ...actual,
-    // Structurally complete: every public method on the real VectorStore is
-    // stubbed. Missing methods (notably close/deleteFiles) cause cross-file
-    // leak under isolate: false to break unrelated tests at teardown time.
     VectorStore: vi.fn().mockImplementation(function (this: Record<string, unknown>) {
       this.initialize = mocks.initialize
       this.close = vi.fn()
@@ -127,7 +129,14 @@ vi.mock('../../vectordb/index.js', async (importOriginal) => {
       this.getStatus = mocks.getStatus
     }),
   }
-})
+}
+
+const MOCKED_PATHS = [
+  '../../parser/index.js',
+  '../../chunker/index.js',
+  '../../embedder/index.js',
+  '../../vectordb/index.js',
+] as const
 
 // ============================================
 // Imports (after mocks)
@@ -172,8 +181,17 @@ function buildServer(): RAGServer {
 describe('handleIngestFile - Phase 0 Wrapper Side Effects (AC-008a)', () => {
   beforeAll(async () => {
     vi.resetModules()
+    vi.doMock('../../parser/index.js', parserFactory)
+    vi.doMock('../../chunker/index.js', chunkerFactory)
+    vi.doMock('../../embedder/index.js', embedderFactory)
+    vi.doMock('../../vectordb/index.js', vectordbFactory)
     const mod = await import('../../server/index.js')
     RAGServer = mod.RAGServer
+  })
+
+  afterAll(() => {
+    for (const p of MOCKED_PATHS) vi.doUnmock(p)
+    vi.resetModules()
   })
 
   beforeEach(() => {

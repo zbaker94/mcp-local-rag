@@ -55,24 +55,34 @@ Before submitting a pull request:
 
 ## Writing tests
 
-`vitest.config.mjs` runs with `isolate: false`, `pool: 'forks'`, `maxWorkers: 1`. Reason: `onnxruntime-node` keeps native state alive that vitest's per-file sandbox can't reset cleanly — re-init crashes the worker. So we run one process, no sandbox, shared module registry.
+`vitest.config.mjs` runs with `isolate: false`, `pool: 'forks'`, `maxWorkers: 1` — required by `onnxruntime-node`, which keeps native state that vitest's per-file sandbox can't reset. The whole suite therefore shares one module registry.
 
-The catch: `vi.mock` is file-scoped only on paper. If two files mock the same path with different factories, whichever loads first wins; the other's factory is dead but silent. Pairwise runs pass, full-suite flips depending on order.
+This affects `vi.mock`. A top-level `vi.mock(path, factory)` registers globally and applies to every other test file that imports the same path — including files that use the real module.
 
-If your test mocks a module that any other test file also mocks, reset the registry and dynamic-import in `beforeAll`:
+Rule of thumb:
+
+- If the mocked path is touched only in this file, top-level `vi.mock` is fine.
+- Otherwise, scope the mock to this file with `vi.doMock` inside `beforeAll` and clear it in `afterAll`. Import the target dynamically after `doMock`, since `doMock` is not hoisted:
 
 ```ts
+const parserFactory = () => ({ /* ... */ })
+const MOCKED_PATHS = ['../../parser/index.js'] as const
+
 let runIngest: typeof import('../../cli/ingest.js').runIngest
 
 beforeAll(async () => {
   vi.resetModules()
+  vi.doMock('../../parser/index.js', parserFactory)
   ;({ runIngest } = await import('../../cli/ingest.js'))
+})
+
+afterAll(() => {
+  for (const p of MOCKED_PATHS) vi.doUnmock(p)
+  vi.resetModules()
 })
 ```
 
-This re-evaluates the module against *this* file's factories.
-
-See `src/__tests__/cli/ingest.test.ts` and `ingest-visual.test.ts` for the live shape.
+Live examples: `src/__tests__/cli/ingest-default-mode.test.ts`, `src/__tests__/server/handleIngestFile-side-effects.test.ts`.
 
 ## What We Look For
 
