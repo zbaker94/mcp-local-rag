@@ -23,10 +23,12 @@ const mocks = vi.hoisted(() => {
 vi.mock('../../cli/common.js', () => ({
   createEmbedder: vi.fn().mockImplementation(() => ({
     embedBatch: mocks.embedBatch,
+    dispose: vi.fn(),
   })),
   createVectorStore: vi.fn().mockImplementation(() => ({
     initialize: mocks.initialize,
     search: mocks.search,
+    close: vi.fn(),
   })),
 }))
 

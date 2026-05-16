@@ -203,5 +203,8 @@ export async function runQuery(args: string[], globalOptions: GlobalOptions = {}
     const reason = error instanceof Error ? error.message : String(error)
     console.error(`Error: ${reason}`)
     process.exit(1)
+  } finally {
+    await embedder.dispose()
+    await vectorStore.close()
   }
 }
