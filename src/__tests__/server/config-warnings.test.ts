@@ -297,6 +297,10 @@ describe('Config warning delivery via MCP annotations', () => {
       await server.initialize()
     })
 
+    afterAll(async () => {
+      await server.close()
+    })
+
     it('combines multiple warnings into a single content block', async () => {
       const result = await server.handleStatus()
       const warningBlock = result.content[1]

@@ -27,6 +27,7 @@ describe('AC-001: MCP Protocol Integration', () => {
   })
 
   afterAll(async () => {
+    await ragServer.close()
     rmSync(testDbPath, { recursive: true, force: true })
     rmSync(testDataDir, { recursive: true, force: true })
   })
@@ -82,6 +83,7 @@ describe('AC-005: Error Handling (Basic)', () => {
   })
 
   afterAll(async () => {
+    await ragServer.close()
     rmSync(testDbPath, { recursive: true, force: true })
     rmSync(testDataDir, { recursive: true, force: true })
   })
@@ -126,6 +128,8 @@ describe('AC-005: Error Handling (Basic)', () => {
     } catch (error) {
       // Error during initialization is also OK
       expect(error).toBeDefined()
+    } finally {
+      await invalidServer.close()
     }
   })
 })

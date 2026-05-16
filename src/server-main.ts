@@ -77,6 +77,15 @@ export function parseChunkMinLength(value: string | undefined): ParseResult<numb
   return { value: parsed }
 }
 
+/**
+ * Resolve RAG_DEVICE. The value is passed through to transformers.js — no
+ * allowlist is maintained here. Whitespace-only is treated as unset.
+ */
+export function parseDevice(value: string | undefined): ParseResult<string> {
+  if (!value || value.trim() === '') return { value: 'cpu' }
+  return { value: value.trim() }
+}
+
 // ============================================
 // Server Startup
 // ============================================
@@ -89,12 +98,14 @@ export function parseChunkMinLength(value: string | undefined): ParseResult<numb
 export async function startServer(): Promise<void> {
   try {
     // RAGServer configuration (env-only for MCP client compatibility)
+    const device = parseDevice(process.env['RAG_DEVICE']).value as string
     const config: ConstructorParameters<typeof RAGServer>[0] = {
       dbPath: process.env['DB_PATH'] || './lancedb/',
       modelName: process.env['MODEL_NAME'] || 'Xenova/all-MiniLM-L6-v2',
       cacheDir: process.env['CACHE_DIR'] || './models/',
       baseDir: process.env['BASE_DIR'] || process.cwd(),
       maxFileSize: Number.parseInt(process.env['MAX_FILE_SIZE'] || '104857600', 10), // 100MB
+      device,
     }
 
     // Collect configuration warnings

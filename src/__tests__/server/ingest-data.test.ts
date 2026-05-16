@@ -34,6 +34,7 @@ describe('ingest_data Tool', () => {
   }, 120000) // 2 minutes for model download
 
   afterAll(async () => {
+    await server.close()
     await rm(testDbPath, { recursive: true, force: true })
   })
 
@@ -41,6 +42,7 @@ describe('ingest_data Tool', () => {
   // Text Format Ingestion
   // --------------------------------------------
   describe('Text Format Ingestion', () => {
+    // First test in this file to call embed() — pays cold-cache model download.
     it('ingests plain text content', async () => {
       const content =
         'This is plain text content for testing the ingest_data tool. ' +
@@ -60,7 +62,7 @@ describe('ingest_data Tool', () => {
       expect(parsed.chunkCount).toBeGreaterThan(0)
       expect(parsed.filePath).toContain('raw-data')
       expect(parsed.filePath).toMatch(/\.md$/) // All formats use .md extension
-    })
+    }, 60000)
 
     it('saves raw text to raw-data directory', async () => {
       const content =

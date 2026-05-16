@@ -27,6 +27,7 @@ describe('AC-008: File Re-ingestion', () => {
   })
 
   afterAll(async () => {
+    await localRagServer.close()
     rmSync(localTestDbPath, { recursive: true, force: true })
     rmSync(localTestDataDir, { recursive: true, force: true })
   })
@@ -100,6 +101,7 @@ describe('AC-009: Error Handling (Complete)', () => {
   })
 
   afterAll(async () => {
+    await localRagServer.close()
     rmSync(localTestDbPath, { recursive: true, force: true })
     rmSync(localTestDataDir, { recursive: true, force: true })
   })

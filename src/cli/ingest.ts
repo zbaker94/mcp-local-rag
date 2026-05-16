@@ -436,30 +436,35 @@ export async function runIngest(args: string[], globalOptions: GlobalOptions = {
   // Process each file
   const summary: IngestSummary = { succeeded: 0, failed: 0, totalChunks: 0 }
 
-  for (let i = 0; i < files.length; i++) {
-    const filePath = files[i]!
-    const label = `[${i + 1}/${files.length}]`
+  try {
+    for (let i = 0; i < files.length; i++) {
+      const filePath = files[i]!
+      const label = `[${i + 1}/${files.length}]`
 
-    try {
-      const chunkCount = await ingestSingleFile(filePath, parser, chunker, embedder, vectorStore)
-      if (chunkCount === 0) {
-        // 0 chunks is a skip/warning, not a failure
-        console.error(`${label} ${filePath} ... SKIPPED (0 chunks)`)
-        summary.succeeded++
-      } else {
-        console.error(`${label} ${filePath} ... OK (${chunkCount} chunks)`)
-        summary.succeeded++
-        summary.totalChunks += chunkCount
+      try {
+        const chunkCount = await ingestSingleFile(filePath, parser, chunker, embedder, vectorStore)
+        if (chunkCount === 0) {
+          // 0 chunks is a skip/warning, not a failure
+          console.error(`${label} ${filePath} ... SKIPPED (0 chunks)`)
+          summary.succeeded++
+        } else {
+          console.error(`${label} ${filePath} ... OK (${chunkCount} chunks)`)
+          summary.succeeded++
+          summary.totalChunks += chunkCount
+        }
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error)
+        console.error(`${label} ${filePath} ... FAILED: ${reason}`)
+        summary.failed++
       }
-    } catch (error) {
-      const reason = error instanceof Error ? error.message : String(error)
-      console.error(`${label} ${filePath} ... FAILED: ${reason}`)
-      summary.failed++
     }
-  }
 
-  // Optimize once at end (not per-file)
-  await vectorStore.optimize()
+    // Optimize once at end (not per-file)
+    await vectorStore.optimize()
+  } finally {
+    await embedder.dispose()
+    await vectorStore.close()
+  }
 
   // Print summary
   console.error('')

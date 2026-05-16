@@ -29,6 +29,7 @@ describe('File Title Extraction Pipeline', () => {
   })
 
   afterAll(async () => {
+    await localRagServer.close()
     rmSync(localTestDbPath, { recursive: true, force: true })
     rmSync(localTestDataDir, { recursive: true, force: true })
   })
@@ -100,6 +101,7 @@ describe('Meta JSON Sidecar Pipeline', () => {
   })
 
   afterAll(async () => {
+    await localRagServer.close()
     rmSync(localTestDbPath, { recursive: true, force: true })
     rmSync(localTestDataDir, { recursive: true, force: true })
   })

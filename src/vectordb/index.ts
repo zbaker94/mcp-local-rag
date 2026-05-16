@@ -476,4 +476,18 @@ export class VectorStore {
       throw new DatabaseError('Failed to get status', error as Error)
     }
   }
+
+  /**
+   * Close the database connection
+   */
+  async close(): Promise<void> {
+    if (this.db) {
+      // LanceDB Connections should be closed to release file handles
+      await this.db.close()
+      this.db = null
+      this.table = null
+      this.ftsEnabled = false
+      console.error('VectorStore connection closed')
+    }
+  }
 }

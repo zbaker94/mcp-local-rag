@@ -17,6 +17,8 @@ export interface RAGServerConfig {
   baseDir: string
   /** Maximum file size (100MB) */
   maxFileSize: number
+  /** Compute device (cpu, webgpu, dml, etc) */
+  device?: string
   /** Maximum distance threshold for quality filtering (optional) */
   maxDistance?: number
   /** Grouping mode for quality filtering (optional) */

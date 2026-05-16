@@ -115,9 +115,10 @@ describe('read_chunk_neighbors integration', () => {
       const ingestRes = await ragServer.handleIngestFile({ filePath: ingestedFilePath })
       const ingest = JSON.parse(ingestRes.content[0].text)
       expect(ingest.chunkCount).toBeGreaterThanOrEqual(7)
-    }, 30000)
+    })
 
-    afterAll(() => {
+    afterAll(async () => {
+      await ragServer.close()
       rmSync(testDbPath, { recursive: true, force: true })
       rmSync(testDataDir, { recursive: true, force: true })
     })
@@ -209,10 +210,11 @@ describe('read_chunk_neighbors integration', () => {
         'Distinctive marker ZZQWERTY12345 appears in this document. '.repeat(60)
       )
       await ragServer.handleIngestFile({ filePath: ingestedFilePath })
-    }, 30000)
+    })
 
-    afterAll(() => {
+    afterAll(async () => {
       vi.restoreAllMocks()
+      await ragServer.close()
       rmSync(testDbPath, { recursive: true, force: true })
       rmSync(testDataDir, { recursive: true, force: true })
     })
@@ -306,9 +308,10 @@ describe('read_chunk_neighbors integration', () => {
       const ingestRes = await ragServer.handleIngestFile({ filePath: ingestedFilePath })
       const ingest = JSON.parse(ingestRes.content[0].text)
       expect(ingest.chunkCount).toBeGreaterThanOrEqual(4)
-    }, 30000)
+    })
 
-    afterAll(() => {
+    afterAll(async () => {
+      await ragServer.close()
       rmSync(testDbPath, { recursive: true, force: true })
       rmSync(testDataDir, { recursive: true, force: true })
     })
@@ -400,9 +403,10 @@ describe('read_chunk_neighbors integration', () => {
       const ingest = JSON.parse(ingestRes.content[0].text)
       chunkCount = ingest.chunkCount
       expect(chunkCount).toBeGreaterThanOrEqual(3)
-    }, 30000)
+    })
 
-    afterAll(() => {
+    afterAll(async () => {
+      await ragServer.close()
       rmSync(testDbPath, { recursive: true, force: true })
       rmSync(testDataDir, { recursive: true, force: true })
     })
@@ -497,9 +501,10 @@ describe('read_chunk_neighbors integration', () => {
       })
       const ingest = JSON.parse(ingestRes.content[0].text)
       expect(ingest.chunkCount).toBeGreaterThanOrEqual(3)
-    }, 30000)
+    })
 
-    afterAll(() => {
+    afterAll(async () => {
+      await ragServer.close()
       rmSync(testDbPath, { recursive: true, force: true })
       rmSync(testDataDir, { recursive: true, force: true })
     })
@@ -588,9 +593,10 @@ describe('read_chunk_neighbors integration', () => {
       fileBackedPath = resolve(testDataDir, 'file-backed.txt')
       writeFileSync(fileBackedPath, 'File backed document content. '.repeat(100))
       await ragServer.handleIngestFile({ filePath: fileBackedPath })
-    }, 30000)
+    })
 
-    afterAll(() => {
+    afterAll(async () => {
+      await ragServer.close()
       rmSync(testDbPath, { recursive: true, force: true })
       rmSync(testDataDir, { recursive: true, force: true })
     })
@@ -738,7 +744,8 @@ describe('read_chunk_neighbors integration', () => {
       await vectorStore.optimize()
     }, 120000)
 
-    afterAll(() => {
+    afterAll(async () => {
+      await ragServer.close()
       rmSync(testDbPath, { recursive: true, force: true })
       rmSync(testDataDir, { recursive: true, force: true })
     })
@@ -781,7 +788,7 @@ describe('read_chunk_neighbors integration', () => {
         p95,
         `P95 latency ${p95.toFixed(2)} ms exceeds 100 ms threshold. Timings: ${JSON.stringify(timings)}`
       ).toBeLessThan(100)
-    }, 60000)
+    })
   })
 
   // =============================================================================
@@ -822,9 +829,10 @@ describe('read_chunk_neighbors integration', () => {
       const ingest = JSON.parse(ingestRes.content[0].text)
       chunkCount = ingest.chunkCount
       expect(chunkCount).toBeGreaterThan(0)
-    }, 30000)
+    })
 
-    afterAll(() => {
+    afterAll(async () => {
+      await ragServer.close()
       rmSync(testDbPath, { recursive: true, force: true })
       rmSync(testDataDir, { recursive: true, force: true })
     })
@@ -886,9 +894,10 @@ describe('read_chunk_neighbors integration', () => {
       ingestedFilePath = resolve(testDataDir, 'validation-doc.txt')
       writeFileSync(ingestedFilePath, 'Validation boundary test content. '.repeat(60))
       await ragServer.handleIngestFile({ filePath: ingestedFilePath })
-    }, 30000)
+    })
 
-    afterAll(() => {
+    afterAll(async () => {
+      await ragServer.close()
       rmSync(testDbPath, { recursive: true, force: true })
       rmSync(testDataDir, { recursive: true, force: true })
     })
@@ -954,9 +963,10 @@ describe('read_chunk_neighbors integration', () => {
       ingestedFilePath = resolve(testDataDir, 'validation-chunk-index.txt')
       writeFileSync(ingestedFilePath, 'chunkIndex validation test content. '.repeat(60))
       await ragServer.handleIngestFile({ filePath: ingestedFilePath })
-    }, 30000)
+    })
 
-    afterAll(() => {
+    afterAll(async () => {
+      await ragServer.close()
       rmSync(testDbPath, { recursive: true, force: true })
       rmSync(testDataDir, { recursive: true, force: true })
     })
@@ -1042,9 +1052,10 @@ describe('read_chunk_neighbors integration', () => {
         ).content[0].text
       )
       expect(dataIngest.chunkCount).toBeGreaterThanOrEqual(3)
-    }, 30000)
+    })
 
-    afterAll(() => {
+    afterAll(async () => {
+      await ragServer.close()
       rmSync(testDbPath, { recursive: true, force: true })
       rmSync(testDataDir, { recursive: true, force: true })
     })

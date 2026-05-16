@@ -24,5 +24,6 @@ export function createEmbedder(config: ResolvedGlobalConfig): Embedder {
     modelPath: config.modelName,
     batchSize: 16,
     cacheDir: config.cacheDir,
+    device: process.env['RAG_DEVICE']?.trim() || 'cpu',
   })
 }

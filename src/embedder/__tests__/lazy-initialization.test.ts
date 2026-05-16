@@ -87,28 +87,16 @@ describe('Embedder - Lazy Initialization', () => {
     expect(result.length).toBe(384)
   }, 180000)
 
-  // Test 5: Error message should provide detailed guidance
-  it('should provide detailed error message with guidance on initialization failure', async () => {
+  // Test 5: Init failure surfaces transformers.js' own message as an EmbeddingError.
+  it('should surface the underlying transformers.js message as an EmbeddingError on init failure', async () => {
     const embedderWithInvalidPath = new Embedder({
       ...testConfig,
       modelPath: 'invalid/nonexistent-model',
     })
 
-    try {
-      await embedderWithInvalidPath.embed('test')
-      // Should not reach here
-      expect.fail('Expected embed() to throw an error')
-    } catch (error) {
-      expect(error).toBeInstanceOf(EmbeddingError)
-      const errorMessage = (error as EmbeddingError).message
-
-      // Verify error message contains helpful guidance
-      expect(errorMessage).toContain('Possible causes')
-      expect(errorMessage).toContain('Recommended actions')
-      expect(errorMessage).toContain(testConfig.cacheDir)
-      expect(errorMessage).toContain('Check your internet connection')
-      expect(errorMessage).toContain('delete cache')
-    }
+    const error = await embedderWithInvalidPath.embed('test').catch((e) => e as Error)
+    expect(error).toBeInstanceOf(EmbeddingError)
+    expect((error as EmbeddingError).message).toMatch(/invalid\/nonexistent-model/)
   }, 30000)
 
   // Test 6: Explicit initialize() should still work (backward compatibility)

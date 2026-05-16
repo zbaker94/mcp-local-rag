@@ -91,11 +91,15 @@ export class RAGServer {
       vectorStoreConfig.maxFiles = config.maxFiles
     }
     this.vectorStore = new VectorStore(vectorStoreConfig)
-    this.embedder = new Embedder({
+    const embedderConfig: ConstructorParameters<typeof Embedder>[0] = {
       modelPath: config.modelName,
       batchSize: 16,
       cacheDir: config.cacheDir,
-    })
+    }
+    if (config.device !== undefined) {
+      embedderConfig.device = config.device
+    }
+    this.embedder = new Embedder(embedderConfig)
     this.chunker = new SemanticChunker(
       config.chunkMinLength !== undefined ? { minChunkLength: config.chunkMinLength } : {}
     )
@@ -740,5 +744,15 @@ export class RAGServer {
     const transport = new StdioServerTransport()
     await this.server.connect(transport)
     console.error('RAGServer running on stdio transport')
+  }
+
+  /**
+   * Stop the server and release resources
+   */
+  async close(): Promise<void> {
+    await this.server.close()
+    await this.vectorStore.close()
+    await this.embedder.dispose()
+    console.error('RAGServer stopped')
   }
 }

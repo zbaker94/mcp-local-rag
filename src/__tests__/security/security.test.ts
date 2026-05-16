@@ -67,6 +67,12 @@ describe('RAG MCP Server Security Test', () => {
     await rm(fixturesDir, { recursive: true, force: true })
   })
 
+  afterEach(async () => {
+    if (server) {
+      await server.close()
+    }
+  })
+
   beforeEach(async () => {
     // Initialize server before each test
     server = new RAGServer(testConfig)
@@ -127,15 +133,19 @@ This approach provides accurate search results for natural language queries.`
     it('No network communication after initial model download on subsequent startups (simulated)', async () => {
       const monitor = createNetworkMonitor()
 
+      let server2: RAGServer | null = null
       try {
         // Second initialization (model already cached)
-        const server2 = new RAGServer(testConfig)
+        server2 = new RAGServer(testConfig)
         await server2.initialize()
 
         // Verify no requests to HuggingFace API
         const huggingfaceRequests = monitor.requests.filter((url) => url.includes('huggingface.co'))
         expect(huggingfaceRequests.length).toBe(0)
       } finally {
+        if (server2) {
+          await server2.close()
+        }
         monitor.restore()
       }
     })

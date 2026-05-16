@@ -1,6 +1,6 @@
 // Embedder implementation with Transformers.js
 
-import { env, pipeline } from '@huggingface/transformers'
+import { type DeviceType, env, pipeline } from '@huggingface/transformers'
 
 // ============================================
 // Type Definitions
@@ -16,6 +16,8 @@ export interface EmbedderConfig {
   batchSize: number
   /** Model cache directory */
   cacheDir: string
+  /** Device type */
+  device?: string
 }
 
 // ============================================
@@ -58,6 +60,22 @@ export class Embedder {
   }
 
   /**
+   * Release resources held by the Embedder pipeline
+   */
+  async dispose(): Promise<void> {
+    const model = this.model as { dispose?: () => Promise<void> } | null
+    if (model && typeof model.dispose === 'function') {
+      try {
+        await model.dispose()
+      } catch (error) {
+        console.error('Error disposing embedder model:', error)
+      }
+    }
+    this.model = null
+    this.initPromise = null
+  }
+
+  /**
    * Initialize Transformers.js model
    */
   async initialize(): Promise<void> {
@@ -66,22 +84,26 @@ export class Embedder {
       return
     }
 
-    try {
-      // Set cache directory BEFORE creating pipeline
-      env.cacheDir = this.config.cacheDir
+    // Set cache directory BEFORE creating pipeline
+    env.cacheDir = this.config.cacheDir
 
-      console.error(`Embedder: Setting cache directory to "${this.config.cacheDir}"`)
-      console.error(`Embedder: Loading model "${this.config.modelPath}"...`)
-      // Use type assertion to avoid TS2590 (union type too complex with @types/jsdom)
+    // No fallback — if the requested device fails, init throws.
+    const device = this.config.device || 'cpu'
+
+    console.error(`Embedder: Setting cache directory to "${this.config.cacheDir}"`)
+    console.error(`Embedder: Loading model "${this.config.modelPath}" on device "${device}"...`)
+
+    try {
       this.model = await pipeline('feature-extraction', this.config.modelPath, {
         dtype: 'fp32',
+        device: device as DeviceType,
       })
-      console.error('Embedder: Model loaded successfully')
+      console.error(`Embedder: Model loaded successfully (device=${device})`)
     } catch (error) {
-      throw new EmbeddingError(
-        `Failed to initialize Embedder: ${(error as Error).message}`,
-        error as Error
-      )
+      // Don't prepend "device=X" — the prior stderr line already says which
+      // device was attempted, and transformers.js' own errors typically
+      // include the device name. Just re-type the error.
+      throw new EmbeddingError((error as Error).message, error as Error)
     }
   }
 
@@ -101,20 +123,14 @@ export class Embedder {
       return
     }
 
-    // Start initialization
     console.error(
       'Embedder: First use detected. Initializing model (downloading ~90MB, may take 1-2 minutes)...'
     )
 
     this.initPromise = this.initialize().catch((error) => {
-      // Clear initPromise on failure to allow retry
+      // Clear initPromise on failure to allow retry on the next call.
       this.initPromise = null
-
-      // Enhance error message with detailed guidance
-      throw new EmbeddingError(
-        `Failed to initialize embedder on first use: ${(error as Error).message}\n\nPossible causes:\n  • Network connectivity issues during model download\n  • Insufficient disk space (need ~90MB)\n  • Corrupted model cache\n\nRecommended actions:\n  1. Check your internet connection and try again\n  2. Ensure sufficient disk space is available\n  3. If problem persists, delete cache: ${this.config.cacheDir}\n  4. Then retry your query\n`,
-        error as Error
-      )
+      throw error
     })
 
     await this.initPromise
@@ -127,17 +143,15 @@ export class Embedder {
    * @returns Embedding vector (dimension depends on model)
    */
   async embed(text: string): Promise<number[]> {
+    // Reject empty input before paying for model init.
+    if (text.length === 0) {
+      throw new EmbeddingError('Cannot generate embedding for empty text')
+    }
+
     // Lazy initialization: initialize on first use if not already initialized
     await this.ensureInitialized()
 
     try {
-      // Fail-fast for empty string: cannot generate meaningful embedding
-      if (text.length === 0) {
-        throw new EmbeddingError('Cannot generate embedding for empty text')
-      }
-
-      // Use type assertion to avoid complex Transformers.js type definitions
-      // This is due to external library type definition constraints, runtime behavior is guaranteed
       const options = { pooling: 'mean', normalize: true }
       const modelCall = this.model as (
         text: string,
@@ -166,12 +180,13 @@ export class Embedder {
    * @returns Array of embedding vectors (dimension depends on model)
    */
   async embedBatch(texts: string[]): Promise<number[][]> {
-    // Lazy initialization: initialize on first use if not already initialized
-    await this.ensureInitialized()
-
+    // Nothing to embed → skip model init entirely.
     if (texts.length === 0) {
       return []
     }
+
+    // Lazy initialization: initialize on first use if not already initialized
+    await this.ensureInitialized()
 
     try {
       const embeddings: number[][] = []
@@ -185,6 +200,9 @@ export class Embedder {
 
       return embeddings
     } catch (error) {
+      if (error instanceof EmbeddingError) {
+        throw error
+      }
       throw new EmbeddingError(
         `Failed to generate batch embeddings: ${(error as Error).message}`,
         error as Error
