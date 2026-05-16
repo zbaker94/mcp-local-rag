@@ -92,6 +92,14 @@ function postProcess(decoded: string): string | null {
  * Create a captioner backed by the configured VLM. Sets `env.cacheDir`
  * immediately so the global is correct even if the captioner is constructed
  * before any embedder initializes.
+ *
+ * Concurrency assumption: `env.cacheDir` is a process-global from
+ * `@huggingface/transformers`. Setting it here at construction time is safe
+ * for the current single-instance usage (one captioner per ingest run). If
+ * the codebase ever constructs multiple captioners with DIFFERENT
+ * `cacheDir` values in parallel, the last writer wins and the first
+ * captioner's `from_pretrained` may resolve against the wrong cache. Avoid
+ * concurrent construction with differing cacheDirs.
  */
 export function createCaptioner(config: CaptionerConfig): Captioner {
   // Defensive ordering: set the global cacheDir at construction so the very
@@ -108,18 +116,47 @@ export function createCaptioner(config: CaptionerConfig): Captioner {
   let processor: unknown = null
   let model: unknown = null
 
+  // Cache the load outcome so a single bad config (wrong modelName / dtype /
+  // network failure) does not trigger one `from_pretrained` retry per
+  // candidate page (F1). On the first failure we cache the original error and
+  // re-throw it on every subsequent call. The per-page `caption()` catch is
+  // the single wrapping site that adds `pageNum` and the user-facing
+  // `Captioning failed for page N` message, so this fast-fail path produces
+  // observationally-equivalent errors to a hypothetical re-load attempt.
+  //
+  // F8: When the underlying `from_pretrained` fails, we replace the original
+  // error message with one that names the resolved `modelName` + `dtype` so
+  // operators can identify a mis-set `VLM_DTYPE` env quickly. The wrapper
+  // preserves the original error as its `.cause` chain so debugging is not
+  // lossy.
+  type LoadState = { kind: 'pending' } | { kind: 'ok' } | { kind: 'failed'; cause: Error }
+  let loadState: LoadState = { kind: 'pending' }
+
   async function ensureLoaded(): Promise<void> {
-    if (processor !== null && model !== null) return
-    // Both classes accept `{ dtype }` (probe-verified Phase 1). They are
-    // loaded in sequence because the second resolves the runtime class
-    // (`Idefics3ForConditionalGeneration` for the default model) via the
-    // architecture-agnostic `AutoModelForImageTextToText` entry point.
-    // The transformers.js declared `dtype` is a literal union; the env
-    // resolution layer's regex (`/^[a-zA-Z0-9_]*$/`) already constrains the
-    // string set, so cast through `unknown` here to widen-to-string-then-back.
-    const dtypeOpt = { dtype: resolvedDtype } as unknown as { dtype: 'q4' }
-    processor = await AutoProcessor.from_pretrained(config.modelName, dtypeOpt)
-    model = await AutoModelForImageTextToText.from_pretrained(config.modelName, dtypeOpt)
+    if (loadState.kind === 'ok') return
+    if (loadState.kind === 'failed') throw loadState.cause
+    try {
+      // Both classes accept `{ dtype }` (probe-verified Phase 1). They are
+      // loaded in sequence because the second resolves the runtime class
+      // (`Idefics3ForConditionalGeneration` for the default model) via the
+      // architecture-agnostic `AutoModelForImageTextToText` entry point.
+      // The transformers.js declared `dtype` is a literal union; the env
+      // resolution layer's regex (`/^[a-zA-Z0-9_]*$/`) already constrains the
+      // string set, so cast through `unknown` here to widen-to-string-then-back.
+      const dtypeOpt = { dtype: resolvedDtype } as unknown as { dtype: 'q4' }
+      processor = await AutoProcessor.from_pretrained(config.modelName, dtypeOpt)
+      model = await AutoModelForImageTextToText.from_pretrained(config.modelName, dtypeOpt)
+      loadState = { kind: 'ok' }
+    } catch (err) {
+      const original = err instanceof Error ? err : new Error(String(err))
+      // F8: dtype-aware message. Cause chain preserves the original error.
+      const dtypeAware = new Error(
+        `Captioner load failed (modelName=${config.modelName}, dtype=${resolvedDtype}): ${original.message}`,
+        { cause: original }
+      )
+      loadState = { kind: 'failed', cause: dtypeAware }
+      throw dtypeAware
+    }
   }
 
   return {

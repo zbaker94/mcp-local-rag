@@ -1,10 +1,7 @@
 // MCP Server entry point
-import { validateModelName } from './cli/options.js'
+import { validateModelName, validateVlmDtype } from './cli/options.js'
 import { RAGServer } from './server/index.js'
 import type { GroupingMode } from './vectordb/index.js'
-
-/** Regex for `VLM_DTYPE` env-resolution validation (alphanumeric + underscore; empty allowed) */
-const VLM_DTYPE_PATTERN = /^[a-zA-Z0-9_]*$/
 
 // ============================================
 // Environment Variable Parsers
@@ -111,10 +108,9 @@ export async function startServer(): Promise<void> {
       process.exit(1)
     }
     const vlmDtype = process.env['VLM_DTYPE'] ?? ''
-    if (!VLM_DTYPE_PATTERN.test(vlmDtype)) {
-      console.error(
-        `Invalid VLM_DTYPE: ${vlmDtype}. Only alphanumeric and '_' allowed (empty allowed).`
-      )
+    const vlmDtypeError = validateVlmDtype(vlmDtype)
+    if (vlmDtypeError) {
+      console.error(vlmDtypeError)
       process.exit(1)
     }
 

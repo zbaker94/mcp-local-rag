@@ -4,7 +4,10 @@
 // Test Type: Integration Test (in-process, real components throughout)
 // Implementation Timing: Phase 0 (must pass before Phase 4 wiring)
 //
-// Lane: integration. Budget Used: 3/3 integration (this file).
+// Lane: integration. Justification: AC-008 Phase 0 cross-path equivalence
+// witness — MCP and CLI paths must produce the same chunk rows for the same
+// input. The integration budget rule lives in the integration-e2e-testing
+// skill; this file's role is the AC-008 witness.
 //
 // Design rationale (must read before changing this file):
 //   Under vitest's `isolate: false` (vitest.config.mjs:18) the module

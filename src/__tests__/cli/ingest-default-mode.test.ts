@@ -4,8 +4,8 @@
 // Test Type: Integration Test (in-process cli ingest dispatch + server handler)
 // Implementation Timing: Phase 4 (alongside dispatch-site wiring)
 //
-// Budget Used: 1/3 integration (this file)
-// Lane: integration
+// Lane: integration. Justification: AC-001 default-mode invariance + NFR-1
+// Proxy sentinel witness — must run end-to-end through both dispatch sites.
 //
 // vi.hoisted note: This file MUST use vi.hoisted for the pdf-visual Proxy
 // sentinel because vitest is configured with isolate: false

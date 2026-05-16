@@ -1,6 +1,11 @@
 // AC-013 — `parsePdf` calls `doc.destroy()` exactly once on both the success
-// path and the error path; `parsePdfPages` does NOT call `destroy` (caller-
-// owned disposal contract per DD § parser.parsePdfPages).
+// path and the error path.
+//
+// `parsePdfPages` has an asymmetric disposal contract per DD §
+// `parser.parsePdfPages` contract: on the SUCCESS path it does NOT call
+// `destroy` (caller-owned disposal); on the ERROR path it destroys `doc`
+// internally before re-throwing so the caller never receives a leaked handle.
+// The third test in this file is the success-path negative assertion.
 //
 // Witness: a `vi.fn()` attached as the `destroy` method of the mock document
 // returned by `mupdf.Document.openDocument`. The mock is built per-test so
@@ -199,7 +204,11 @@ describe('parsePdf destroy lifecycle (AC-013)', () => {
     expect(destroyFn).toHaveBeenCalledTimes(1)
   })
 
-  it('should NOT call destroy from parsePdfPages (caller-owned disposal)', async () => {
+  it('should NOT call destroy from parsePdfPages on the success path (caller-owned disposal)', async () => {
+    // SUCCESS-path half of the asymmetric `parsePdfPages` contract:
+    // when extraction succeeds, the open `doc` handle is returned to the
+    // caller and disposal is the caller's responsibility per DD §
+    // parser.parsePdfPages. The ERROR path is covered by the next test.
     const filePath = join(testDir, 'test.pdf')
     const { destroyFn } = setupMupdfMock({
       pages: [
@@ -219,8 +228,44 @@ describe('parsePdf destroy lifecycle (AC-013)', () => {
 
     // Sanity check: parsePdfPages returned the doc handle to the caller
     expect(result.doc).toBeDefined()
-    // AC-013 negative assertion: parsePdfPages does NOT call destroy —
-    // disposal is the caller's responsibility per DD § parser.parsePdfPages.
+    // AC-013 success-path negative assertion: parsePdfPages does NOT call
+    // destroy on success — disposal is the caller's responsibility per DD §
+    // parser.parsePdfPages.
     expect(destroyFn).toHaveBeenCalledTimes(0)
+  })
+
+  it('parsePdfPages should call destroy exactly once on the error path before re-throwing', async () => {
+    // ERROR-path half of the asymmetric `parsePdfPages` contract: when the
+    // per-page loop throws after `openDocument` succeeded, parsePdfPages
+    // destroys `doc` internally before re-throwing so the caller — which
+    // never received the handle — does not leak the WASM resource. This is
+    // the witness that would fail if the internal catch were removed.
+    const filePath = join(testDir, 'test.pdf')
+    const pageLoadError = new Error('Simulated per-page extraction failure')
+    const { destroyFn } = setupMupdfMock({
+      pages: [
+        {
+          bounds: [0, 0, 612, 792],
+          blocks: [
+            {
+              type: 'text',
+              lines: [{ text: 'unused', x: 72, y: 100, font: { size: 12 } }],
+            },
+          ],
+        },
+      ],
+      pageLoadError,
+    })
+
+    let thrown: unknown
+    try {
+      await parser.parsePdfPages(filePath, mockEmbedder)
+    } catch (error) {
+      thrown = error
+    }
+
+    expect(thrown).toBeInstanceOf(FileOperationError)
+    expect((thrown as FileOperationError).cause).toBe(pageLoadError)
+    expect(destroyFn).toHaveBeenCalledTimes(1)
   })
 })

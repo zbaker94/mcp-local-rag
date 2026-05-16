@@ -2,13 +2,13 @@
 
 import { randomUUID } from 'node:crypto'
 import { opendir, stat } from 'node:fs/promises'
-import { basename, extname, join, resolve, sep } from 'node:path'
+import { extname, join, resolve, sep } from 'node:path'
 
 import { SemanticChunker } from '../chunker/index.js'
 import type { Embedder } from '../embedder/index.js'
 import { buildChunksAndEmbeddings } from '../ingest/compute.js'
+import { prepareVisualPdfChunks } from '../ingest/visual.js'
 import { DocumentParser, SUPPORTED_EXTENSIONS } from '../parser/index.js'
-import { extractPdfTitle } from '../parser/title-extractor.js'
 import type { VectorChunk, VectorStore } from '../vectordb/index.js'
 import { createEmbedder, createVectorStore } from './common.js'
 import type { GlobalOptions, ResolvedGlobalConfig } from './options.js'
@@ -349,94 +349,63 @@ export async function ingestSingleFile(
   let text: string
   let title: string | null = null
   if (options?.visual === true && isPdf) {
-    // Visual dispatch — mirrors T4.4's MCP-side algorithm minus
-    // backup/rollback/optimize/response-shaping. The CLI persistence model
-    // below (delete + insert; bulk-loop optimize) is preserved.
-    const vlmModelName = options?.vlmModelName ?? 'onnx-community/granite-docling-258M-ONNX'
-    // `dtype` is intentionally pass-through here — empty string is normalized to
-    // `DEFAULT_VLM_DTYPE` inside `createCaptioner` (DD §Captioner contract step 2).
-    const vlmDtype = options?.vlmDtype ?? ''
-
-    // Dynamic import — load-bearing for NFR-1. The default path must never reach
-    // a static `pdf-visual` reference; AC-001 Proxy sentinel verifies this.
-    const pdfVisual = await import('../pdf-visual/index.js')
-
-    // `cacheDir` is sourced from the options bag so the caller can pass the
-    // already-validated `globalConfig.cacheDir` (validated via `validatePath`
-    // at CLI entry in `resolveGlobalConfig`). This mirrors the MCP path's
-    // `this.cacheDir` pattern (src/server/index.ts) where the captioner reads
-    // from the server's validated config, not raw env.
-    const captioner = pdfVisual.createCaptioner({
-      modelName: vlmModelName,
-      cacheDir: options?.cacheDir ?? './models/',
-      dtype: vlmDtype,
-    })
-
-    const { doc, metadataTitle, pages } = await parser.parsePdfPages(filePath, embedder)
-    try {
-      const candidates = pdfVisual.detectVisualCandidates(
-        pages.map((p) => ({ pageNum: p.pageNum, stextJson: p.stextJson }))
-      )
-      const enrichedPages = await pdfVisual.enrichPagesWithCaptions(
-        pages,
-        candidates,
-        doc,
-        captioner
-      )
-      text = enrichedPages
-        .map((p) => p.text)
-        .filter((t) => t.length > 0)
-        .join('\n\n')
-
-      // Chunk + embed once on the joined visual+text content. Title is derived
-      // post-chunking via `extractPdfTitle(metadataTitle, chunks[0]?.text,
-      // fileName, page1FontHint)` — same helper + same inputs as `parsePdf`
-      // uses internally (DD §Title resolution).
-      const { chunks, embeddings } = await buildChunksAndEmbeddings(text, null, chunker, embedder)
-      if (chunks.length === 0) {
-        console.error(`  Warning: 0 chunks generated (file may be empty or too short)`)
-        return 0
-      }
-
-      const titleResult = extractPdfTitle(
-        metadataTitle,
-        chunks[0]?.text,
-        basename(filePath),
-        pages[0]?.page1FontHint
-      )
-      title = titleResult.title || null
-
-      // Persistence — identical to the default branch below; inlined here so
-      // chunks/embeddings produced on the visual path persist correctly.
-      await vectorStore.deleteChunks(filePath)
-      const timestamp = new Date().toISOString()
-      const vectorChunks: VectorChunk[] = chunks.map((chunk, index) => {
-        const embedding = embeddings[index]
-        if (!embedding) {
-          throw new Error(`Missing embedding for chunk ${index}`)
-        }
-        return {
-          id: randomUUID(),
-          filePath,
-          chunkIndex: chunk.index,
-          text: chunk.text,
-          vector: embedding,
-          metadata: {
-            fileName: filePath.split('/').pop() || filePath,
-            fileSize: text.length,
-            fileType: filePath.split('.').pop() || '',
-          },
-          fileTitle: title,
-          timestamp,
-        }
-      })
-      await vectorStore.insertChunks(vectorChunks)
-      return vectorChunks.length
-    } finally {
-      // Caller owns `doc` per `parsePdfPages` contract — release the mupdf WASM
-      // handle on both success and error paths.
-      doc.destroy()
+    // Visual dispatch — delegates the shared visual-PDF flow to
+    // `prepareVisualPdfChunks` (NFR-1: the dynamic `pdf-visual` import lives
+    // inside that helper, not here). This branch keeps the CLI persistence
+    // model (delete + insert; bulk-loop optimize at the end of `runIngest`).
+    //
+    // `vlmModelName` and `cacheDir` are required by `prepareVisualPdfChunks`;
+    // the CLI bulk-loop always supplies them via the resolved `globalConfig`
+    // (see `resolveGlobalConfig` in `cli/options.ts` — both are defaulted
+    // there). `dtype` is pass-through; the captioner normalizes empty to
+    // `DEFAULT_VLM_DTYPE` (DD §Captioner contract step 2).
+    if (options.vlmModelName === undefined) {
+      throw new Error('vlmModelName is required for visual ingest (CLI invariant)')
     }
+    if (options.cacheDir === undefined) {
+      throw new Error('cacheDir is required for visual ingest (CLI invariant)')
+    }
+    const visualResult = await prepareVisualPdfChunks(filePath, parser, chunker, embedder, {
+      modelName: options.vlmModelName,
+      cacheDir: options.cacheDir,
+      dtype: options.vlmDtype ?? '',
+    })
+    const { chunks, embeddings } = visualResult
+    if (chunks.length === 0) {
+      console.error(`  Warning: 0 chunks generated (file may be empty or too short)`)
+      return 0
+    }
+    title = visualResult.title
+
+    // Persistence — identical to the default branch below; inlined here so
+    // chunks/embeddings produced on the visual path persist correctly. The
+    // joined enriched-page text is taken from the helper to preserve the
+    // pre-existing `metadata.fileSize` semantics (post-enrichment,
+    // pre-chunking text length).
+    await vectorStore.deleteChunks(filePath)
+    const timestamp = new Date().toISOString()
+    const vectorChunks: VectorChunk[] = chunks.map((chunk, index) => {
+      const embedding = embeddings[index]
+      if (!embedding) {
+        throw new Error(`Missing embedding for chunk ${index}`)
+      }
+      return {
+        id: randomUUID(),
+        filePath,
+        chunkIndex: chunk.index,
+        text: chunk.text,
+        vector: embedding,
+        metadata: {
+          fileName: filePath.split('/').pop() || filePath,
+          fileSize: visualResult.text.length,
+          fileType: filePath.split('.').pop() || '',
+        },
+        fileTitle: title,
+        timestamp,
+      }
+    })
+    await vectorStore.insertChunks(vectorChunks)
+    return vectorChunks.length
   } else if (isPdf) {
     const result = await parser.parsePdf(filePath, embedder)
     text = result.content
