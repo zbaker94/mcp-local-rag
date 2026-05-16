@@ -205,6 +205,7 @@ function buildServer(): InstanceType<RAGServerCtor> {
     vlmDtype: '',
     baseDir: '/tmp/test',
     maxFileSize: 1024 * 1024,
+    device: 'cpu',
   })
 }
 

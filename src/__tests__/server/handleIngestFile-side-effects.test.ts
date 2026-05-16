@@ -148,8 +148,11 @@ function buildServer(): RAGServer {
     dbPath: '/tmp/test/side-effects-db',
     modelName: 'mock-model',
     cacheDir: '/tmp/test/side-effects-cache',
+    vlmModelName: 'mock-vlm-model',
+    vlmDtype: '',
     baseDir: '/tmp/test',
     maxFileSize: 1024 * 1024,
+    device: 'cpu',
   })
 }
 

@@ -23,7 +23,7 @@
 // loaded — parser.parsePdfPages is mocked at the parser boundary.
 
 import { resolve } from 'node:path'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 // ============================================
 // Mock Setup (vi.hoisted for isolate: false)
@@ -97,12 +97,14 @@ vi.mock('../../chunker/index.js', () => ({
 vi.mock('../../cli/common.js', () => ({
   createEmbedder: vi.fn().mockImplementation(() => ({
     embedBatch: mocks.embedBatch,
+    dispose: vi.fn(),
   })),
   createVectorStore: vi.fn().mockImplementation(() => ({
     initialize: mocks.initialize,
     deleteChunks: mocks.deleteChunks,
     insertChunks: mocks.insertChunks,
     optimize: mocks.optimize,
+    close: vi.fn(),
   })),
 }))
 
@@ -152,8 +154,14 @@ vi.mock('../../pdf-visual/index.js', () => ({
   }),
 }))
 
-// Import after mocks are set up.
-import { runIngest } from '../../cli/ingest.js'
+// Dynamically imported after vi.resetModules() in beforeAll. This is the
+// load-bearing isolation mechanism under vitest's `isolate: false`: a sibling
+// test file that vi.mock's the same module paths (e.g., ingest.test.ts mocks
+// ../../cli/common.js) can otherwise win the module-registry race and bind
+// runIngest's closures to that file's factories instead of this file's.
+// Resetting the registry + re-importing here forces this file's factories to
+// be the ones the runIngest under test sees.
+let runIngest: typeof import('../../cli/ingest.js').runIngest
 
 // ============================================
 // Helpers
@@ -266,6 +274,17 @@ function setupPersistenceStubs() {
 
 describe('VLM PDF Enrichment - Visual Mode', () => {
   let exitSpy: ReturnType<typeof vi.spyOn>
+
+  beforeAll(async () => {
+    // Under vitest `isolate: false` (vitest.config.mjs), the module registry is
+    // shared across files. A sibling like `ingest.test.ts` also vi.mock's
+    // `../../cli/common.js`; whichever file's factory binds runIngest's
+    // closures first wins, breaking the loser. Resetting the registry here and
+    // dynamically importing AFTER the vi.mock factories above have been
+    // hoisted forces THIS file's factories to be the ones runIngest sees.
+    vi.resetModules()
+    ;({ runIngest } = await import('../../cli/ingest.js'))
+  })
 
   beforeEach(() => {
     vi.clearAllMocks()

@@ -53,6 +53,27 @@ Before submitting a pull request:
 4. **Keep commits focused** — one logical change per PR
 5. **Enable "Allow edits from maintainers"** when opening your PR — this lets us push small fixes directly and speeds up the review cycle
 
+## Writing tests
+
+`vitest.config.mjs` runs with `isolate: false`, `pool: 'forks'`, `maxWorkers: 1`. Reason: `onnxruntime-node` keeps native state alive that vitest's per-file sandbox can't reset cleanly — re-init crashes the worker. So we run one process, no sandbox, shared module registry.
+
+The catch: `vi.mock` is file-scoped only on paper. If two files mock the same path with different factories, whichever loads first wins; the other's factory is dead but silent. Pairwise runs pass, full-suite flips depending on order.
+
+If your test mocks a module that any other test file also mocks, reset the registry and dynamic-import in `beforeAll`:
+
+```ts
+let runIngest: typeof import('../../cli/ingest.js').runIngest
+
+beforeAll(async () => {
+  vi.resetModules()
+  ;({ runIngest } = await import('../../cli/ingest.js'))
+})
+```
+
+This re-evaluates the module against *this* file's factories.
+
+See `src/__tests__/cli/ingest.test.ts` and `ingest-visual.test.ts` for the live shape.
+
 ## What We Look For
 
 This project's development standards — testing strategy, error handling, code organization, etc. — are published as agent skills:

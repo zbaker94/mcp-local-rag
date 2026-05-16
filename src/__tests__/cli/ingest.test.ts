@@ -2,7 +2,7 @@
 // Test Type: Unit Test
 // Tests runIngest functionality with mocked dependencies
 
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 // ============================================
 // Mock Setup (vi.hoisted for isolate: false)
@@ -80,10 +80,20 @@ vi.mock('../../cli/common.js', () => ({
   })),
 }))
 
-// Import after mocks are set up
+// Import after mocks are set up.
+// `node:path.resolve` is statically importable (no vi.mock target).
+// `cli/ingest.js` and `cli/options.js` are dynamically imported in beforeAll
+// after vi.resetModules() — this is the test-convention isolation mechanism
+// under vitest `isolate: false` (vitest.config.mjs). Without it, a sibling
+// file like `ingest-visual.test.ts` that vi.mock's the same module paths
+// (e.g., ../../cli/common.js) can win the module-registry race and bind
+// runIngest's closures to that file's factories instead of this file's.
 import { resolve } from 'node:path'
-import { parseArgs, resolveConfig, runIngest } from '../../cli/ingest.js'
-import { resolveGlobalConfig } from '../../cli/options.js'
+
+let runIngest: typeof import('../../cli/ingest.js').runIngest
+let parseArgs: typeof import('../../cli/ingest.js').parseArgs
+let resolveConfig: typeof import('../../cli/ingest.js').resolveConfig
+let resolveGlobalConfig: typeof import('../../cli/options.js').resolveGlobalConfig
 
 // ============================================
 // Helpers
@@ -183,6 +193,14 @@ function setupSuccessfulIngestion() {
 
 describe('CLI ingest', () => {
   let exitSpy: ReturnType<typeof vi.spyOn>
+
+  beforeAll(async () => {
+    // Reset the shared module registry (vitest `isolate: false`) and
+    // re-import so THIS file's vi.mock factories are the ones runIngest sees.
+    vi.resetModules()
+    ;({ runIngest, parseArgs, resolveConfig } = await import('../../cli/ingest.js'))
+    ;({ resolveGlobalConfig } = await import('../../cli/options.js'))
+  })
 
   beforeEach(() => {
     vi.clearAllMocks()
