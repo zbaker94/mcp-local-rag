@@ -4,6 +4,7 @@ import { statSync } from 'node:fs'
 import { lstat, readFile, realpath } from 'node:fs/promises'
 import { basename, extname, isAbsolute, resolve, sep } from 'node:path'
 import mammoth from 'mammoth'
+import type { Document as MupdfDocument } from 'mupdf'
 import { SemanticChunker } from '../chunker/index.js'
 import { type EmbedderInterface, filterPageBoundarySentences, type PageData } from './pdf-filter.js'
 import {
@@ -222,69 +223,19 @@ export class DocumentParser {
       const buffer = await readFile(filePath)
       const mupdf = await import('mupdf')
       const doc = mupdf.Document.openDocument(buffer, 'application/pdf')
-      const numPages = doc.countPages()
 
-      // Extract metadata for title extraction
-      const metadataTitle = doc.getMetaData('info:Title') || undefined
-
-      // Extract text with position information from each page
-      const pages: PageData[] = []
-      for (let i = 0; i < numPages; i++) {
-        const page = doc.loadPage(i)
-        const bounds = page.getBounds() // [x0, y0, x1, y1]
-        const pageHeight = bounds[3] - bounds[1]
-        const stext = page.toStructuredText('preserve-whitespace')
-        const json = JSON.parse(stext.asJSON()) as {
-          blocks: Array<{
-            type: string
-            lines: Array<{
-              text: string
-              x: number
-              y: number
-              font: { size: number; name: string; weight: string }
-            }>
-          }>
-        }
-
-        const items: Array<{
-          text: string
-          x: number
-          y: number
-          fontSize: number
-          hasEOL: boolean
-          fontName?: string
-          fontWeight?: string
-        }> = []
-        for (const block of json.blocks) {
-          if (block.type !== 'text') continue
-          for (const line of block.lines) {
-            items.push({
-              text: line.text.replace(/\t/g, ' '),
-              x: line.x,
-              // Invert Y: mupdf uses top-down (0=top), downstream code expects bottom-up (large Y = top)
-              y: pageHeight - line.y,
-              fontSize: line.font.size,
-              hasEOL: true,
-              fontName: line.font.name,
-              fontWeight: line.font.weight,
-            })
-          }
-        }
-
-        pages.push({ pageNum: i + 1, items, pageHeight })
-      }
-
-      // Apply sentence-level header/footer filtering (returns per-page filtered text)
-      // This handles variable content like page numbers ("7 of 75") using semantic similarity
-      const filteredPages = await filterPageBoundarySentences(pages, embedder)
-      const text = filteredPages.filter((t) => t.length > 0).join('\n\n')
+      const { pages, metadataTitle, page1FontHint } = await extractPdfPages(doc, embedder)
+      const text = pages
+        .map((p) => p.text)
+        .filter((t) => t.length > 0)
+        .join('\n\n')
 
       // Extract title from filtered page 1 via semantic chunking
       // Isolated try-catch: title extraction failure should not abort PDF ingestion
       const fileName = basename(filePath)
       let firstPageChunkText: string | undefined
       try {
-        const filteredPage1 = filteredPages[0]
+        const filteredPage1 = pages[0]?.text
         if (filteredPage1 && filteredPage1.trim().length > 0) {
           const chunker = new SemanticChunker()
           const page1Chunks = await chunker.chunkText(filteredPage1, embedder)
@@ -295,31 +246,15 @@ export class DocumentParser {
       } catch (titleError) {
         console.error(`Title extraction failed, falling back to filename: ${titleError}`)
       }
-      // Extract largest-font lines from page 1 for title hint
-      // Concatenate all consecutive lines with the largest font size (covers multi-line titles)
-      const page1Items = pages[0]?.items ?? []
-      const maxFontSize = page1Items.reduce((max, item) => Math.max(max, item.fontSize), 0)
-      const titleLines: string[] = []
-      if (maxFontSize > 0) {
-        for (const item of page1Items) {
-          if (item.fontSize === maxFontSize) {
-            titleLines.push(item.text.trim())
-          } else if (titleLines.length > 0) {
-            break
-          }
-        }
-      }
-      const firstPageFontHint =
-        titleLines.length > 0 ? { text: titleLines.join(' '), fontSize: maxFontSize } : undefined
 
       const titleResult = extractPdfTitle(
         metadataTitle,
         firstPageChunkText,
         fileName,
-        firstPageFontHint
+        page1FontHint
       )
 
-      console.error(`Parsed PDF: ${filePath} (${text.length} characters, ${numPages} pages)`)
+      console.error(`Parsed PDF: ${filePath} (${text.length} characters, ${pages.length} pages)`)
 
       return { content: text, title: titleResult.title }
     } catch (error) {
@@ -394,4 +329,143 @@ export class DocumentParser {
       throw new FileOperationError(`Failed to parse MD: ${filePath}`, error as Error)
     }
   }
+}
+
+// ============================================
+// Private PDF helpers
+// ============================================
+
+/**
+ * Shape of mupdf's structured-text JSON used by the per-page loop.
+ * Captured here so both the items-extraction step and the raw `stextJson`
+ * we return remain typed.
+ */
+interface StextJson {
+  blocks: Array<{
+    type: string
+    lines: Array<{
+      text: string
+      x: number
+      y: number
+      font: { size: number; name: string; weight: string }
+    }>
+  }>
+}
+
+/**
+ * Per-page record produced by `extractPdfPages`. `text` is the page's text
+ * AFTER `filterPageBoundarySentences` has removed semantically-similar
+ * header/footer lines; `stextJson` is the raw mupdf structured-text JSON
+ * for the page (preserved so downstream callers — e.g. the visual-candidate
+ * detector — can inspect block-level structure).
+ */
+interface ExtractedPage {
+  pageNum: number
+  text: string
+  stextJson: StextJson
+}
+
+/**
+ * Result returned by `extractPdfPages`. The helper lifts three concerns
+ * out of the legacy `parsePdf` body:
+ *   1. the per-page `toStructuredText` + `block.type === 'text'` loop;
+ *   2. `filterPageBoundarySentences` for header/footer removal;
+ *   3. title-resolution materials (`metadataTitle` and `page1FontHint`).
+ *
+ * `parsePdf` consumes this directly; the upcoming `parsePdfPages` (T2.2) will
+ * also consume it after adding a `stextOptions` parameter so the visual path
+ * can request `'preserve-whitespace,preserve-images'`.
+ */
+interface ExtractedPdf {
+  pages: ExtractedPage[]
+  metadataTitle: string | undefined
+  page1FontHint: { text: string; fontSize: number } | undefined
+}
+
+/**
+ * Per-page extraction shared by `parsePdf` (and, in T2.2, `parsePdfPages`).
+ *
+ * Takes an already-open mupdf `Document` and:
+ *   - reads `info:Title` once,
+ *   - iterates pages calling `toStructuredText('preserve-whitespace')`,
+ *   - builds `PageData` items (only `block.type === 'text'` lines),
+ *   - runs `filterPageBoundarySentences` to drop semantic headers/footers,
+ *   - derives `page1FontHint` from page 1's largest-font lines.
+ *
+ * Lifecycle: this helper does NOT call `doc.destroy()` — disposal stays
+ * with the caller (T2.3 will add a `try/finally` in `parsePdf`).
+ */
+async function extractPdfPages(
+  doc: MupdfDocument,
+  embedder: EmbedderInterface
+): Promise<ExtractedPdf> {
+  const numPages = doc.countPages()
+  const metadataTitle = doc.getMetaData('info:Title') || undefined
+
+  const pageDataList: PageData[] = []
+  const stextJsonList: StextJson[] = []
+  for (let i = 0; i < numPages; i++) {
+    const page = doc.loadPage(i)
+    const bounds = page.getBounds() // [x0, y0, x1, y1]
+    const pageHeight = bounds[3] - bounds[1]
+    const stext = page.toStructuredText('preserve-whitespace')
+    const json = JSON.parse(stext.asJSON()) as StextJson
+
+    const items: Array<{
+      text: string
+      x: number
+      y: number
+      fontSize: number
+      hasEOL: boolean
+      fontName?: string
+      fontWeight?: string
+    }> = []
+    for (const block of json.blocks) {
+      if (block.type !== 'text') continue
+      for (const line of block.lines) {
+        items.push({
+          text: line.text.replace(/\t/g, ' '),
+          x: line.x,
+          // Invert Y: mupdf uses top-down (0=top), downstream code expects bottom-up (large Y = top)
+          y: pageHeight - line.y,
+          fontSize: line.font.size,
+          hasEOL: true,
+          fontName: line.font.name,
+          fontWeight: line.font.weight,
+        })
+      }
+    }
+
+    pageDataList.push({ pageNum: i + 1, items, pageHeight })
+    stextJsonList.push(json)
+  }
+
+  // Apply sentence-level header/footer filtering (returns per-page filtered text).
+  // This handles variable content like page numbers ("7 of 75") using semantic similarity.
+  const filteredPages = await filterPageBoundarySentences(pageDataList, embedder)
+
+  // Extract largest-font lines from page 1 for title hint.
+  // Concatenate all consecutive lines with the largest font size (covers multi-line titles).
+  const page1Items = pageDataList[0]?.items ?? []
+  const maxFontSize = page1Items.reduce((max, item) => Math.max(max, item.fontSize), 0)
+  const titleLines: string[] = []
+  if (maxFontSize > 0) {
+    for (const item of page1Items) {
+      if (item.fontSize === maxFontSize) {
+        titleLines.push(item.text.trim())
+      } else if (titleLines.length > 0) {
+        break
+      }
+    }
+  }
+  const page1FontHint =
+    titleLines.length > 0 ? { text: titleLines.join(' '), fontSize: maxFontSize } : undefined
+
+  const pages: ExtractedPage[] = pageDataList.map((p, idx) => ({
+    pageNum: p.pageNum,
+    text: filteredPages[idx] ?? '',
+    stextJson: stextJsonList[idx] as StextJson,
+  }))
+
+  return { pages, metadataTitle, page1FontHint }
 }
