@@ -11,18 +11,16 @@
 //
 // IMPORTANT (pre-condition for RUN_E2E=1):
 //   This test assumes `CACHE_DIR` already contains the chosen `dtype` variant
-//   of `onnx-community/granite-docling-258M-ONNX` (default: `q4`, ~385MB on
-//   disk). The first-time download is a separate one-time setup step outside
-//   the test run — see docs/skills/.../ingest_file or the work plan. Running
-//   without a pre-cached model will either time out or attempt a network
-//   download; the suite is intentionally CI-gated so the default `pnpm test`
-//   never triggers this.
+//   of the production default VLM (`HuggingFaceTB/SmolVLM-256M-Instruct` at
+//   `q4`). The first-time download is a separate one-time setup step outside
+//   the test run. Running without a pre-cached model will either time out or
+//   attempt a network download; the suite is intentionally CI-gated so the
+//   default `pnpm test` never triggers this.
 //
 // Test Type: End-to-end against a running local stack (mcp-local-rag binary
-//            spawned via stdio + real LanceDB + real granite-docling-258M
-//            model). No HTTP service exists in this product — the "service"
-//            here is the MCP server itself, exercised through real JSON-RPC
-//            over stdio.
+//            spawned via stdio + real LanceDB + real production-default VLM).
+//            No HTTP service exists in this product — the "service" here is
+//            the MCP server itself, exercised through real JSON-RPC over stdio.
 //
 // Implementation Timing: FINAL phase only. Skipped unless `RUN_E2E=1`. The
 // CI gate is checked at file-evaluation time so the suite is completely
@@ -289,12 +287,14 @@ describe.skipIf(!E2E_ENABLED)('VLM PDF Enrichment - service-integration-e2e (RUN
   //      cannot prove the published binary wires the visual path end-to-end.
   // @category: service-integration-e2e
   // @lane: service-integration-e2e
-  // @dependency: full-system (mcp-local-rag binary via stdio, real LanceDB, real granite-docling-258M model)
+  // @dependency: full-system (mcp-local-rag binary via stdio, real LanceDB, real production-default VLM)
   // @complexity: high
   it(
     'User Journey: spawn mcp-local-rag via stdio, call ingest_file with visual: true, real LanceDB persists [Visual content on page ...] chunk',
     async () => {
-      // Arrange — connect a real MCP client to the spawned binary
+      // Arrange — connect a real MCP client to the spawned binary. VLM model
+      // identifier is not user-tunable (no env override); the server resolves
+      // the production default VLM internally.
       const transport = new StdioClientTransport({
         command: process.execPath, // node
         args: [BINARY_PATH],
@@ -303,8 +303,6 @@ describe.skipIf(!E2E_ENABLED)('VLM PDF Enrichment - service-integration-e2e (RUN
           DB_PATH: testDbPath,
           CACHE_DIR: testCacheDir,
           MODEL_NAME: 'Xenova/all-MiniLM-L6-v2',
-          VLM_MODEL_NAME: 'onnx-community/granite-docling-258M-ONNX',
-          VLM_DTYPE: 'q4',
         }),
         stderr: 'inherit',
       })
@@ -345,70 +343,6 @@ describe.skipIf(!E2E_ENABLED)('VLM PDF Enrichment - service-integration-e2e (RUN
         await client.close().catch(() => {
           /* best-effort */
         })
-      }
-    },
-    E2E_TIMEOUT_MS
-  )
-
-  // Optional second case (low priority — included only if the first case is
-  // stable in CI). Validates that the visual path's failure mode (no model
-  // available) gracefully falls back to text-only chunks as AC-005 specifies,
-  // observed end-to-end through the real process boundary.
-  // ROI: 36 (BV:6 × Freq:4 + Legal:0 + Defect:6) — kept active under
-  //      RUN_E2E=1 to witness AC-005 across process lines.
-  // @category: service-integration-e2e
-  // @lane: service-integration-e2e
-  // @dependency: full-system with simulated VLM failure (VLM_MODEL_NAME pointing at a non-existent model)
-  // @complexity: high
-  it(
-    'User Journey (fallback): VLM model unavailable → ingest_file with visual: true completes with text-only chunks in real LanceDB',
-    async () => {
-      // Use a separate DB path so this case does not see rows from the
-      // primary case (which would still contain the visual marker).
-      const fallbackDbPath = resolve('./tmp/e2e-visual-db-fallback')
-      rmSync(fallbackDbPath, { recursive: true, force: true })
-      mkdirSync(fallbackDbPath, { recursive: true })
-
-      const transport = new StdioClientTransport({
-        command: process.execPath,
-        args: [BINARY_PATH],
-        env: buildChildEnv({
-          BASE_DIR: testBaseDir,
-          DB_PATH: fallbackDbPath,
-          CACHE_DIR: testCacheDir,
-          MODEL_NAME: 'Xenova/all-MiniLM-L6-v2',
-          // Non-existent model identifier: orchestrator's VlmError swallow
-          // path (AC-005) should still produce text-only chunks.
-          VLM_MODEL_NAME: 'onnx-community/this-model-does-not-exist',
-          VLM_DTYPE: 'q4',
-        }),
-        stderr: 'inherit',
-      })
-      const client = new Client({ name: 'visual-ingest-e2e-fallback', version: '0.0.0' })
-
-      try {
-        await client.connect(transport)
-
-        const callResult = await client.callTool({
-          name: 'ingest_file',
-          arguments: { filePath: fixturePdf, visual: true },
-        })
-        const responseJson = JSON.parse(extractTextContent(callResult)) as { chunkCount: number }
-        expect(responseJson.chunkCount).toBeGreaterThan(0)
-
-        const db = await lancedbConnect(fallbackDbPath)
-        const table = await db.openTable(LANCEDB_TABLE_NAME)
-        const rows = (await table.query().limit(1000).toArray()) as Array<{ text: string }>
-        const hasVisualChunk = rows.some(
-          (row) => typeof row.text === 'string' && row.text.includes(VISUAL_CONTENT_MARKER)
-        )
-        // AC-005: VLM failure → text-only chunks, no visual marker.
-        expect(hasVisualChunk).toBe(false)
-      } finally {
-        await client.close().catch(() => {
-          /* best-effort */
-        })
-        rmSync(fallbackDbPath, { recursive: true, force: true })
       }
     },
     E2E_TIMEOUT_MS

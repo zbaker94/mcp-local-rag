@@ -197,8 +197,6 @@ describe('CLI global options', () => {
       delete process.env['DB_PATH']
       delete process.env['CACHE_DIR']
       delete process.env['MODEL_NAME']
-      delete process.env['VLM_MODEL_NAME']
-      delete process.env['VLM_DTYPE']
     })
 
     it('should use defaults when no options or env vars', () => {
@@ -208,7 +206,6 @@ describe('CLI global options', () => {
         cacheDir: GLOBAL_DEFAULTS.cacheDir,
         modelName: GLOBAL_DEFAULTS.modelName,
         vlmModelName: GLOBAL_DEFAULTS.vlmModelName,
-        vlmDtype: GLOBAL_DEFAULTS.vlmDtype,
       })
     })
 
@@ -223,7 +220,6 @@ describe('CLI global options', () => {
         cacheDir: '/cli/cache',
         modelName: 'cli/model',
         vlmModelName: GLOBAL_DEFAULTS.vlmModelName,
-        vlmDtype: GLOBAL_DEFAULTS.vlmDtype,
       })
     })
 
@@ -238,7 +234,6 @@ describe('CLI global options', () => {
         cacheDir: '/env/cache',
         modelName: 'env/model',
         vlmModelName: GLOBAL_DEFAULTS.vlmModelName,
-        vlmDtype: GLOBAL_DEFAULTS.vlmDtype,
       })
     })
 
@@ -257,7 +252,6 @@ describe('CLI global options', () => {
         cacheDir: '/cli/cache',
         modelName: 'cli/model',
         vlmModelName: GLOBAL_DEFAULTS.vlmModelName,
-        vlmDtype: GLOBAL_DEFAULTS.vlmDtype,
       })
     })
 

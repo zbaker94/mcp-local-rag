@@ -62,9 +62,9 @@ export class RAGServer {
   private readonly excludePaths: string[]
   private readonly configWarnings: string[]
   private readonly minChunkLength: number
-  // Read by the visual dispatch branch (added in T4.4) to construct the captioner
+  // Read by the visual dispatch branch to construct the captioner
   private readonly vlmModelName: string
-  private readonly vlmDtype: string
+  private readonly device: string | undefined
   private queryWarningsShown = false
 
   constructor(config: RAGServerConfig) {
@@ -74,7 +74,7 @@ export class RAGServer {
     this.configWarnings = config.configWarnings ?? []
     this.minChunkLength = config.chunkMinLength ?? DEFAULT_MIN_CHUNK_LENGTH
     this.vlmModelName = config.vlmModelName
-    this.vlmDtype = config.vlmDtype
+    this.device = config.device
     this.excludePaths = [`${resolve(this.dbPath)}${sep}`, `${resolve(this.cacheDir)}${sep}`]
     this.server = new Server(
       { name: 'rag-mcp-server', version: '1.0.0' },
@@ -192,13 +192,7 @@ export class RAGServer {
    */
   async initialize(): Promise<void> {
     await this.vectorStore.initialize()
-    // VLM config snapshot logged once at startup so the configured values are
-    // visible in server logs even when the visual dispatch branch (added in
-    // T4.4) has not been exercised yet. `vlmDtype === ''` means the captioner
-    // will normalize to `DEFAULT_VLM_DTYPE` at the from_pretrained boundary.
-    console.error(
-      `RAGServer initialized (vlmModelName=${this.vlmModelName}, vlmDtype=${this.vlmDtype || '(default)'})`
-    )
+    console.error(`RAGServer initialized (vlmModelName=${this.vlmModelName})`)
   }
 
   /**
@@ -309,7 +303,7 @@ export class RAGServer {
           {
             modelName: this.vlmModelName,
             cacheDir: this.cacheDir,
-            dtype: this.vlmDtype,
+            device: this.device,
           }
         )
         chunks = visualResult.chunks

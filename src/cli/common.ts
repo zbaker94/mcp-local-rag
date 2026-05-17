@@ -2,7 +2,7 @@
 
 import { Embedder } from '../embedder/index.js'
 import { VectorStore } from '../vectordb/index.js'
-import type { ResolvedGlobalConfig } from './options.js'
+import { type ResolvedGlobalConfig, resolveDevice } from './options.js'
 
 /**
  * Create an uninitialized VectorStore from resolved global config.
@@ -24,6 +24,6 @@ export function createEmbedder(config: ResolvedGlobalConfig): Embedder {
     modelPath: config.modelName,
     batchSize: 16,
     cacheDir: config.cacheDir,
-    device: process.env['RAG_DEVICE']?.trim() || 'cpu',
+    device: resolveDevice(process.env['RAG_DEVICE']),
   })
 }

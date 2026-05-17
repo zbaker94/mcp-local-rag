@@ -46,8 +46,8 @@ export interface VisualPdfParser {
 export interface CaptionerConfig {
   modelName: string
   cacheDir: string
-  /** Empty string means "use captioner default"; the captioner normalizes. */
-  dtype: string
+  /** Execution device passed through to the captioner model. */
+  device?: string | undefined
 }
 
 /**
@@ -118,7 +118,8 @@ export async function prepareVisualPdfChunks(
   const { doc, metadataTitle, pages } = await parser.parsePdfPages(filePath, embedder)
   try {
     const candidates = pdfVisual.detectVisualCandidates(
-      pages.map((p) => ({ pageNum: p.pageNum, stextJson: p.stextJson }))
+      pages.map((p) => ({ pageNum: p.pageNum, stextJson: p.stextJson })),
+      doc as Parameters<typeof pdfVisual.detectVisualCandidates>[1]
     )
     const enrichedPages = await pdfVisual.enrichPagesWithCaptions(
       pages,
@@ -148,7 +149,13 @@ export async function prepareVisualPdfChunks(
     return { chunks, embeddings, title, text }
   } finally {
     // Caller owns `doc` per `parsePdfPages` contract (AC-013) — release the
-    // mupdf WASM handle on both success and error paths.
-    doc.destroy()
+    // mupdf WASM handle on both success and error paths. Wrap so a destroy
+    // failure cannot mask the original try-body error (finally-overrides-try).
+    try {
+      doc.destroy()
+    } catch (destroyErr) {
+      const message = destroyErr instanceof Error ? destroyErr.message : String(destroyErr)
+      console.warn(`prepareVisualPdfChunks: doc.destroy() failed: ${message}`)
+    }
   }
 }

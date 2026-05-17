@@ -13,6 +13,7 @@ import type { VectorChunk, VectorStore } from '../vectordb/index.js'
 import { createEmbedder, createVectorStore } from './common.js'
 import type { GlobalOptions, ResolvedGlobalConfig } from './options.js'
 import {
+  resolveDevice,
   resolveGlobalConfig,
   validateChunkMinLength,
   validateMaxFileSize,
@@ -83,11 +84,7 @@ Options:
 Global options (must appear before "ingest"):
   --db-path <path>         LanceDB database path
   --cache-dir <path>       Model cache directory
-  --model-name <name>      Embedding model
-
-Env vars:
-  VLM_MODEL_NAME           Override the VLM model identifier (used with --visual)
-  VLM_DTYPE                Override the VLM ONNX quantization variant (used with --visual)`
+  --model-name <name>      Embedding model`
 
 // ============================================
 // Arg Parsing
@@ -317,6 +314,27 @@ async function collectFiles(targetPath: string, excludePaths: string[]): Promise
 // ============================================
 
 /**
+ * Options for `ingestSingleFile`. Discriminated on `visual` so the visual path
+ * is type-only callable with the VLM config it actually needs:
+ *  - `visual` absent or `false` → no VLM fields required (and not accepted).
+ *  - `visual: true` → `vlmModelName` and `cacheDir` required; `device` optional.
+ *
+ * Why a union rather than always-required fields: making `vlmModelName` /
+ * `cacheDir` unconditionally required forces non-visual callers (default-mode
+ * tests, future direct-import callers that only ingest non-PDF files) to
+ * fabricate VLM config they will never use. The visual-true variant still
+ * catches accidental misuse at compile time, which was the original goal.
+ */
+export type IngestSingleFileOptions =
+  | { visual?: false | undefined }
+  | {
+      visual: true
+      vlmModelName: string
+      cacheDir: string
+      device?: string | undefined
+    }
+
+/**
  * Ingest a single file: parse, chunk, embed, delete old chunks, insert new chunks.
  * Returns the number of chunks inserted.
  *
@@ -337,12 +355,7 @@ export async function ingestSingleFile(
   chunker: SemanticChunker,
   embedder: Embedder,
   vectorStore: VectorStore,
-  options?: {
-    visual?: boolean | undefined
-    vlmModelName?: string | undefined
-    vlmDtype?: string | undefined
-    cacheDir?: string | undefined
-  }
+  options?: IngestSingleFileOptions
 ): Promise<number> {
   // Parse file
   const isPdf = filePath.toLowerCase().endsWith('.pdf')
@@ -356,19 +369,11 @@ export async function ingestSingleFile(
     //
     // `vlmModelName` and `cacheDir` are required by `prepareVisualPdfChunks`;
     // the CLI bulk-loop always supplies them via the resolved `globalConfig`
-    // (see `resolveGlobalConfig` in `cli/options.ts` — both are defaulted
-    // there). `dtype` is pass-through; the captioner normalizes empty to
-    // `DEFAULT_VLM_DTYPE` (DD §Captioner contract step 2).
-    if (options.vlmModelName === undefined) {
-      throw new Error('vlmModelName is required for visual ingest (CLI invariant)')
-    }
-    if (options.cacheDir === undefined) {
-      throw new Error('cacheDir is required for visual ingest (CLI invariant)')
-    }
+    // (see `resolveGlobalConfig` in `cli/options.ts`).
     const visualResult = await prepareVisualPdfChunks(filePath, parser, chunker, embedder, {
       modelName: options.vlmModelName,
       cacheDir: options.cacheDir,
-      dtype: options.vlmDtype ?? '',
+      device: options.device,
     })
     const { chunks, embeddings } = visualResult
     if (chunks.length === 0) {
@@ -529,22 +534,26 @@ export async function runIngest(args: string[], globalOptions: GlobalOptions = {
       try {
         // Forward visual + VLM env-resolved options into the per-file ingestor.
         // `ingestSingleFile` routes through the visual path when
-        // `options.visual === true && filePath.endsWith('.pdf')`.
+        // `options.visual === true && filePath.endsWith('.pdf')`. The two
+        // variants of `IngestSingleFileOptions` are built explicitly so the
+        // VLM fields only travel with the visual-true branch (the cacheDir is
+        // pre-validated by `resolveGlobalConfig` so the captioner does not
+        // re-read `process.env['CACHE_DIR']` raw).
+        const ingestOptions: IngestSingleFileOptions = options.visual
+          ? {
+              visual: true,
+              vlmModelName: globalConfig.vlmModelName,
+              cacheDir: globalConfig.cacheDir,
+              device: resolveDevice(process.env['RAG_DEVICE']),
+            }
+          : { visual: false }
         const chunkCount = await ingestSingleFile(
           filePath,
           parser,
           chunker,
           embedder,
           vectorStore,
-          {
-            visual: options.visual,
-            vlmModelName: globalConfig.vlmModelName,
-            vlmDtype: globalConfig.vlmDtype,
-            // Pass the already-validated cacheDir so the captioner does not
-            // re-read process.env['CACHE_DIR'] raw (bypassing the validatePath
-            // check that resolveGlobalConfig applied at entry).
-            cacheDir: globalConfig.cacheDir,
-          }
+          ingestOptions
         )
         if (chunkCount === 0) {
           // 0 chunks is a skip/warning, not a failure

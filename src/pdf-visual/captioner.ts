@@ -6,17 +6,18 @@
 // on the first `caption()` call to keep the default (`visual: false`) path
 // zero-overhead.
 //
-// Implementation contract (DD § Component → pdf-visual/captioner.ts):
+// Implementation contract:
 //   1. Set `env.cacheDir = config.cacheDir` BEFORE any `from_pretrained` call
 //      (defensive ordering — does not depend on `Embedder.initialize()`).
-//   2. Lazy-load processor + model on first `caption()` call. Normalize the
-//      incoming dtype via `config.dtype || DEFAULT_VLM_DTYPE` and pass
-//      `{ dtype: resolvedDtype }` to `from_pretrained`.
+//   2. Lazy-load processor + model on first `caption()` call with the pinned
+//      `VLM_DTYPE` and the resolved device.
 //   3. Decode PNG bytes via `RawImage.fromBlob(new Blob([pngBytes], { type: 'image/png' }))`.
 //   4. Build chat-style input via `processor.apply_chat_template(messages,
 //      { add_generation_prompt: true })` with the IDEFICS3 conversation shape
-//      (probe-verified Phase 1).
-//   5. Call `model.generate({ ...inputs, max_new_tokens: 128 })`.
+//      (probe-verified). The shape is hard-coded against the v1 captioner
+//      family; swapping in a non-IDEFICS3 model requires an adapter.
+//   5. Call `model.generate({ ...inputs, max_new_tokens, repetition_penalty,
+//      no_repeat_ngram_size })` with the pinned decoding options below.
 //   6. Decode via `processor.batch_decode(newTokens, { skip_special_tokens: true })`
 //      where `newTokens = outputs.slice(null, [inputs.input_ids.dims[1], null])`.
 //   7. Post-processing (single source of truth, in this order):
@@ -28,14 +29,14 @@
 //      with `pageNum` + `cause`. The empty-caption `null` return is NOT a
 //      failure.
 //
-// `DEFAULT_VLM_DTYPE = 'q4'` is probe-verified (Phase 1,
-// `tmp/probe/probe-results/probe-vlm-dtype.json`) as the smallest viable
-// variant of `onnx-community/granite-docling-258M-ONNX`. Exported solely so
-// tests can assert against the literal without re-declaring it.
+// `VLM_DTYPE = 'q4'` pins the ONNX quantization variant for v1. Exported so
+// tests can assert against the literal without re-declaring it; production has
+// no user-facing knob.
 
 import {
   AutoModelForImageTextToText,
   AutoProcessor,
+  type DeviceType,
   env,
   RawImage,
 } from '@huggingface/transformers'
@@ -44,19 +45,22 @@ import type { Captioner, CaptionerConfig } from './types.js'
 import { VlmError } from './types.js'
 
 /**
- * Probe-verified smallest viable ONNX quantization variant for
- * `onnx-community/granite-docling-258M-ONNX`. The captioner replaces an empty
- * `CaptionerConfig.dtype` with this value immediately before `from_pretrained`.
+ * ONNX quantization variant. Pinned to the smallest viable variant for the v1
+ * captioner. Exposed for tests only — production has no user-facing knob.
  */
-export const DEFAULT_VLM_DTYPE = 'q4'
+export const VLM_DTYPE = 'q4'
 
 /**
  * Static prompt — tuned for "describe for search retrieval" not "describe for
- * a blind reader". Embedded as a module constant per DD § Captioner.
+ * a blind reader". It asks for retrieval-relevant detail rather than a short
+ * summary, while keeping claims grounded in visible evidence.
  */
 const PROMPT =
-  'Describe the visual content for search retrieval. List the chart type, axes, ' +
-  'labels, and any prominent visual elements. Use keywords and structural terms.'
+  'Write search text for this PDF page image. Include visible section names, visual titles, ' +
+  'headings, labels, legends, axes, row or column names, UI text, metric names, identifiers, ' +
+  'proper nouns, and flow or diagram step names. Prefer exact readable words from the image. ' +
+  'Cover the main visual regions across the page. Use short searchable phrases separated by ' +
+  'commas or semicolons. Use only readable or visually evident details. Use each phrase once.'
 
 /**
  * Strip C0 (U+0000–U+001F) and C1 (U+007F–U+009F) control characters from the
@@ -108,27 +112,19 @@ export function createCaptioner(config: CaptionerConfig): Captioner {
   // embedder).
   env.cacheDir = config.cacheDir
 
-  // The captioner is the single normalization site for dtype.
-  const resolvedDtype = config.dtype || DEFAULT_VLM_DTYPE
+  const resolvedDevice = config.device || 'cpu'
 
   // Lazy-loaded singletons. `unknown` is used to keep the surface small and
   // avoid pulling private types from `@huggingface/transformers`.
   let processor: unknown = null
   let model: unknown = null
 
-  // Cache the load outcome so a single bad config (wrong modelName / dtype /
-  // network failure) does not trigger one `from_pretrained` retry per
-  // candidate page (F1). On the first failure we cache the original error and
-  // re-throw it on every subsequent call. The per-page `caption()` catch is
-  // the single wrapping site that adds `pageNum` and the user-facing
-  // `Captioning failed for page N` message, so this fast-fail path produces
-  // observationally-equivalent errors to a hypothetical re-load attempt.
-  //
-  // F8: When the underlying `from_pretrained` fails, we replace the original
-  // error message with one that names the resolved `modelName` + `dtype` so
-  // operators can identify a mis-set `VLM_DTYPE` env quickly. The wrapper
-  // preserves the original error as its `.cause` chain so debugging is not
-  // lossy.
+  // Cache the load outcome so a transient failure (network, mis-cached model
+  // file) does not trigger one `from_pretrained` retry per candidate page.
+  // Per-page `caption()` is the single wrapping site that adds `pageNum` and
+  // the user-facing `Captioning failed for page N` message, so this fast-fail
+  // path produces observationally-equivalent errors to a hypothetical
+  // re-load attempt.
   type LoadState = { kind: 'pending' } | { kind: 'ok' } | { kind: 'failed'; cause: Error }
   let loadState: LoadState = { kind: 'pending' }
 
@@ -136,26 +132,28 @@ export function createCaptioner(config: CaptionerConfig): Captioner {
     if (loadState.kind === 'ok') return
     if (loadState.kind === 'failed') throw loadState.cause
     try {
-      // Both classes accept `{ dtype }` (probe-verified Phase 1). They are
-      // loaded in sequence because the second resolves the runtime class
+      // Both classes accept `{ dtype }` (probe-verified). They load in sequence
+      // because the second resolves the runtime class
       // (`Idefics3ForConditionalGeneration` for the default model) via the
-      // architecture-agnostic `AutoModelForImageTextToText` entry point.
-      // The transformers.js declared `dtype` is a literal union; the env
-      // resolution layer's regex (`/^[a-zA-Z0-9_]*$/`) already constrains the
-      // string set, so cast through `unknown` here to widen-to-string-then-back.
-      const dtypeOpt = { dtype: resolvedDtype } as unknown as { dtype: 'q4' }
+      // architecture-agnostic `AutoModelForImageTextToText` entry point. The
+      // transformers.js declared `dtype` is a literal union; cast through
+      // `unknown` to widen-to-string-then-back.
+      const dtypeOpt = { dtype: VLM_DTYPE } as unknown as { dtype: 'q4' }
+      const modelOpt = { dtype: VLM_DTYPE, device: resolvedDevice } as unknown as {
+        dtype: 'q4'
+        device: DeviceType
+      }
       processor = await AutoProcessor.from_pretrained(config.modelName, dtypeOpt)
-      model = await AutoModelForImageTextToText.from_pretrained(config.modelName, dtypeOpt)
+      model = await AutoModelForImageTextToText.from_pretrained(config.modelName, modelOpt)
       loadState = { kind: 'ok' }
     } catch (err) {
       const original = err instanceof Error ? err : new Error(String(err))
-      // F8: dtype-aware message. Cause chain preserves the original error.
-      const dtypeAware = new Error(
-        `Captioner load failed (modelName=${config.modelName}, dtype=${resolvedDtype}): ${original.message}`,
+      const wrapped = new Error(
+        `Captioner load failed (modelName=${config.modelName}, device=${resolvedDevice}): ${original.message}`,
         { cause: original }
       )
-      loadState = { kind: 'failed', cause: dtypeAware }
-      throw dtypeAware
+      loadState = { kind: 'failed', cause: wrapped }
+      throw wrapped
     }
   }
 
@@ -194,7 +192,12 @@ export function createCaptioner(config: CaptionerConfig): Captioner {
         const chatPrompt = proc.apply_chat_template(messages, { add_generation_prompt: true })
         const inputs = await proc(chatPrompt, [rawImage])
 
-        const outputs = await mdl.generate({ ...inputs, max_new_tokens: 128 })
+        const outputs = await mdl.generate({
+          ...inputs,
+          max_new_tokens: 128,
+          repetition_penalty: 1.15,
+          no_repeat_ngram_size: 3,
+        })
 
         // `outputs.slice(null, [inputLen, null])` strips the prompt tokens.
         const inputLen = inputs.input_ids.dims[1] as number

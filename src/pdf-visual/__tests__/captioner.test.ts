@@ -1,5 +1,4 @@
-// T3.3 — `createCaptioner` unit test (AC-009 env override + AC-011 length /
-// emptiness handling).
+// `createCaptioner` unit test.
 //
 // Asserts the captioner's public contract documented in
 // docs/design/vlm-pdf-enrichment-design.md §Component → pdf-visual/captioner.ts:
@@ -7,10 +6,11 @@
 //   createCaptioner(config: CaptionerConfig): Captioner
 //   Captioner.caption(pngBytes: Uint8Array, pageNum: number): Promise<string | null>
 //
-// Verification points (DD §Testing matrix, AC-009 + AC-011 rows):
-//   - `from_pretrained` receives `config.modelName` and `{ dtype: resolvedDtype }`
-//     where `resolvedDtype = config.dtype || DEFAULT_VLM_DTYPE`.
-//   - `model.generate` receives `max_new_tokens: 128`.
+// Verification points:
+//   - `from_pretrained` receives `config.modelName` and `{ dtype: VLM_DTYPE }`;
+//     model loading also receives the resolved device.
+//   - `model.generate` receives the pinned decoding options
+//     (`max_new_tokens`, `repetition_penalty`, `no_repeat_ngram_size`).
 //   - Post-decode boundary cases: 1000 chars passes through unchanged, 1001
 //     chars truncated to 1000 + `…` (final length 1001), empty/whitespace-only/
 //     control-char-only inputs return `null` without throwing.
@@ -21,7 +21,7 @@
 // hoisted to be visible inside `vi.mock` factories before the SUT imports the
 // module).
 
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 // ============================================
 // Mocks (vi.hoisted — required for `@huggingface/transformers`)
@@ -108,29 +108,46 @@ const mocks = vi.hoisted(() => {
   }
 })
 
-vi.mock('@huggingface/transformers', () => ({
+// Factory installed via `vi.doMock` in `beforeAll`; removed in `afterAll`.
+// See `.claude/skills/project-context/SKILL.md` for the cross-file mock leak
+// rule under `isolate: false`.
+const transformersFactory = () => ({
   AutoProcessor: mocks.AutoProcessor,
   AutoModelForImageTextToText: mocks.AutoModelForImageTextToText,
   RawImage: mocks.RawImage,
   env: mocks.env,
-}))
+})
+
+const MOCKED_PATHS = ['@huggingface/transformers'] as const
 
 // ============================================
 // Test suite
 // ============================================
 
-import { createCaptioner, DEFAULT_VLM_DTYPE } from '../captioner'
-import { VlmError } from '../types'
+let createCaptioner: typeof import('../captioner').createCaptioner
+let VLM_DTYPE: typeof import('../captioner').VLM_DTYPE
+let VlmError: typeof import('../types').VlmError
 
 const PNG_BYTES = new Uint8Array([0x89, 0x50, 0x4e, 0x47])
 
 const BASE_CONFIG = {
   modelName: 'sentinel-default-model',
   cacheDir: '/tmp/cache',
-  dtype: 'sentinel-dtype',
 }
 
-describe('createCaptioner (AC-009 env override + AC-011 length / emptiness)', () => {
+describe('createCaptioner (CaptionerConfig flow + AC-011 length / emptiness)', () => {
+  beforeAll(async () => {
+    vi.resetModules()
+    vi.doMock('@huggingface/transformers', transformersFactory)
+    ;({ createCaptioner, VLM_DTYPE } = await import('../captioner'))
+    ;({ VlmError } = await import('../types'))
+  })
+
+  afterAll(() => {
+    for (const p of MOCKED_PATHS) vi.doUnmock(p)
+    vi.resetModules()
+  })
+
   beforeEach(() => {
     // Reset mock state between tests.
     mocks.state.decodedText = 'a valid caption'
@@ -144,11 +161,7 @@ describe('createCaptioner (AC-009 env override + AC-011 length / emptiness)', ()
     mocks.env.cacheDir = ''
   })
 
-  afterEach(() => {
-    delete process.env['VLM_MODEL_NAME']
-  })
-
-  // ----- AC-009: VLM_MODEL_NAME flow -----
+  // ----- config.modelName flow -----
 
   it('forwards config.modelName as the first argument to from_pretrained', async () => {
     // Arrange
@@ -164,30 +177,36 @@ describe('createCaptioner (AC-009 env override + AC-011 length / emptiness)', ()
     expect(mocks.mockModelFromPretrained.mock.calls[0]?.[0]).toBe('sentinel-model-name')
   })
 
-  // ----- AC-009: VLM_DTYPE pass-through -----
+  // ----- VLM_DTYPE pinned -----
 
-  it('passes config.dtype through to from_pretrained when non-empty', async () => {
+  it('forwards the pinned VLM_DTYPE to both processor and model from_pretrained', async () => {
     // Arrange
-    const captioner = createCaptioner({ ...BASE_CONFIG, dtype: 'sentinel-dtype' })
+    const captioner = createCaptioner(BASE_CONFIG)
 
     // Act
     await captioner.caption(PNG_BYTES, 1)
 
-    // Assert
-    expect(mocks.mockModelFromPretrained.mock.calls[0]?.[1]).toEqual({ dtype: 'sentinel-dtype' })
+    // Assert: same dtype on both calls; device defaults to 'cpu' on model load.
+    expect(mocks.mockProcessorFromPretrained.mock.calls[0]?.[1]).toEqual({ dtype: VLM_DTYPE })
+    expect(mocks.mockModelFromPretrained.mock.calls[0]?.[1]).toEqual({
+      dtype: VLM_DTYPE,
+      device: 'cpu',
+    })
   })
 
-  // ----- AC-009: VLM_DTYPE empty-normalization -----
-
-  it('normalizes empty config.dtype to DEFAULT_VLM_DTYPE before from_pretrained', async () => {
+  it('passes config.device through to model from_pretrained when provided', async () => {
     // Arrange
-    const captioner = createCaptioner({ ...BASE_CONFIG, dtype: '' })
+    const captioner = createCaptioner({ ...BASE_CONFIG, device: 'webgpu' })
 
     // Act
     await captioner.caption(PNG_BYTES, 1)
 
-    // Assert: literal DEFAULT_VLM_DTYPE (exported for introspection).
-    expect(mocks.mockModelFromPretrained.mock.calls[0]?.[1]).toEqual({ dtype: DEFAULT_VLM_DTYPE })
+    // Assert: only the model load receives device; the processor keeps dtype-only options.
+    expect(mocks.mockProcessorFromPretrained.mock.calls[0]?.[1]).toEqual({ dtype: VLM_DTYPE })
+    expect(mocks.mockModelFromPretrained.mock.calls[0]?.[1]).toEqual({
+      dtype: VLM_DTYPE,
+      device: 'webgpu',
+    })
   })
 
   // ----- env.cacheDir defensive ordering -----
@@ -277,28 +296,35 @@ describe('createCaptioner (AC-009 env override + AC-011 length / emptiness)', ()
     expect(result).toBeNull()
   })
 
-  // ----- max_new_tokens: 128 -----
+  // ----- generate options -----
 
-  it('calls model.generate with max_new_tokens: 128', async () => {
+  it('calls model.generate with the documented decoding options', async () => {
     // Arrange
     const captioner = createCaptioner(BASE_CONFIG)
 
     // Act
     await captioner.caption(PNG_BYTES, 1)
 
-    // Assert
+    // Assert: the captioner pins decoding options that affect retrieval
+    // quality. Pinning them in a test makes accidental changes loud.
     expect(mocks.mockGenerate).toHaveBeenCalledTimes(1)
-    const arg = mocks.mockGenerate.mock.calls[0]?.[0] as { max_new_tokens?: number }
+    const arg = mocks.mockGenerate.mock.calls[0]?.[0] as {
+      max_new_tokens?: number
+      repetition_penalty?: number
+      no_repeat_ngram_size?: number
+    }
     expect(arg?.max_new_tokens).toBe(128)
+    expect(arg?.repetition_penalty).toBe(1.15)
+    expect(arg?.no_repeat_ngram_size).toBe(3)
   })
 
   // ----- Failure: model load -----
 
-  it('wraps model-load failure in VlmError with pageNum, dtype-aware cause message, and chained original cause (F1 + F8)', async () => {
+  it('wraps model-load failure in VlmError with pageNum and a load-aware cause message', async () => {
     // Arrange
     const originalErr = new Error('boom-load')
     mocks.state.fromPretrainedThrows = originalErr
-    const captioner = createCaptioner({ ...BASE_CONFIG, dtype: 'sentinel-dtype' })
+    const captioner = createCaptioner(BASE_CONFIG)
 
     // Act + Assert
     let captured: unknown
@@ -313,13 +339,14 @@ describe('createCaptioner (AC-009 env override + AC-011 length / emptiness)', ()
     expect((captured as VlmError).pageNum).toBe(1)
     expect((captured as VlmError).message).toBe('Captioning failed for page 1')
 
-    // F8: the immediate cause is the dtype-aware wrapper produced by
-    // ensureLoaded(); its message names the resolved modelName + dtype.
+    // The immediate cause is the wrapper produced by ensureLoaded(); its
+    // message names the resolved modelName and device so operators can
+    // identify the source.
     const cause = (captured as VlmError).cause as Error
     expect(cause).toBeInstanceOf(Error)
     expect(cause.message).toContain('Captioner load failed')
     expect(cause.message).toContain('modelName=sentinel-default-model')
-    expect(cause.message).toContain('dtype=sentinel-dtype')
+    expect(cause.message).toContain('device=cpu')
     expect(cause.message).toContain('boom-load')
 
     // The original `from_pretrained` error is preserved via the Error.cause
@@ -363,7 +390,7 @@ describe('createCaptioner (AC-009 env override + AC-011 length / emptiness)', ()
     expect(totalLoadCalls).toBeLessThanOrEqual(2)
 
     // Assert: every thrown error wraps the same original cause via the
-    // dtype-aware load error.
+    // load-aware wrapper.
     for (const captured of thrownErrors) {
       expect(captured).toBeInstanceOf(VlmError)
       const cause = (captured as VlmError).cause as Error & { cause?: unknown }

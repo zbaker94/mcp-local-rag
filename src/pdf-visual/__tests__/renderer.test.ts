@@ -72,6 +72,22 @@ describe('renderPdfPage', () => {
     expect(png[3]).toBe(PNG_MAGIC[3])
   })
 
+  it('returns a PNG when rendering a crop rectangle', async () => {
+    // Arrange — crop a small region from the already-open fixture page.
+    const cropRect: [number, number, number, number] = [10, 10, 60, 60]
+
+    // Act
+    const png = await renderPdfPage(doc as mupdf.Document, 1, cropRect)
+
+    // Assert: crop rendering still returns valid PNG bytes.
+    expect(png).toBeInstanceOf(Uint8Array)
+    expect(png.length).toBeGreaterThan(PNG_MAGIC.length)
+    expect(png[0]).toBe(PNG_MAGIC[0])
+    expect(png[1]).toBe(PNG_MAGIC[1])
+    expect(png[2]).toBe(PNG_MAGIC[2])
+    expect(png[3]).toBe(PNG_MAGIC[3])
+  })
+
   it('throws VlmError carrying the requested pageNum when page is out of range', async () => {
     // Arrange — fixture already opened; pick an obviously out-of-range page.
     const requestedPage = 999

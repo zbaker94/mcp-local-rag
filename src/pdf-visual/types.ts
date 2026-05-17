@@ -29,23 +29,21 @@ export class VlmError extends Error {
 }
 
 /**
- * Captioner configuration.
- *
- * The captioner is the single normalization site for `dtype`: an empty string
- * passed here is replaced with the module-internal `DEFAULT_VLM_DTYPE` before
- * being forwarded to `from_pretrained`. The env-resolution layer therefore
- * does NOT default an empty string — it passes through what it observes.
+ * Captioner configuration. Model identifier and quantization variant are
+ * pinned for v1; the only caller-tunable fields are the cache directory and
+ * the optional execution device.
  */
 export interface CaptionerConfig {
-  /** HuggingFace model identifier (resolved from `VLM_MODEL_NAME` env or default). */
+  /**
+   * HuggingFace model identifier. Fixed by the caller in v1; the field is
+   * retained so a future model-family adapter can flip it from a literal to a
+   * resolver without changing this contract.
+   */
   modelName: string
   /** Model cache directory (shared with the embedder via `env.cacheDir`). */
   cacheDir: string
-  /**
-   * ONNX quantization variant. May be the empty string; the captioner
-   * normalizes empty to `DEFAULT_VLM_DTYPE` before `from_pretrained`.
-   */
-  dtype: string
+  /** Execution device passed through to Transformers.js model loading. */
+  device?: string | undefined
 }
 
 /**

@@ -14,7 +14,7 @@
 //      `candidates.filter(c => c.isCandidate).map(c => c.pageNum)`.
 //   2. Iterate `pages` in input order. For each page whose `pageNum` is in
 //      the candidate Set:
-//        - `pngBytes = await renderPdfPage(doc, page.pageNum)`
+//        - `pngBytes = await renderPdfPage(doc, page.pageNum, candidate.cropRect)`
 //        - `caption  = await captioner.caption(pngBytes, page.pageNum)`
 //        - `caption === null` → `console.warn` naming the page; leave
 //          `page.text` unchanged.
@@ -70,6 +70,7 @@ interface OrchestratorPage {
 interface OrchestratorCandidate {
   pageNum: number
   isCandidate: boolean
+  cropRect?: [number, number, number, number]
 }
 
 /**
@@ -95,13 +96,16 @@ export async function enrichPagesWithCaptions(
   doc: MupdfDocument,
   captioner: Captioner
 ): Promise<OrchestratorPage[]> {
-  const candidateSet = new Set(candidates.filter((c) => c.isCandidate).map((c) => c.pageNum))
+  const candidateByPage = new Map(
+    candidates.filter((c) => c.isCandidate).map((c) => [c.pageNum, c])
+  )
 
   for (const page of pages) {
-    if (!candidateSet.has(page.pageNum)) continue
+    const candidate = candidateByPage.get(page.pageNum)
+    if (!candidate) continue
 
     try {
-      const pngBytes = await renderPdfPage(doc, page.pageNum)
+      const pngBytes = await renderPdfPage(doc, page.pageNum, candidate.cropRect)
       const caption = await captioner.caption(pngBytes, page.pageNum)
 
       if (caption === null) {

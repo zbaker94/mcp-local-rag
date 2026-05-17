@@ -53,11 +53,13 @@ const mocks = vi.hoisted(() => {
     defaultPng: new Uint8Array([0x89, 0x50, 0x4e, 0x47]),
   }
 
-  const renderSpy = vi.fn(async (_doc: unknown, pageNum: number): Promise<Uint8Array> => {
-    const override = state.renderByPage.get(pageNum)
-    if (override) throw override
-    return state.defaultPng
-  })
+  const renderSpy = vi.fn(
+    async (_doc: unknown, pageNum: number, _cropRect?: unknown): Promise<Uint8Array> => {
+      const override = state.renderByPage.get(pageNum)
+      if (override) throw override
+      return state.defaultPng
+    }
+  )
 
   const captionSpy = vi.fn(async (_png: Uint8Array, pageNum: number): Promise<string | null> => {
     const override = state.captionByPage.get(pageNum)
@@ -221,7 +223,7 @@ describe('enrichPagesWithCaptions', () => {
     ])
     const candidates = [
       { pageNum: 1, isCandidate: false },
-      { pageNum: 2, isCandidate: true },
+      { pageNum: 2, isCandidate: true, cropRect: [1, 2, 3, 4] as [number, number, number, number] },
     ]
     mocks.state.captionByPage.set(2, null)
 
@@ -250,7 +252,7 @@ describe('enrichPagesWithCaptions', () => {
     ])
     const candidates = [
       { pageNum: 1, isCandidate: false },
-      { pageNum: 2, isCandidate: true },
+      { pageNum: 2, isCandidate: true, cropRect: [1, 2, 3, 4] as [number, number, number, number] },
     ]
     mocks.state.captionByPage.set(2, 'pie chart 40 / 35 / 25 percent')
 
@@ -266,7 +268,7 @@ describe('enrichPagesWithCaptions', () => {
     expect(byPage.get(1)).toBe('page one body')
     // The candidate page invoked the renderer and the captioner exactly once.
     expect(mocks.renderSpy).toHaveBeenCalledTimes(1)
-    expect(mocks.renderSpy).toHaveBeenCalledWith(fakeDoc, 2)
+    expect(mocks.renderSpy).toHaveBeenCalledWith(fakeDoc, 2, [1, 2, 3, 4])
     expect(mocks.captionSpy).toHaveBeenCalledTimes(1)
     expect(mocks.captionSpy).toHaveBeenCalledWith(mocks.state.defaultPng, 2)
   })

@@ -111,7 +111,7 @@ ingest_file({ filePath: "/absolute/path/to/document.pdf" })
 
 **PDF visual-mode decision:**
 - If the user explicitly asks for visual content, figures, charts, tables, diagrams, screenshots, or scanned page content to be searchable, use `visual: true`.
-- If the user asks to ingest a PDF and does not explicitly mention figures, charts, tables, diagrams, screenshots, or scanned content, ask one short question before ingesting: "Should figures, charts, tables, diagrams, or screenshots in this PDF be made searchable too?"
+- If the user asks to ingest a PDF and does not explicitly mention figures, charts, tables, diagrams, screenshots, or scanned content, ask one short question before ingesting: "Should figures, charts, tables, diagrams, or screenshots in this PDF be made searchable too? Visual ingest may take longer when the PDF has many visual pages."
 - If the user confirms visual content matters, use `visual: true`. If the user wants the fastest text-only ingest or says visual content is not important, use the default text-only ingest.
 - For non-PDF files, use normal `ingest_file`; visual mode has no effect.
 
@@ -167,10 +167,8 @@ npx mcp-local-rag ingest /absolute/path/to/figures.pdf --visual
 | Env | Default | Purpose |
 |-----|---------|---------|
 | `CACHE_DIR` | `./models/` | Shared model cache directory for the embedder and VLM |
-| `VLM_MODEL_NAME` | `onnx-community/granite-docling-258M-ONNX` | VLM model identifier (HuggingFace repo) |
-| `VLM_DTYPE` | empty → captioner uses `q4` | ONNX quantization variant (e.g., `q4`, `fp16`, `fp32`) |
 
-**First-time model download:** The model is downloaded on the first visual ingest and cached under `CACHE_DIR` (shared with the embedder). Download size depends on the selected `VLM_DTYPE` variant. The default variant (`q4`) is approximately 382 MiB; the full model repository is larger because it contains multiple variants.
+**First-time model download:** The VLM is downloaded on the first visual ingest and cached under `CACHE_DIR` (shared with the embedder). The download is hundreds of MB.
 
 **Retry on failure:** Per-page VLM failures degrade gracefully (the page is ingested as text-only) and the file ingest completes. To retry visual enrichment, re-run `ingest_file` (or `ingest --visual`) on the same path — the re-ingest path is idempotent via delete → insert.
 

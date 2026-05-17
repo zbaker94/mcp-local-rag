@@ -77,21 +77,6 @@ export function validateChunkMinLength(value: number): string | undefined {
   return undefined
 }
 
-/**
- * Validate `VLM_DTYPE` env value (alphanumeric + underscore; empty allowed).
- * The empty string is a valid pass-through value — the captioner is the single
- * normalization site that replaces empty with `DEFAULT_VLM_DTYPE` before
- * `from_pretrained` (DD §Captioner contract step 2).
- * Returns an error message if invalid, or undefined if valid.
- */
-export function validateVlmDtype(value: string): string | undefined {
-  const pattern = /^[a-zA-Z0-9_]*$/
-  if (!pattern.test(value)) {
-    return `Invalid VLM_DTYPE: ${value}. Only alphanumeric and '_' allowed (empty allowed).`
-  }
-  return undefined
-}
-
 // ============================================
 // Types
 // ============================================
@@ -101,7 +86,6 @@ export interface GlobalOptions {
   cacheDir?: string | undefined
   modelName?: string | undefined
   vlmModelName?: string | undefined
-  vlmDtype?: string | undefined
 }
 
 export interface ParsedGlobalResult {
@@ -114,7 +98,6 @@ export interface ResolvedGlobalConfig {
   cacheDir: string
   modelName: string
   vlmModelName: string
-  vlmDtype: string
 }
 
 // ============================================
@@ -125,10 +108,7 @@ export const GLOBAL_DEFAULTS = {
   dbPath: './lancedb/',
   cacheDir: './models/',
   modelName: 'Xenova/all-MiniLM-L6-v2',
-  vlmModelName: 'onnx-community/granite-docling-258M-ONNX',
-  // Empty pass-through: the captioner normalizes empty to DEFAULT_VLM_DTYPE
-  // (DD §Captioner contract step 2). No normalization at this layer.
-  vlmDtype: '',
+  vlmModelName: 'HuggingFaceTB/SmolVLM-256M-Instruct',
 } as const
 
 // ============================================
@@ -246,12 +226,11 @@ export function resolveGlobalConfig(options: GlobalOptions): ResolvedGlobalConfi
   const dbPath = options.dbPath ?? process.env['DB_PATH'] ?? GLOBAL_DEFAULTS.dbPath
   const cacheDir = options.cacheDir ?? process.env['CACHE_DIR'] ?? GLOBAL_DEFAULTS.cacheDir
   const modelName = options.modelName ?? process.env['MODEL_NAME'] ?? GLOBAL_DEFAULTS.modelName
-  const vlmModelName =
-    options.vlmModelName ?? process.env['VLM_MODEL_NAME'] ?? GLOBAL_DEFAULTS.vlmModelName
-  // Empty pass-through: the captioner normalizes empty to DEFAULT_VLM_DTYPE
-  // (DD §Captioner contract step 2). No normalization at this layer — both an
-  // unset env and an explicit '' resolve to '' here.
-  const vlmDtype = options.vlmDtype ?? process.env['VLM_DTYPE'] ?? GLOBAL_DEFAULTS.vlmDtype
+  // VLM model identifier and ONNX quantization variant are fixed for v1 — see
+  // server-main.ts for the rationale. `vlmModelName` is retained in the
+  // resolved config for the future model-family adapter; it is not
+  // user-tunable on the CLI surface yet.
+  const vlmModelName = GLOBAL_DEFAULTS.vlmModelName
 
   // Validate paths
   const dbPathError = validatePath(dbPath, '--db-path')
@@ -273,19 +252,14 @@ export function resolveGlobalConfig(options: GlobalOptions): ResolvedGlobalConfi
     process.exit(1)
   }
 
-  // Validate VLM model name (reuse same validator as MODEL_NAME — no fork)
-  const vlmModelNameError = validateModelName(vlmModelName)
-  if (vlmModelNameError) {
-    console.error(`Invalid VLM_MODEL_NAME: ${vlmModelNameError}`)
-    process.exit(1)
-  }
+  return { dbPath, cacheDir, modelName, vlmModelName }
+}
 
-  // Validate VLM dtype (local regex; empty allowed)
-  const vlmDtypeError = validateVlmDtype(vlmDtype)
-  if (vlmDtypeError) {
-    console.error(vlmDtypeError)
-    process.exit(1)
-  }
-
-  return { dbPath, cacheDir, modelName, vlmModelName, vlmDtype }
+/**
+ * Resolve RAG_DEVICE. The value is passed through to transformers.js — no
+ * allowlist is maintained here. Whitespace-only is treated as unset.
+ */
+export function resolveDevice(value: string | undefined): string {
+  if (!value || value.trim() === '') return 'cpu'
+  return value.trim()
 }
