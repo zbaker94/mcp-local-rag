@@ -121,7 +121,7 @@ Re-ingesting the same file replaces the old version automatically.
 
 ##### Ingesting PDFs with figures (visual mode)
 
-PDFs whose meaning depends on charts, tables, or diagrams can be enriched with VLM-generated captions so visual content becomes searchable through the same vector + FTS pipeline.
+PDFs with charts, tables, or diagrams can optionally add local VLM-generated captions to the related text chunks, giving visual content some searchable representation in the same vector + FTS pipeline.
 
 **Via MCP**:
 ```
