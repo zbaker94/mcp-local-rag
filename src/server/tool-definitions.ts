@@ -45,6 +45,13 @@ export const toolDefinitions: Tool[] = [
           description:
             'If true and the file is a PDF, run VLM captioning on figure pages. No effect on non-PDF files.',
         },
+        visualQuality: {
+          type: 'string',
+          enum: ['fast', 'quality'],
+          default: 'fast',
+          description:
+            'VLM profile to use when visual is true. "fast" (default) is the lightweight SmolVLM-256M; "quality" is Qwen2.5-VL-3B-Instruct-ONNX with higher fidelity on figures with in-image text (~10x model-cache footprint, ~2x per-page inference). The server also accepts an empty string as a synonym for omitted (normalized to "fast"). Silently ignored when visual is false.',
+        },
       },
       required: ['filePath'],
     },

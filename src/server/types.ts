@@ -13,8 +13,6 @@ export interface RAGServerConfig {
   modelName: string
   /** Model cache directory */
   cacheDir: string
-  /** VLM model identifier (defaults supplied by server-main / CLI resolver) */
-  vlmModelName: string
   /** Document base directory */
   baseDir: string
   /** Maximum file size (100MB) */
@@ -59,6 +57,14 @@ export interface IngestFileInput {
    * arrive as `unknown` from the SDK (AC-012).
    */
   visual?: boolean
+  /**
+   * Visual-quality profile when `visual` is true. Some MCP clients send the
+   * empty string for unspecified optional parameters, so the boundary
+   * handler also accepts `""` and normalizes it to `'fast'`. The internal
+   * `QualityProfile` type stays narrow (`'fast' | 'quality'`); `""` does
+   * not propagate past `handleIngestFile`.
+   */
+  visualQuality?: 'fast' | 'quality' | ''
 }
 
 /**
