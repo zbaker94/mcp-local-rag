@@ -89,13 +89,9 @@ export function parseChunkMinLength(value: string | undefined): ParseResult<numb
  */
 export async function startServer(): Promise<void> {
   try {
-    // VLM model identifier and ONNX quantization variant are fixed for v1.
-    // `vlmModelName` is kept in the config so a future model-family adapter
-    // can swap this literal for a resolver without changing the surrounding
-    // wiring.
-    const vlmModelName = 'HuggingFaceTB/SmolVLM-256M-Instruct'
-
-    // RAGServer configuration (env-only for MCP client compatibility)
+    // RAGServer configuration (env-only for MCP client compatibility). The
+    // VLM profile selection (`fast` vs `quality`) is a per-ingest parameter
+    // on the `ingest_file` MCP tool and is not configured here.
     const device = resolveDevice(process.env['RAG_DEVICE'])
     const config: ConstructorParameters<typeof RAGServer>[0] = {
       dbPath: process.env['DB_PATH'] || './lancedb/',
@@ -104,7 +100,6 @@ export async function startServer(): Promise<void> {
       baseDir: process.env['BASE_DIR'] || process.cwd(),
       maxFileSize: Number.parseInt(process.env['MAX_FILE_SIZE'] || '104857600', 10), // 100MB
       device,
-      vlmModelName,
     }
 
     // Collect configuration warnings

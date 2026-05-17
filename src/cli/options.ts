@@ -85,7 +85,6 @@ export interface GlobalOptions {
   dbPath?: string | undefined
   cacheDir?: string | undefined
   modelName?: string | undefined
-  vlmModelName?: string | undefined
 }
 
 export interface ParsedGlobalResult {
@@ -97,7 +96,6 @@ export interface ResolvedGlobalConfig {
   dbPath: string
   cacheDir: string
   modelName: string
-  vlmModelName: string
 }
 
 // ============================================
@@ -108,7 +106,6 @@ export const GLOBAL_DEFAULTS = {
   dbPath: './lancedb/',
   cacheDir: './models/',
   modelName: 'Xenova/all-MiniLM-L6-v2',
-  vlmModelName: 'HuggingFaceTB/SmolVLM-256M-Instruct',
 } as const
 
 // ============================================
@@ -226,11 +223,6 @@ export function resolveGlobalConfig(options: GlobalOptions): ResolvedGlobalConfi
   const dbPath = options.dbPath ?? process.env['DB_PATH'] ?? GLOBAL_DEFAULTS.dbPath
   const cacheDir = options.cacheDir ?? process.env['CACHE_DIR'] ?? GLOBAL_DEFAULTS.cacheDir
   const modelName = options.modelName ?? process.env['MODEL_NAME'] ?? GLOBAL_DEFAULTS.modelName
-  // VLM model identifier and ONNX quantization variant are fixed for v1 — see
-  // server-main.ts for the rationale. `vlmModelName` is retained in the
-  // resolved config for the future model-family adapter; it is not
-  // user-tunable on the CLI surface yet.
-  const vlmModelName = GLOBAL_DEFAULTS.vlmModelName
 
   // Validate paths
   const dbPathError = validatePath(dbPath, '--db-path')
@@ -252,7 +244,7 @@ export function resolveGlobalConfig(options: GlobalOptions): ResolvedGlobalConfi
     process.exit(1)
   }
 
-  return { dbPath, cacheDir, modelName, vlmModelName }
+  return { dbPath, cacheDir, modelName }
 }
 
 /**

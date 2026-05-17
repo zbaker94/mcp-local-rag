@@ -24,6 +24,7 @@ import type { SemanticChunker, TextChunk } from '../chunker/index.js'
 import type { EmbedderInterface } from '../chunker/semantic-chunker.js'
 import type { DocumentParser } from '../parser/index.js'
 import { extractPdfTitle } from '../parser/title-extractor.js'
+import type { QualityProfile } from '../pdf-visual/types.js'
 import { buildChunksAndEmbeddings } from './compute.js'
 
 /**
@@ -39,17 +40,13 @@ export interface VisualPdfParser {
 }
 
 /**
- * Captioner configuration forwarded to `pdf-visual.createCaptioner`. Mirrors
- * the legacy shape used by `cli/ingest.ts` and `server/index.ts`; the
- * `modelName` field is currently passed through but ignored — the dispatcher
- * resolves the model from `profile` (hardcoded to `'fast'` in Phase 1, made
- * caller-selectable in Phase 3). Kept on the interface so upstream callers
- * compile against the same shape; Phase 3 removes `modelName` here and adds
- * `profile`.
+ * Captioner configuration forwarded to `pdf-visual.createCaptioner`. The
+ * `profile` selects the underlying VLM family (`fast` = SmolVLM-256M,
+ * `quality` = Qwen2.5-VL-3B); the actual model identifier lives inside the
+ * profile module.
  */
 export interface CaptionerConfig {
-  /** Ignored in Phase 1. Removed and replaced by `profile` in Phase 3. */
-  modelName: string
+  profile: QualityProfile
   cacheDir: string
   /** Execution device passed through to the captioner model. */
   device?: string | undefined
@@ -118,17 +115,7 @@ export async function prepareVisualPdfChunks(
   // invariant while removing the duplication.
   const pdfVisual = await import('../pdf-visual/index.js')
 
-  // Bridge to the dispatcher-based captioner contract introduced in this
-  // refactor. `captionerConfig.modelName` is no longer the captioner's tuning
-  // knob — the model is resolved inside the selected profile. Phase 1 hard-
-  // codes `profile: 'fast'` so default behavior matches v0.14.0; Phase 3
-  // wires the profile through `IngestSingleFileOptions` / CLI flag / MCP
-  // tool parameter and drops `modelName` from this interface.
-  const captioner = pdfVisual.createCaptioner({
-    profile: 'fast',
-    cacheDir: captionerConfig.cacheDir,
-    ...(captionerConfig.device !== undefined ? { device: captionerConfig.device } : {}),
-  })
+  const captioner = pdfVisual.createCaptioner(captionerConfig)
 
   const { doc, metadataTitle, pages } = await parser.parsePdfPages(filePath, embedder)
   try {
