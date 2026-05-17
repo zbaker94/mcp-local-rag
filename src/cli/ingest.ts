@@ -9,6 +9,7 @@ import type { Embedder } from '../embedder/index.js'
 import { buildChunksAndEmbeddings } from '../ingest/compute.js'
 import { prepareVisualPdfChunks } from '../ingest/visual.js'
 import { DocumentParser, SUPPORTED_EXTENSIONS } from '../parser/index.js'
+import type { QualityProfile } from '../pdf-visual/types.js'
 import type { VectorChunk, VectorStore } from '../vectordb/index.js'
 import { createEmbedder, createVectorStore } from './common.js'
 import type { GlobalOptions, ResolvedGlobalConfig } from './options.js'
@@ -50,6 +51,12 @@ interface IngestCliOptions {
   maxFileSize?: number | undefined
   chunkMinLength?: number | undefined
   visual?: boolean | undefined
+  /**
+   * Visual-quality profile selector. Only meaningful when `visual` is true;
+   * silently ignored otherwise (mirrors the existing `--visual` precedent
+   * of silently coercing for non-PDF files). Defaults to `'fast'`.
+   */
+  visualQuality?: QualityProfile | undefined
 }
 
 interface ParsedArgs {
@@ -75,11 +82,12 @@ const HELP_TEXT = `Usage: mcp-local-rag [global-options] ingest [options] <path>
 Ingest a single file or all supported files under a directory.
 
 Options:
-  --base-dir <path>        Base directory for documents (default: cwd)
-  --max-file-size <n>      Max file size in bytes (default: ${INGEST_DEFAULTS.maxFileSize})
-  --chunk-min-length <n>   Minimum chunk length in characters (default: 50, range: 1-10000)
-  --visual                 Enable VLM captioning for PDF figure pages (PDFs only; no effect on other types)
-  -h, --help               Show this help
+  --base-dir <path>          Base directory for documents (default: cwd)
+  --max-file-size <n>        Max file size in bytes (default: ${INGEST_DEFAULTS.maxFileSize})
+  --chunk-min-length <n>     Minimum chunk length in characters (default: 50, range: 1-10000)
+  --visual                   Enable VLM captioning for PDF figure pages (PDFs only; no effect on other types)
+  --visual-quality <profile> VLM profile when --visual is set: fast (default, lightweight) or quality (Qwen2.5-VL-3B, ~10x cache, ~2x inference)
+  -h, --help                 Show this help
 
 Global options (must appear before "ingest"):
   --db-path <path>         LanceDB database path
@@ -154,6 +162,22 @@ export function parseArgs(args: string[]): ParsedArgs {
         options.visual = true
         i++
         break
+      case '--visual-quality': {
+        const value = args[++i]
+        if (value === undefined || value.startsWith('-')) {
+          console.error('Missing value for --visual-quality')
+          process.exit(1)
+        }
+        if (value !== 'fast' && value !== 'quality') {
+          console.error(
+            `Invalid value for --visual-quality: "${value.slice(0, 100)}". Expected "fast" or "quality".`
+          )
+          process.exit(1)
+        }
+        options.visualQuality = value
+        i++
+        break
+      }
       default:
         if (arg.startsWith('-')) {
           console.error(`Unknown option: ${arg}`)
@@ -314,22 +338,22 @@ async function collectFiles(targetPath: string, excludePaths: string[]): Promise
 // ============================================
 
 /**
- * Options for `ingestSingleFile`. Discriminated on `visual` so the visual path
- * is type-only callable with the VLM config it actually needs:
+ * Options for `ingestSingleFile`. Discriminated on `visual` so the visual
+ * path is type-only callable with the VLM config it actually needs:
  *  - `visual` absent or `false` → no VLM fields required (and not accepted).
- *  - `visual: true` → `vlmModelName` and `cacheDir` required; `device` optional.
+ *  - `visual: true` → `profile` and `cacheDir` required; `device` optional.
  *
- * Why a union rather than always-required fields: making `vlmModelName` /
- * `cacheDir` unconditionally required forces non-visual callers (default-mode
- * tests, future direct-import callers that only ingest non-PDF files) to
- * fabricate VLM config they will never use. The visual-true variant still
- * catches accidental misuse at compile time, which was the original goal.
+ * Why a union rather than always-required fields: making the VLM fields
+ * unconditionally required forces non-visual callers (default-mode tests,
+ * future direct-import callers that only ingest non-PDF files) to fabricate
+ * VLM config they will never use. The visual-true variant still catches
+ * accidental misuse at compile time, which was the original goal.
  */
 export type IngestSingleFileOptions =
   | { visual?: false | undefined }
   | {
       visual: true
-      vlmModelName: string
+      profile: QualityProfile
       cacheDir: string
       device?: string | undefined
     }
@@ -367,11 +391,12 @@ export async function ingestSingleFile(
     // inside that helper, not here). This branch keeps the CLI persistence
     // model (delete + insert; bulk-loop optimize at the end of `runIngest`).
     //
-    // `vlmModelName` and `cacheDir` are required by `prepareVisualPdfChunks`;
-    // the CLI bulk-loop always supplies them via the resolved `globalConfig`
-    // (see `resolveGlobalConfig` in `cli/options.ts`).
+    // `profile` and `cacheDir` are required by `prepareVisualPdfChunks`;
+    // the CLI bulk-loop always supplies them from the resolved CLI options
+    // (`runIngest` defaults `visualQuality` to `'fast'` when `--visual` is
+    // set without `--visual-quality`).
     const visualResult = await prepareVisualPdfChunks(filePath, parser, chunker, embedder, {
-      modelName: options.vlmModelName,
+      profile: options.profile,
       cacheDir: options.cacheDir,
       device: options.device,
     })
@@ -542,7 +567,11 @@ export async function runIngest(args: string[], globalOptions: GlobalOptions = {
         const ingestOptions: IngestSingleFileOptions = options.visual
           ? {
               visual: true,
-              vlmModelName: globalConfig.vlmModelName,
+              // Default the profile to `'fast'` when `--visual-quality` was
+              // not provided. The flag is silently ignored when `--visual`
+              // itself is absent (mirrors the existing `--visual` precedent
+              // of silently coercing for non-PDF files).
+              profile: options.visualQuality ?? 'fast',
               cacheDir: globalConfig.cacheDir,
               device: resolveDevice(process.env['RAG_DEVICE']),
             }

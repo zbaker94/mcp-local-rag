@@ -62,8 +62,6 @@ export class RAGServer {
   private readonly excludePaths: string[]
   private readonly configWarnings: string[]
   private readonly minChunkLength: number
-  // Read by the visual dispatch branch to construct the captioner
-  private readonly vlmModelName: string
   private readonly device: string | undefined
   private queryWarningsShown = false
 
@@ -73,7 +71,6 @@ export class RAGServer {
     this.cacheDir = config.cacheDir
     this.configWarnings = config.configWarnings ?? []
     this.minChunkLength = config.chunkMinLength ?? DEFAULT_MIN_CHUNK_LENGTH
-    this.vlmModelName = config.vlmModelName
     this.device = config.device
     this.excludePaths = [`${resolve(this.dbPath)}${sep}`, `${resolve(this.cacheDir)}${sep}`]
     this.server = new Server(
@@ -192,7 +189,7 @@ export class RAGServer {
    */
   async initialize(): Promise<void> {
     await this.vectorStore.initialize()
-    console.error(`RAGServer initialized (vlmModelName=${this.vlmModelName})`)
+    console.error('RAGServer initialized')
   }
 
   /**
@@ -265,6 +262,23 @@ export class RAGServer {
       throw new McpError(ErrorCode.InvalidParams, "'visual' must be a boolean if provided")
     }
 
+    // Runtime validation + normalization of `visualQuality`. The MCP boundary
+    // receives `unknown`, so the JSON Schema enum is necessary but not
+    // sufficient. Some MCP clients send `""` for unspecified optional
+    // parameters; accept both `undefined` and `""` and normalize to `'fast'`
+    // so the internal `QualityProfile` type stays narrow.
+    const visualQualityArg: unknown = (args as { visualQuality?: unknown }).visualQuality
+    let visualQuality: 'fast' | 'quality' = 'fast'
+    if (visualQualityArg !== undefined && visualQualityArg !== '') {
+      if (visualQualityArg !== 'fast' && visualQualityArg !== 'quality') {
+        throw new McpError(
+          ErrorCode.InvalidParams,
+          "'visualQuality' must be 'fast' or 'quality' if provided"
+        )
+      }
+      visualQuality = visualQualityArg
+    }
+
     let backup: VectorChunk[] | null = null
 
     try {
@@ -301,7 +315,7 @@ export class RAGServer {
           this.chunker,
           this.embedder,
           {
-            modelName: this.vlmModelName,
+            profile: visualQuality,
             cacheDir: this.cacheDir,
             device: this.device,
           }
