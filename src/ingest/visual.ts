@@ -39,11 +39,16 @@ export interface VisualPdfParser {
 }
 
 /**
- * Captioner configuration forwarded verbatim to `pdf-visual.createCaptioner`.
- * Mirrors `CaptionerConfig` from `src/pdf-visual/types.ts` without taking a
- * direct dependency on the dynamically-imported module (NFR-1).
+ * Captioner configuration forwarded to `pdf-visual.createCaptioner`. Mirrors
+ * the legacy shape used by `cli/ingest.ts` and `server/index.ts`; the
+ * `modelName` field is currently passed through but ignored — the dispatcher
+ * resolves the model from `profile` (hardcoded to `'fast'` in Phase 1, made
+ * caller-selectable in Phase 3). Kept on the interface so upstream callers
+ * compile against the same shape; Phase 3 removes `modelName` here and adds
+ * `profile`.
  */
 export interface CaptionerConfig {
+  /** Ignored in Phase 1. Removed and replaced by `profile` in Phase 3. */
   modelName: string
   cacheDir: string
   /** Execution device passed through to the captioner model. */
@@ -113,7 +118,17 @@ export async function prepareVisualPdfChunks(
   // invariant while removing the duplication.
   const pdfVisual = await import('../pdf-visual/index.js')
 
-  const captioner = pdfVisual.createCaptioner(captionerConfig)
+  // Bridge to the dispatcher-based captioner contract introduced in this
+  // refactor. `captionerConfig.modelName` is no longer the captioner's tuning
+  // knob — the model is resolved inside the selected profile. Phase 1 hard-
+  // codes `profile: 'fast'` so default behavior matches v0.14.0; Phase 3
+  // wires the profile through `IngestSingleFileOptions` / CLI flag / MCP
+  // tool parameter and drops `modelName` from this interface.
+  const captioner = pdfVisual.createCaptioner({
+    profile: 'fast',
+    cacheDir: captionerConfig.cacheDir,
+    ...(captionerConfig.device !== undefined ? { device: captionerConfig.device } : {}),
+  })
 
   const { doc, metadataTitle, pages } = await parser.parsePdfPages(filePath, embedder)
   try {
@@ -121,7 +136,7 @@ export async function prepareVisualPdfChunks(
       pages.map((p) => ({ pageNum: p.pageNum, stextJson: p.stextJson })),
       doc as Parameters<typeof pdfVisual.detectVisualCandidates>[1]
     )
-    const enrichedPages = await pdfVisual.enrichPagesWithCaptions(
+    const { pages: enrichedPages, captions } = await pdfVisual.enrichPagesWithCaptions(
       pages,
       candidates,
       // The dynamic import widens the doc type at the boundary; the parser
@@ -134,8 +149,10 @@ export async function prepareVisualPdfChunks(
       .filter((t) => t.length > 0)
       .join('\n\n')
 
-    // Chunk + embed once on the joined visual+text content. Title is derived
-    // AFTER chunking from `chunks[0]?.text` (DD §Title resolution).
+    // Chunk + embed the page text WITHOUT captions inline. Captions are
+    // emitted as dedicated chunks below so the semantic chunker cannot split
+    // their internal Summary / Keywords structure on sentence-boundary
+    // vocabulary shifts.
     const { chunks, embeddings } = await buildChunksAndEmbeddings(text, null, chunker, embedder)
 
     const titleResult = extractPdfTitle(
@@ -145,6 +162,20 @@ export async function prepareVisualPdfChunks(
       pages[0]?.page1FontHint
     )
     const title = titleResult.title || null
+
+    // Append one dedicated chunk per caption. The `[Visual content on page N:
+    // …]` wrapper is applied here (previously applied in the orchestrator)
+    // so the caption chunk text matches the historical marker format used by
+    // downstream search.
+    if (captions.length > 0) {
+      const captionChunks = captions.map((c, i) => ({
+        text: `[Visual content on page ${c.pageNum}: ${c.text}]`,
+        index: chunks.length + i,
+      }))
+      const captionEmbeddings = await embedder.embedBatch(captionChunks.map((c) => c.text))
+      chunks.push(...captionChunks)
+      embeddings.push(...captionEmbeddings)
+    }
 
     return { chunks, embeddings, title, text }
   } finally {
