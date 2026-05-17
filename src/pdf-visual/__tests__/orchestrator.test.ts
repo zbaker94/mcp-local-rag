@@ -1,29 +1,33 @@
-// T3.4 — `enrichPagesWithCaptions` unit tests (AC-003, AC-004).
+// `enrichPagesWithCaptions` unit tests (AC-003, AC-004).
 //
-// Asserts the orchestrator's public contract documented in
-// docs/design/vlm-pdf-enrichment-design.md §Component → pdf-visual/index.ts
-// — `enrichPagesWithCaptions` orchestrator:
+// Asserts the orchestrator's public contract:
 //
 //   enrichPagesWithCaptions(
 //     pages: Array<{ pageNum, text, stextJson }>,
 //     candidates: Array<{ pageNum, isCandidate }>,
 //     doc: MupdfDocument,
 //     captioner: Captioner
-//   ): Promise<Array<{ pageNum, text, stextJson }>>
+//   ): Promise<{ pages, captions: Array<{ pageNum, text }> }>
 //
-// Verification points (per task file Red Phase):
+// Per the visual-quality-mode refactor, captions are no longer mutated into
+// `page.text`. The orchestrator returns the unchanged `pages` array plus a
+// dedicated `captions` array; the `[Visual content on page N: ...]` wrapper
+// and chunk emission live in `src/ingest/visual.ts`.
+//
+// Verification points:
 //   - AC-003: when no candidate has `isCandidate === true`, the captioner is
-//     never invoked (call count 0). Also implies the renderer is never invoked.
-//   - AC-004: per-page captioner failures are swallowed. The failing page's
-//     text is left unchanged (no `[Visual content on page N: ` substring),
-//     while subsequent candidate pages receive their caption normally. A
-//     warn/error-level log line names the failed page.
-//   - null caption: when the captioner returns `null`, the page text is left
-//     unchanged AND a warn log line names the page (DD: null → warn log,
+//     never invoked (call count 0), the renderer is never invoked, and the
+//     returned `captions` array is empty.
+//   - AC-004: per-page captioner failures are swallowed — the failing page
+//     produces no `captions[]` entry, while subsequent candidate pages do.
+//     A warn/error-level log line names the failed page.
+//   - null caption: when the captioner returns `null`, the page produces no
+//     `captions[]` entry AND a warn log line names the page (null → warn log,
 //     same effect as failure but distinct log channel).
-//   - Happy path: a candidate page receives
-//     `[Visual content on page N: <caption>]` appended to its text (joined
-//     with `\n\n` when prior text is non-empty).
+//   - Happy path: a candidate page produces a `{ pageNum, text }` record on
+//     `captions[]` with the raw caption string (no `[Visual content ...]`
+//     wrapper — wrapping is applied by `ingest/visual.ts`). `page.text` is
+//     never mutated.
 //
 // Renderer and captioner are mocked via `vi.hoisted` per the project-wide
 // constraint (`vitest.config.mjs` sets `isolate: false`, so mock factories
@@ -176,7 +180,13 @@ describe('enrichPagesWithCaptions', () => {
     expect(mocks.captionSpy).toHaveBeenCalledTimes(0)
     expect(mocks.renderSpy).toHaveBeenCalledTimes(0)
     // Texts pass through unchanged.
-    expect(result.map((p) => p.text)).toEqual(['page one body', 'page two body', 'page three body'])
+    expect(result.pages.map((p) => p.text)).toEqual([
+      'page one body',
+      'page two body',
+      'page three body',
+    ])
+    // No captions produced.
+    expect(result.captions).toEqual([])
   })
 
   it('AC-004: a single page captioner failure is swallowed; other pages still get captions', async () => {
@@ -199,12 +209,14 @@ describe('enrichPagesWithCaptions', () => {
     const result = await enrichPagesWithCaptions(pages, candidates, fakeDoc, captioner)
 
     // Assert
-    const byPage = new Map(result.map((p) => [p.pageNum, p.text]))
-    // Page 2 failure was swallowed — no caption bracket appended.
+    // Page texts are never mutated — both pages pass through verbatim.
+    const byPage = new Map(result.pages.map((p) => [p.pageNum, p.text]))
     expect(byPage.get(2)).toBe('page two body')
-    expect(byPage.get(2)).not.toContain('[Visual content on page 2:')
-    // Page 3 happy path — caption appended in the documented format.
-    expect(byPage.get(3)).toContain('[Visual content on page 3: bar chart with X axis labels]')
+    expect(byPage.get(3)).toBe('page three body')
+    // Page 2 failure swallowed → no caption record.
+    // Page 3 happy path → one caption record with the raw caption string
+    // (no `[Visual content ...]` wrapper — wrapping happens in ingest/visual.ts).
+    expect(result.captions).toEqual([{ pageNum: 3, text: 'bar chart with X axis labels' }])
     // A log line names page 2. The DD specifies error-level for throw paths
     // and warn-level for null paths; either log channel is acceptable for the
     // throw path so long as the page number is captured.
@@ -231,9 +243,10 @@ describe('enrichPagesWithCaptions', () => {
     const result = await enrichPagesWithCaptions(pages, candidates, fakeDoc, captioner)
 
     // Assert
-    const byPage = new Map(result.map((p) => [p.pageNum, p.text]))
+    const byPage = new Map(result.pages.map((p) => [p.pageNum, p.text]))
     expect(byPage.get(2)).toBe('page two body')
-    expect(byPage.get(2)).not.toContain('[Visual content on page 2:')
+    // No caption record was produced for the null page.
+    expect(result.captions).toEqual([])
     // The null path must be warn-level, not error-level (it is not a failure).
     const warnMessages = warnSpy.mock.calls
       .flat()
@@ -244,7 +257,7 @@ describe('enrichPagesWithCaptions', () => {
     expect(errorSpy).toHaveBeenCalledTimes(0)
   })
 
-  it('happy path: appends [Visual content on page N: <caption>] to candidate page text', async () => {
+  it('happy path: emits a {pageNum, text} caption record without mutating page.text', async () => {
     // Arrange: page 2 is the sole candidate.
     const pages = makePages([
       { pageNum: 1, text: 'page one body' },
@@ -259,13 +272,13 @@ describe('enrichPagesWithCaptions', () => {
     // Act
     const result = await enrichPagesWithCaptions(pages, candidates, fakeDoc, captioner)
 
-    // Assert: exact bracket format per DD line 736.
-    const byPage = new Map(result.map((p) => [p.pageNum, p.text]))
-    expect(byPage.get(2)).toBe(
-      'page two body\n\n[Visual content on page 2: pie chart 40 / 35 / 25 percent]'
-    )
-    // Page 1 (non-candidate) untouched.
+    // Assert: pages pass through unchanged; caption surfaces only via the
+    // dedicated `captions` array. The `[Visual content on page N: ...]`
+    // wrapper is applied downstream in `src/ingest/visual.ts`, not here.
+    const byPage = new Map(result.pages.map((p) => [p.pageNum, p.text]))
     expect(byPage.get(1)).toBe('page one body')
+    expect(byPage.get(2)).toBe('page two body')
+    expect(result.captions).toEqual([{ pageNum: 2, text: 'pie chart 40 / 35 / 25 percent' }])
     // The candidate page invoked the renderer and the captioner exactly once.
     expect(mocks.renderSpy).toHaveBeenCalledTimes(1)
     expect(mocks.renderSpy).toHaveBeenCalledWith(fakeDoc, 2, [1, 2, 3, 4])

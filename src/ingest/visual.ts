@@ -24,6 +24,7 @@ import type { SemanticChunker, TextChunk } from '../chunker/index.js'
 import type { EmbedderInterface } from '../chunker/semantic-chunker.js'
 import type { DocumentParser } from '../parser/index.js'
 import { extractPdfTitle } from '../parser/title-extractor.js'
+import type { QualityProfile } from '../pdf-visual/types.js'
 import { buildChunksAndEmbeddings } from './compute.js'
 
 /**
@@ -39,12 +40,13 @@ export interface VisualPdfParser {
 }
 
 /**
- * Captioner configuration forwarded verbatim to `pdf-visual.createCaptioner`.
- * Mirrors `CaptionerConfig` from `src/pdf-visual/types.ts` without taking a
- * direct dependency on the dynamically-imported module (NFR-1).
+ * Captioner configuration forwarded to `pdf-visual.createCaptioner`. The
+ * `profile` selects the underlying VLM family (`fast` = SmolVLM-256M,
+ * `quality` = Qwen2.5-VL-3B); the actual model identifier lives inside the
+ * profile module.
  */
 export interface CaptionerConfig {
-  modelName: string
+  profile: QualityProfile
   cacheDir: string
   /** Execution device passed through to the captioner model. */
   device?: string | undefined
@@ -121,7 +123,7 @@ export async function prepareVisualPdfChunks(
       pages.map((p) => ({ pageNum: p.pageNum, stextJson: p.stextJson })),
       doc as Parameters<typeof pdfVisual.detectVisualCandidates>[1]
     )
-    const enrichedPages = await pdfVisual.enrichPagesWithCaptions(
+    const { pages: enrichedPages, captions } = await pdfVisual.enrichPagesWithCaptions(
       pages,
       candidates,
       // The dynamic import widens the doc type at the boundary; the parser
@@ -134,8 +136,10 @@ export async function prepareVisualPdfChunks(
       .filter((t) => t.length > 0)
       .join('\n\n')
 
-    // Chunk + embed once on the joined visual+text content. Title is derived
-    // AFTER chunking from `chunks[0]?.text` (DD §Title resolution).
+    // Chunk + embed the page text WITHOUT captions inline. Captions are
+    // emitted as dedicated chunks below so the semantic chunker cannot split
+    // their internal Summary / Keywords structure on sentence-boundary
+    // vocabulary shifts.
     const { chunks, embeddings } = await buildChunksAndEmbeddings(text, null, chunker, embedder)
 
     const titleResult = extractPdfTitle(
@@ -145,6 +149,20 @@ export async function prepareVisualPdfChunks(
       pages[0]?.page1FontHint
     )
     const title = titleResult.title || null
+
+    // Append one dedicated chunk per caption. The `[Visual content on page N:
+    // …]` wrapper is applied here (previously applied in the orchestrator)
+    // so the caption chunk text matches the historical marker format used by
+    // downstream search.
+    if (captions.length > 0) {
+      const captionChunks = captions.map((c, i) => ({
+        text: `[Visual content on page ${c.pageNum}: ${c.text}]`,
+        index: chunks.length + i,
+      }))
+      const captionEmbeddings = await embedder.embedBatch(captionChunks.map((c) => c.text))
+      chunks.push(...captionChunks)
+      embeddings.push(...captionEmbeddings)
+    }
 
     return { chunks, embeddings, title, text }
   } finally {

@@ -8,23 +8,25 @@
 // site that catches those errors and continues with text-only output for the
 // offending page.
 //
-// Contract (DD §Component → enrichPagesWithCaptions orchestrator, lines
-// 712-742):
+// Captions are NOT mutated into `page.text`. Returning them as a separate
+// `captions` array lets the ingest layer emit them as dedicated chunks
+// (`src/ingest/visual.ts`), preserving the `Summary` + `Keywords` structure
+// against the semantic chunker's sentence-boundary splits.
+//
+// Contract:
 //   1. Build a Set of candidate page numbers from
 //      `candidates.filter(c => c.isCandidate).map(c => c.pageNum)`.
 //   2. Iterate `pages` in input order. For each page whose `pageNum` is in
 //      the candidate Set:
 //        - `pngBytes = await renderPdfPage(doc, page.pageNum, candidate.cropRect)`
 //        - `caption  = await captioner.caption(pngBytes, page.pageNum)`
-//        - `caption === null` → `console.warn` naming the page; leave
-//          `page.text` unchanged.
-//        - non-null → mutate `page.text` to
-//          `page.text + (page.text ? '\n\n' : '') + '[Visual content on page N: caption]'`.
+//        - `caption === null` → `console.warn` naming the page; no caption record.
+//        - non-null → push `{ pageNum, text: caption }` into `captions`.
 //        - thrown error → `console.warn` naming the page and including
-//          `err.message`; leave `page.text` unchanged. Per DD §FR-3, a
-//          per-page captioner failure is a warning-level event (the file
-//          ingest as a whole succeeds), not an error-level one.
-//   3. Return the (possibly mutated) `pages` array.
+//          `err.message`; no caption record. Per FR-3, a per-page captioner
+//          failure is warning-level (the file ingest as a whole succeeds).
+//   3. Return `{ pages, captions }`. The `pages` array is passed through
+//      unchanged (no text mutation).
 //
 // DPI is NOT a parameter of this function. The renderer owns DPI as a
 // module-private constant. If a future caller needs to override DPI it can
@@ -74,31 +76,44 @@ interface OrchestratorCandidate {
 }
 
 /**
- * Enrich the per-page text array with VLM-generated captions for each visual
- * candidate page. Per-page failures are tolerated: a thrown error or a `null`
- * caption leaves the offending page's text unchanged and logs an entry
- * naming the page. Other candidate pages are unaffected.
+ * Per-page caption record emitted by `enrichPagesWithCaptions`.
  *
- * @param pages - Per-page records from `parsePdfPages`. The same array is
- *                returned with `text` selectively mutated.
+ * `text` is the raw caption string returned by the captioner (without the
+ * `[Visual content on page N: …]` wrapper — wrapping happens at the ingest
+ * layer where the dedicated caption chunks are built).
+ */
+export interface VisualCaption {
+  pageNum: number
+  text: string
+}
+
+/**
+ * Generate VLM captions for each visual candidate page. Per-page failures are
+ * tolerated: a thrown error or a `null` caption is logged and the page produces
+ * no caption record. Other candidate pages are unaffected.
+ *
+ * @param pages - Per-page records from `parsePdfPages`. Passed through
+ *                unchanged (no text mutation).
  * @param candidates - Per-page `{ pageNum, isCandidate }` records from
  *                     `detectVisualCandidates`. Pages whose `isCandidate` is
- *                     false are passed through unchanged.
+ *                     false are skipped.
  * @param doc - The open mupdf `Document`. The orchestrator does not own its
  *              lifecycle — the caller is responsible for `doc.destroy()`.
  * @param captioner - The VLM wrapper from `createCaptioner`.
- * @returns The same `pages` array reference, with candidate pages' `text`
- *          fields possibly appended with `[Visual content on page N: …]`.
+ * @returns `{ pages, captions }`. `pages` is the same array reference, with
+ *          text fields untouched. `captions` contains one entry per page that
+ *          produced a non-empty caption.
  */
 export async function enrichPagesWithCaptions(
   pages: OrchestratorPage[],
   candidates: OrchestratorCandidate[],
   doc: MupdfDocument,
   captioner: Captioner
-): Promise<OrchestratorPage[]> {
+): Promise<{ pages: OrchestratorPage[]; captions: VisualCaption[] }> {
   const candidateByPage = new Map(
     candidates.filter((c) => c.isCandidate).map((c) => [c.pageNum, c])
   )
+  const captions: VisualCaption[] = []
 
   for (const page of pages) {
     const candidate = candidateByPage.get(page.pageNum)
@@ -110,26 +125,21 @@ export async function enrichPagesWithCaptions(
 
       if (caption === null) {
         // Empty / sanitized-empty caption is a documented non-failure (see
-        // DD §Component → captioner contract step 7 + §Component →
-        // orchestrator algorithm). Warn-log and skip the append.
+        // captioner contract step 7). Warn-log and emit no caption record.
         console.warn(`VLM caption empty for page ${page.pageNum}; proceeding text-only`)
         continue
       }
 
-      // Documented join string: a single blank line between existing text
-      // and the bracketed caption, but no leading separator when the page
-      // had no prior text (DD line 736).
-      const separator = page.text ? '\n\n' : ''
-      page.text = `${page.text}${separator}[Visual content on page ${page.pageNum}: ${caption}]`
+      captions.push({ pageNum: page.pageNum, text: caption })
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
-      // Per DD §FR-3 ("logs a warning"), a per-page captioner failure is
+      // Per FR-3 ("logs a warning"), a per-page captioner failure is
       // emitted at warn-level. The file ingest as a whole completes
       // successfully — only this single page degrades to text-only.
       console.warn(`VLM caption failed for page ${page.pageNum}: ${message}`)
-      // page.text intentionally left unchanged — AC-004.
+      // No caption record for this page — AC-004 (text-only fallback).
     }
   }
 
-  return pages
+  return { pages, captions }
 }
