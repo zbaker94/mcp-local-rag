@@ -215,7 +215,10 @@ describe('handleIngestFile - `visual` Runtime Validation (AC-012)', () => {
       metadataTitle: undefined,
       pages: [{ pageNum: 1, text: 'page 1 text', stextJson: { blocks: [] } }],
     })
-    mocks.enrichPagesWithCaptions.mockImplementation(async (pages: unknown) => pages)
+    mocks.enrichPagesWithCaptions.mockImplementation(async (pages: unknown) => ({
+      pages,
+      captions: [],
+    }))
     mocks.detectVisualCandidates.mockReturnValue([])
     mocks.createCaptioner.mockReturnValue({ caption: vi.fn().mockResolvedValue(null) })
     // Default chunker behavior — return a single chunk so the handler does NOT

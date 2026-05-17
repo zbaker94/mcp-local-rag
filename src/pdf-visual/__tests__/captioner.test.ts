@@ -1,15 +1,23 @@
-// `createCaptioner` unit test.
+// `createCaptioner` (`fast` profile dispatch) unit test.
 //
-// Asserts the captioner's public contract documented in
-// docs/design/vlm-pdf-enrichment-design.md §Component → pdf-visual/captioner.ts:
+// Phase 1 of the visual-quality-mode refactor routes the dispatcher's `fast`
+// profile to `captioners/fast.ts`, which is a verbatim port of the v0.14.0
+// captioner. The mock surface and assertions in this file were authored
+// against that port and continue to apply: the model class is still
+// `AutoModelForImageTextToText`, the processor is still called with an array-
+// form image list, generation options are still
+// `{max_new_tokens:128, repetition_penalty:1.15, no_repeat_ngram_size:3}`.
 //
-//   createCaptioner(config: CaptionerConfig): Captioner
-//   Captioner.caption(pngBytes: Uint8Array, pageNum: number): Promise<string | null>
+// What changed at the dispatcher boundary:
+//   - `CaptionerConfig` no longer carries `modelName`. The model identifier
+//     (`HuggingFaceTB/SmolVLM-256M-Instruct`) lives inside `captioners/fast.ts`.
+//   - Construction is `createCaptioner({ profile: 'fast', cacheDir, device? })`.
 //
 // Verification points:
-//   - `from_pretrained` receives `config.modelName` and `{ dtype: VLM_DTYPE }`;
-//     model loading also receives the resolved device.
-//   - `model.generate` receives the pinned decoding options
+//   - `from_pretrained` receives the `fast`-profile model identifier and the
+//     dispatcher-exposed `VLM_DTYPE`; model loading also receives the
+//     resolved device.
+//   - `model.generate` receives the `fast`-profile decoding options
 //     (`max_new_tokens`, `repetition_penalty`, `no_repeat_ngram_size`).
 //   - Post-decode boundary cases: 1000 chars passes through unchanged, 1001
 //     chars truncated to 1000 + `…` (final length 1001), empty/whitespace-only/
@@ -130,12 +138,14 @@ let VlmError: typeof import('../types').VlmError
 
 const PNG_BYTES = new Uint8Array([0x89, 0x50, 0x4e, 0x47])
 
+const FAST_MODEL_ID = 'HuggingFaceTB/SmolVLM-256M-Instruct'
+
 const BASE_CONFIG = {
-  modelName: 'sentinel-default-model',
+  profile: 'fast' as const,
   cacheDir: '/tmp/cache',
 }
 
-describe('createCaptioner (CaptionerConfig flow + AC-011 length / emptiness)', () => {
+describe('createCaptioner — fast profile dispatch (CaptionerConfig flow + AC-011 length / emptiness)', () => {
   beforeAll(async () => {
     vi.resetModules()
     vi.doMock('@huggingface/transformers', transformersFactory)
@@ -161,20 +171,30 @@ describe('createCaptioner (CaptionerConfig flow + AC-011 length / emptiness)', (
     mocks.env.cacheDir = ''
   })
 
-  // ----- config.modelName flow -----
+  // ----- fast profile resolves its own model identifier -----
 
-  it('forwards config.modelName as the first argument to from_pretrained', async () => {
-    // Arrange
-    const captioner = createCaptioner({ ...BASE_CONFIG, modelName: 'sentinel-model-name' })
+  it('forwards the fast-profile model identifier as the first argument to from_pretrained', async () => {
+    // Arrange: model identifier is owned by `captioners/fast.ts`, not the
+    // caller. Pinning it here makes accidental changes loud.
+    const captioner = createCaptioner(BASE_CONFIG)
 
     // Act
     await captioner.caption(PNG_BYTES, 1)
 
-    // Assert: both AutoProcessor and AutoModel from_pretrained get the model name.
+    // Assert: both AutoProcessor and AutoModel from_pretrained receive the
+    // fast-profile literal.
     expect(mocks.mockProcessorFromPretrained).toHaveBeenCalledTimes(1)
-    expect(mocks.mockProcessorFromPretrained.mock.calls[0]?.[0]).toBe('sentinel-model-name')
+    expect(mocks.mockProcessorFromPretrained.mock.calls[0]?.[0]).toBe(FAST_MODEL_ID)
     expect(mocks.mockModelFromPretrained).toHaveBeenCalledTimes(1)
-    expect(mocks.mockModelFromPretrained.mock.calls[0]?.[0]).toBe('sentinel-model-name')
+    expect(mocks.mockModelFromPretrained.mock.calls[0]?.[0]).toBe(FAST_MODEL_ID)
+  })
+
+  // ----- dispatcher rejects unimplemented profiles -----
+
+  it("throws synchronously when profile is 'quality' (Phase 2 placeholder)", () => {
+    expect(() => createCaptioner({ ...BASE_CONFIG, profile: 'quality' as const })).toThrow(
+      /quality.*not yet implemented/i
+    )
   })
 
   // ----- VLM_DTYPE pinned -----
@@ -345,7 +365,7 @@ describe('createCaptioner (CaptionerConfig flow + AC-011 length / emptiness)', (
     const cause = (captured as VlmError).cause as Error
     expect(cause).toBeInstanceOf(Error)
     expect(cause.message).toContain('Captioner load failed')
-    expect(cause.message).toContain('modelName=sentinel-default-model')
+    expect(cause.message).toContain(`modelName=${FAST_MODEL_ID}`)
     expect(cause.message).toContain('device=cpu')
     expect(cause.message).toContain('boom-load')
 
