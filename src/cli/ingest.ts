@@ -2,15 +2,18 @@
 
 import { randomUUID } from 'node:crypto'
 import { opendir, stat } from 'node:fs/promises'
-import { extname, join, resolve, sep } from 'node:path'
+import { basename, extname, join, resolve, sep } from 'node:path'
 
 import { SemanticChunker } from '../chunker/index.js'
 import type { Embedder } from '../embedder/index.js'
+import { buildChunksAndEmbeddings } from '../ingest/compute.js'
+import { prepareVisualPdfChunks } from '../ingest/visual.js'
 import { DocumentParser, SUPPORTED_EXTENSIONS } from '../parser/index.js'
 import type { VectorChunk, VectorStore } from '../vectordb/index.js'
 import { createEmbedder, createVectorStore } from './common.js'
 import type { GlobalOptions, ResolvedGlobalConfig } from './options.js'
 import {
+  resolveDevice,
   resolveGlobalConfig,
   validateChunkMinLength,
   validateMaxFileSize,
@@ -46,6 +49,7 @@ interface IngestCliOptions {
   baseDir?: string | undefined
   maxFileSize?: number | undefined
   chunkMinLength?: number | undefined
+  visual?: boolean | undefined
 }
 
 interface ParsedArgs {
@@ -74,6 +78,7 @@ Options:
   --base-dir <path>        Base directory for documents (default: cwd)
   --max-file-size <n>      Max file size in bytes (default: ${INGEST_DEFAULTS.maxFileSize})
   --chunk-min-length <n>   Minimum chunk length in characters (default: 50, range: 1-10000)
+  --visual                 Enable VLM captioning for PDF figure pages (PDFs only; no effect on other types)
   -h, --help               Show this help
 
 Global options (must appear before "ingest"):
@@ -144,6 +149,11 @@ export function parseArgs(args: string[]): ParsedArgs {
         i++
         break
       }
+      case '--visual':
+        // Boolean toggle: no value consumed. Mirrors the -h/--help pattern.
+        options.visual = true
+        i++
+        break
       default:
         if (arg.startsWith('-')) {
           console.error(`Unknown option: ${arg}`)
@@ -304,21 +314,104 @@ async function collectFiles(targetPath: string, excludePaths: string[]): Promise
 // ============================================
 
 /**
+ * Options for `ingestSingleFile`. Discriminated on `visual` so the visual path
+ * is type-only callable with the VLM config it actually needs:
+ *  - `visual` absent or `false` → no VLM fields required (and not accepted).
+ *  - `visual: true` → `vlmModelName` and `cacheDir` required; `device` optional.
+ *
+ * Why a union rather than always-required fields: making `vlmModelName` /
+ * `cacheDir` unconditionally required forces non-visual callers (default-mode
+ * tests, future direct-import callers that only ingest non-PDF files) to
+ * fabricate VLM config they will never use. The visual-true variant still
+ * catches accidental misuse at compile time, which was the original goal.
+ */
+export type IngestSingleFileOptions =
+  | { visual?: false | undefined }
+  | {
+      visual: true
+      vlmModelName: string
+      cacheDir: string
+      device?: string | undefined
+    }
+
+/**
  * Ingest a single file: parse, chunk, embed, delete old chunks, insert new chunks.
  * Returns the number of chunks inserted.
+ *
+ * When `options.visual === true` AND the file is a `.pdf`, routes through the
+ * visual-enrichment path: `parsePdfPages` + VLM captioning (`pdf-visual`
+ * orchestrator) + joined-text chunking. `pdf-visual` is loaded via dynamic
+ * `await import('../pdf-visual/index.js')` so the default (non-visual) path
+ * never pulls the VLM module into the bundle (NFR-1 dynamic-import discipline,
+ * verified by AC-001 Proxy sentinel in T4.6).
+ *
+ * Non-visual, non-PDF, and `visual: true` + non-PDF (silently falls through
+ * to the default branch — AC-006) paths are byte-identical to the post-T0.3
+ * state and never load `pdf-visual`.
  */
-async function ingestSingleFile(
+export async function ingestSingleFile(
   filePath: string,
   parser: DocumentParser,
   chunker: SemanticChunker,
   embedder: Embedder,
-  vectorStore: VectorStore
+  vectorStore: VectorStore,
+  options?: IngestSingleFileOptions
 ): Promise<number> {
   // Parse file
   const isPdf = filePath.toLowerCase().endsWith('.pdf')
   let text: string
   let title: string | null = null
-  if (isPdf) {
+  if (options?.visual === true && isPdf) {
+    // Visual dispatch — delegates the shared visual-PDF flow to
+    // `prepareVisualPdfChunks` (NFR-1: the dynamic `pdf-visual` import lives
+    // inside that helper, not here). This branch keeps the CLI persistence
+    // model (delete + insert; bulk-loop optimize at the end of `runIngest`).
+    //
+    // `vlmModelName` and `cacheDir` are required by `prepareVisualPdfChunks`;
+    // the CLI bulk-loop always supplies them via the resolved `globalConfig`
+    // (see `resolveGlobalConfig` in `cli/options.ts`).
+    const visualResult = await prepareVisualPdfChunks(filePath, parser, chunker, embedder, {
+      modelName: options.vlmModelName,
+      cacheDir: options.cacheDir,
+      device: options.device,
+    })
+    const { chunks, embeddings } = visualResult
+    if (chunks.length === 0) {
+      console.error(`  Warning: 0 chunks generated (file may be empty or too short)`)
+      return 0
+    }
+    title = visualResult.title
+
+    // Persistence — identical to the default branch below; inlined here so
+    // chunks/embeddings produced on the visual path persist correctly. The
+    // joined enriched-page text is taken from the helper to preserve the
+    // pre-existing `metadata.fileSize` semantics (post-enrichment,
+    // pre-chunking text length).
+    await vectorStore.deleteChunks(filePath)
+    const timestamp = new Date().toISOString()
+    const vectorChunks: VectorChunk[] = chunks.map((chunk, index) => {
+      const embedding = embeddings[index]
+      if (!embedding) {
+        throw new Error(`Missing embedding for chunk ${index}`)
+      }
+      return {
+        id: randomUUID(),
+        filePath,
+        chunkIndex: chunk.index,
+        text: chunk.text,
+        vector: embedding,
+        metadata: {
+          fileName: basename(filePath),
+          fileSize: visualResult.text.length,
+          fileType: extname(filePath).slice(1),
+        },
+        fileTitle: title,
+        timestamp,
+      }
+    })
+    await vectorStore.insertChunks(vectorChunks)
+    return vectorChunks.length
+  } else if (isPdf) {
     const result = await parser.parsePdf(filePath, embedder)
     text = result.content
     title = result.title || null
@@ -328,15 +421,12 @@ async function ingestSingleFile(
     title = result.title || null
   }
 
-  // Chunk text
-  const chunks = await chunker.chunkText(text, embedder)
+  // Chunk text + generate embeddings via the shared computation layer (Phase 0).
+  const { chunks, embeddings } = await buildChunksAndEmbeddings(text, title, chunker, embedder)
   if (chunks.length === 0) {
     console.error(`  Warning: 0 chunks generated (file may be empty or too short)`)
     return 0
   }
-
-  // Generate embeddings
-  const embeddings = await embedder.embedBatch(chunks.map((c) => c.text))
 
   // Delete existing chunks for this file
   await vectorStore.deleteChunks(filePath)
@@ -355,9 +445,9 @@ async function ingestSingleFile(
       text: chunk.text,
       vector: embedding,
       metadata: {
-        fileName: filePath.split('/').pop() || filePath,
+        fileName: basename(filePath),
         fileSize: text.length,
-        fileType: filePath.split('.').pop() || '',
+        fileType: extname(filePath).slice(1),
       },
       fileTitle: title,
       timestamp,
@@ -442,7 +532,29 @@ export async function runIngest(args: string[], globalOptions: GlobalOptions = {
       const label = `[${i + 1}/${files.length}]`
 
       try {
-        const chunkCount = await ingestSingleFile(filePath, parser, chunker, embedder, vectorStore)
+        // Forward visual + VLM env-resolved options into the per-file ingestor.
+        // `ingestSingleFile` routes through the visual path when
+        // `options.visual === true && filePath.endsWith('.pdf')`. The two
+        // variants of `IngestSingleFileOptions` are built explicitly so the
+        // VLM fields only travel with the visual-true branch (the cacheDir is
+        // pre-validated by `resolveGlobalConfig` so the captioner does not
+        // re-read `process.env['CACHE_DIR']` raw).
+        const ingestOptions: IngestSingleFileOptions = options.visual
+          ? {
+              visual: true,
+              vlmModelName: globalConfig.vlmModelName,
+              cacheDir: globalConfig.cacheDir,
+              device: resolveDevice(process.env['RAG_DEVICE']),
+            }
+          : { visual: false }
+        const chunkCount = await ingestSingleFile(
+          filePath,
+          parser,
+          chunker,
+          embedder,
+          vectorStore,
+          ingestOptions
+        )
         if (chunkCount === 0) {
           // 0 chunks is a skip/warning, not a failure
           console.error(`${label} ${filePath} ... SKIPPED (0 chunks)`)

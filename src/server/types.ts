@@ -13,6 +13,8 @@ export interface RAGServerConfig {
   modelName: string
   /** Model cache directory */
   cacheDir: string
+  /** VLM model identifier (defaults supplied by server-main / CLI resolver) */
+  vlmModelName: string
   /** Document base directory */
   baseDir: string
   /** Maximum file size (100MB) */
@@ -49,6 +51,14 @@ export interface QueryDocumentsInput {
 export interface IngestFileInput {
   /** File path */
   filePath: string
+  /**
+   * When true and `filePath` is a PDF, the visual enrichment path runs
+   * (VLM captioning of figure-heavy pages). For non-PDF files this flag is
+   * silently coerced to the default text-only path (AC-006). The runtime
+   * check at the handler boundary stays in place because MCP arguments
+   * arrive as `unknown` from the SDK (AC-012).
+   */
+  visual?: boolean
 }
 
 /**

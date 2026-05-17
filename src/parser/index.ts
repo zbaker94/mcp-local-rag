@@ -4,6 +4,7 @@ import { statSync } from 'node:fs'
 import { lstat, readFile, realpath } from 'node:fs/promises'
 import { basename, extname, isAbsolute, resolve, sep } from 'node:path'
 import mammoth from 'mammoth'
+import type { Document as MupdfDocument } from 'mupdf'
 import { SemanticChunker } from '../chunker/index.js'
 import { type EmbedderInterface, filterPageBoundarySentences, type PageData } from './pdf-filter.js'
 import {
@@ -218,73 +219,32 @@ export class DocumentParser {
     await this.validateFilePath(filePath)
     this.validateFileSize(filePath)
 
+    // Hold `doc` outside the try so the `finally` block can dispose it after
+    // either a successful return or an error from `extractPdfPages` / the
+    // post-processing steps. `doc` stays `undefined` if `openDocument` itself
+    // throws — in that case there is no handle to destroy.
+    let doc: MupdfDocument | undefined
     try {
       const buffer = await readFile(filePath)
       const mupdf = await import('mupdf')
-      const doc = mupdf.Document.openDocument(buffer, 'application/pdf')
-      const numPages = doc.countPages()
+      doc = mupdf.Document.openDocument(buffer, 'application/pdf') as MupdfDocument
 
-      // Extract metadata for title extraction
-      const metadataTitle = doc.getMetaData('info:Title') || undefined
-
-      // Extract text with position information from each page
-      const pages: PageData[] = []
-      for (let i = 0; i < numPages; i++) {
-        const page = doc.loadPage(i)
-        const bounds = page.getBounds() // [x0, y0, x1, y1]
-        const pageHeight = bounds[3] - bounds[1]
-        const stext = page.toStructuredText('preserve-whitespace')
-        const json = JSON.parse(stext.asJSON()) as {
-          blocks: Array<{
-            type: string
-            lines: Array<{
-              text: string
-              x: number
-              y: number
-              font: { size: number; name: string; weight: string }
-            }>
-          }>
-        }
-
-        const items: Array<{
-          text: string
-          x: number
-          y: number
-          fontSize: number
-          hasEOL: boolean
-          fontName?: string
-          fontWeight?: string
-        }> = []
-        for (const block of json.blocks) {
-          if (block.type !== 'text') continue
-          for (const line of block.lines) {
-            items.push({
-              text: line.text.replace(/\t/g, ' '),
-              x: line.x,
-              // Invert Y: mupdf uses top-down (0=top), downstream code expects bottom-up (large Y = top)
-              y: pageHeight - line.y,
-              fontSize: line.font.size,
-              hasEOL: true,
-              fontName: line.font.name,
-              fontWeight: line.font.weight,
-            })
-          }
-        }
-
-        pages.push({ pageNum: i + 1, items, pageHeight })
-      }
-
-      // Apply sentence-level header/footer filtering (returns per-page filtered text)
-      // This handles variable content like page numbers ("7 of 75") using semantic similarity
-      const filteredPages = await filterPageBoundarySentences(pages, embedder)
-      const text = filteredPages.filter((t) => t.length > 0).join('\n\n')
+      const { pages, metadataTitle, page1FontHint } = await extractPdfPages(
+        doc,
+        embedder,
+        'preserve-whitespace'
+      )
+      const text = pages
+        .map((p) => p.text)
+        .filter((t) => t.length > 0)
+        .join('\n\n')
 
       // Extract title from filtered page 1 via semantic chunking
       // Isolated try-catch: title extraction failure should not abort PDF ingestion
       const fileName = basename(filePath)
       let firstPageChunkText: string | undefined
       try {
-        const filteredPage1 = filteredPages[0]
+        const filteredPage1 = pages[0]?.text
         if (filteredPage1 && filteredPage1.trim().length > 0) {
           const chunker = new SemanticChunker()
           const page1Chunks = await chunker.chunkText(filteredPage1, embedder)
@@ -295,35 +255,122 @@ export class DocumentParser {
       } catch (titleError) {
         console.error(`Title extraction failed, falling back to filename: ${titleError}`)
       }
-      // Extract largest-font lines from page 1 for title hint
-      // Concatenate all consecutive lines with the largest font size (covers multi-line titles)
-      const page1Items = pages[0]?.items ?? []
-      const maxFontSize = page1Items.reduce((max, item) => Math.max(max, item.fontSize), 0)
-      const titleLines: string[] = []
-      if (maxFontSize > 0) {
-        for (const item of page1Items) {
-          if (item.fontSize === maxFontSize) {
-            titleLines.push(item.text.trim())
-          } else if (titleLines.length > 0) {
-            break
-          }
-        }
-      }
-      const firstPageFontHint =
-        titleLines.length > 0 ? { text: titleLines.join(' '), fontSize: maxFontSize } : undefined
 
       const titleResult = extractPdfTitle(
         metadataTitle,
         firstPageChunkText,
         fileName,
-        firstPageFontHint
+        page1FontHint
       )
 
-      console.error(`Parsed PDF: ${filePath} (${text.length} characters, ${numPages} pages)`)
+      console.error(`Parsed PDF: ${filePath} (${text.length} characters, ${pages.length} pages)`)
 
       return { content: text, title: titleResult.title }
     } catch (error) {
       throw new FileOperationError(`Failed to parse PDF: ${filePath}`, error as Error)
+    } finally {
+      // Release the native WASM handle exactly once per invocation, on both
+      // success and error paths (AC-013). Pre-existing leak fix bundled into
+      // Phase 2 per DD § Adopted Trade-offs.
+      doc?.destroy()
+    }
+  }
+
+  /**
+   * Per-page PDF parsing for the visual-enrichment path.
+   *
+   * Opens a mupdf `Document`, delegates per-page extraction to the shared
+   * `extractPdfPages` helper with the `'preserve-whitespace,preserve-images'`
+   * stext option string so mupdf emits `block.type === 'image'` blocks for
+   * the downstream visual-candidate detector (Phase 1 probe finding).
+   *
+   * Returns the open `Document` handle alongside the per-page records and
+   * title-resolution materials so the caller can:
+   *   - run the renderer (`page.toPixmap()`) on the same handle,
+   *   - feed `metadataTitle` + `pages[0].page1FontHint` into `extractPdfTitle`
+   *     after `buildChunksAndEmbeddings` returns.
+   *
+   * Disposal contract (asymmetric — read carefully):
+   *   - SUCCESS path: this method returns the open `doc` handle. The caller
+   *     owns disposal and MUST wrap the call site in
+   *     `try { ... } finally { doc.destroy() }`.
+   *   - ERROR path: when this method throws, `doc` has already been destroyed
+   *     internally before the exception propagates (so the caller never
+   *     receives a handle it would not know to clean up). Callers MUST NOT
+   *     call `doc.destroy()` on an error from this method.
+   * See DD § `parser.parsePdfPages` contract.
+   *
+   * This method does NOT compute the final title and does NOT decide visual
+   * candidates — those are the dispatch site's and `pdf-visual/detector`'s
+   * responsibilities, respectively.
+   *
+   * @param filePath - PDF file path (validated against BASE_DIR and size limit)
+   * @param embedder - Embedder for semantic header/footer detection
+   * @returns Open mupdf `Document`, `metadataTitle`, and per-page records.
+   *          `page1FontHint` (largest-font line on page 1) is present only on `pages[0]`.
+   * @throws ValidationError - Path traversal, size exceeded
+   * @throws FileOperationError - File read or parse failed (after destroying `doc` internally)
+   */
+  async parsePdfPages(
+    filePath: string,
+    embedder: EmbedderInterface
+  ): Promise<{
+    doc: MupdfDocument
+    metadataTitle: string | undefined
+    pages: Array<{
+      pageNum: number
+      text: string
+      stextJson: unknown
+      page1FontHint?: { text: string; fontSize: number }
+    }>
+  }> {
+    // Validation (mirrors parsePdf's entry-point contract so the visual path
+    // does not bypass BASE_DIR / size checks).
+    await this.validateFilePath(filePath)
+    this.validateFileSize(filePath)
+
+    // Open the doc and run per-page extraction. Success-path disposal of
+    // `doc` stays with the caller (AC-013, DD § caller-owned-disposal).
+    // For the error-path window between `openDocument` and the return below,
+    // destroy `doc` here before re-throwing so a failure in `extractPdfPages`
+    // (or any future pre-return step) does not leak the mupdf WASM handle.
+    let doc: MupdfDocument | undefined
+    try {
+      const buffer = await readFile(filePath)
+      const mupdf = await import('mupdf')
+      doc = mupdf.Document.openDocument(buffer, 'application/pdf') as MupdfDocument
+      const extracted = await extractPdfPages(doc, embedder, 'preserve-whitespace,preserve-images')
+
+      const { pages: helperPages, metadataTitle, page1FontHint } = extracted
+
+      // Adapt the helper's top-level `page1FontHint` onto `pages[0]` per the
+      // public contract (DD § Component `parser.parsePdfPages`).
+      const pages = helperPages.map((p, idx) =>
+        idx === 0 && page1FontHint !== undefined
+          ? {
+              pageNum: p.pageNum,
+              text: p.text,
+              stextJson: p.stextJson as unknown,
+              page1FontHint,
+            }
+          : {
+              pageNum: p.pageNum,
+              text: p.text,
+              stextJson: p.stextJson as unknown,
+            }
+      )
+
+      console.error(
+        `Parsed PDF pages: ${filePath} (${pages.length} pages; caller owns doc disposal)`
+      )
+
+      return { doc, metadataTitle, pages }
+    } catch (error) {
+      // `doc` is undefined when `openDocument` itself threw — nothing to free.
+      // When it is defined, dispose before re-throwing so the caller never
+      // receives the handle and cannot be expected to clean it up.
+      doc?.destroy()
+      throw new FileOperationError(`Failed to parse PDF pages: ${filePath}`, error as Error)
     }
   }
 
@@ -394,4 +441,149 @@ export class DocumentParser {
       throw new FileOperationError(`Failed to parse MD: ${filePath}`, error as Error)
     }
   }
+}
+
+// ============================================
+// Private PDF helpers
+// ============================================
+
+/**
+ * Shape of mupdf's structured-text JSON used by the per-page loop.
+ * Captured here so both the items-extraction step and the raw `stextJson`
+ * we return remain typed.
+ */
+interface StextJson {
+  blocks: Array<{
+    type: string
+    lines: Array<{
+      text: string
+      x: number
+      y: number
+      font: { size: number; name: string; weight: string }
+    }>
+  }>
+}
+
+/**
+ * Per-page record produced by `extractPdfPages`. `text` is the page's text
+ * AFTER `filterPageBoundarySentences` has removed semantically-similar
+ * header/footer lines; `stextJson` is the raw mupdf structured-text JSON
+ * for the page (preserved so downstream callers — e.g. the visual-candidate
+ * detector — can inspect block-level structure).
+ */
+interface ExtractedPage {
+  pageNum: number
+  text: string
+  stextJson: StextJson
+}
+
+/**
+ * Result returned by `extractPdfPages`. The helper lifts three concerns
+ * out of the legacy `parsePdf` body:
+ *   1. the per-page `toStructuredText` + `block.type === 'text'` loop;
+ *   2. `filterPageBoundarySentences` for header/footer removal;
+ *   3. title-resolution materials (`metadataTitle` and `page1FontHint`).
+ *
+ * Both `parsePdf` and `parsePdfPages` consume this helper; they differ only
+ * in the `stextOptions` argument they pass to `page.toStructuredText(...)`.
+ */
+interface ExtractedPdf {
+  pages: ExtractedPage[]
+  metadataTitle: string | undefined
+  page1FontHint: { text: string; fontSize: number } | undefined
+}
+
+/**
+ * Per-page extraction shared by `parsePdf` and `parsePdfPages`.
+ *
+ * Takes an already-open mupdf `Document` and:
+ *   - reads `info:Title` once,
+ *   - iterates pages calling `toStructuredText(stextOptions)`,
+ *   - builds `PageData` items (only `block.type === 'text'` lines),
+ *   - runs `filterPageBoundarySentences` to drop semantic headers/footers,
+ *   - derives `page1FontHint` from page 1's largest-font lines.
+ *
+ * The two callers differ ONLY in `stextOptions`: `parsePdf` passes
+ * `'preserve-whitespace'` (default-mode invariance — AC-001 / NFR-1);
+ * `parsePdfPages` passes `'preserve-whitespace,preserve-images'` so mupdf
+ * emits `block.type === 'image'` entries for the downstream visual-candidate
+ * detector (probe-verified — see DD §Probe Results).
+ *
+ * Lifecycle: this helper does NOT call `doc.destroy()` — disposal stays
+ * with the caller (T2.3 will add a `try/finally` in `parsePdf`).
+ */
+async function extractPdfPages(
+  doc: MupdfDocument,
+  embedder: EmbedderInterface,
+  stextOptions: string
+): Promise<ExtractedPdf> {
+  const numPages = doc.countPages()
+  const metadataTitle = doc.getMetaData('info:Title') || undefined
+
+  const pageDataList: PageData[] = []
+  const stextJsonList: StextJson[] = []
+  for (let i = 0; i < numPages; i++) {
+    const page = doc.loadPage(i)
+    const bounds = page.getBounds() // [x0, y0, x1, y1]
+    const pageHeight = bounds[3] - bounds[1]
+    const stext = page.toStructuredText(stextOptions)
+    const json = JSON.parse(stext.asJSON()) as StextJson
+
+    const items: Array<{
+      text: string
+      x: number
+      y: number
+      fontSize: number
+      hasEOL: boolean
+      fontName?: string
+      fontWeight?: string
+    }> = []
+    for (const block of json.blocks) {
+      if (block.type !== 'text') continue
+      for (const line of block.lines) {
+        items.push({
+          text: line.text.replace(/\t/g, ' '),
+          x: line.x,
+          // Invert Y: mupdf uses top-down (0=top), downstream code expects bottom-up (large Y = top)
+          y: pageHeight - line.y,
+          fontSize: line.font.size,
+          hasEOL: true,
+          fontName: line.font.name,
+          fontWeight: line.font.weight,
+        })
+      }
+    }
+
+    pageDataList.push({ pageNum: i + 1, items, pageHeight })
+    stextJsonList.push(json)
+  }
+
+  // Apply sentence-level header/footer filtering (returns per-page filtered text).
+  // This handles variable content like page numbers ("7 of 75") using semantic similarity.
+  const filteredPages = await filterPageBoundarySentences(pageDataList, embedder)
+
+  // Extract largest-font lines from page 1 for title hint.
+  // Concatenate all consecutive lines with the largest font size (covers multi-line titles).
+  const page1Items = pageDataList[0]?.items ?? []
+  const maxFontSize = page1Items.reduce((max, item) => Math.max(max, item.fontSize), 0)
+  const titleLines: string[] = []
+  if (maxFontSize > 0) {
+    for (const item of page1Items) {
+      if (item.fontSize === maxFontSize) {
+        titleLines.push(item.text.trim())
+      } else if (titleLines.length > 0) {
+        break
+      }
+    }
+  }
+  const page1FontHint =
+    titleLines.length > 0 ? { text: titleLines.join(' '), fontSize: maxFontSize } : undefined
+
+  const pages: ExtractedPage[] = pageDataList.map((p, idx) => ({
+    pageNum: p.pageNum,
+    text: filteredPages[idx] ?? '',
+    stextJson: stextJsonList[idx] as StextJson,
+  }))
+
+  return { pages, metadataTitle, page1FontHint }
 }

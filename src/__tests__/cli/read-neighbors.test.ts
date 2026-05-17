@@ -6,7 +6,7 @@
 // does not import createEmbedder. This provides a static-analysis-level guarantee
 // that the read-neighbors CLI path never constructs an embedder.
 
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 // ============================================
 // Mock Setup (vi.hoisted for isolate: false)
@@ -20,18 +20,22 @@ const mocks = vi.hoisted(() => {
   }
 })
 
-// Mock cli/common.js (createVectorStore factory).
-// Intentionally omit createEmbedder — runReadNeighbors must never call it.
-vi.mock('../../cli/common.js', () => ({
+// Mock factory — installed via `vi.doMock` in `beforeAll` and removed via
+// `vi.doUnmock` in `afterAll`. Intentionally omits `createEmbedder` —
+// runReadNeighbors must never call it.
+
+const cliCommonFactory = () => ({
   createVectorStore: vi.fn().mockImplementation(() => ({
     initialize: mocks.initialize,
     getChunksByRange: mocks.getChunksByRange,
   })),
-}))
+})
 
-// Import after mocks are set up
+const MOCKED_PATHS = ['../../cli/common.js'] as const
+
 import { resolve, sep } from 'node:path'
-import { runReadNeighbors } from '../../cli/read-neighbors.js'
+
+let runReadNeighbors: typeof import('../../cli/read-neighbors.js').runReadNeighbors
 
 // ============================================
 // Helpers
@@ -63,6 +67,17 @@ function captureStderr(fn: () => Promise<void>): Promise<{ output: string[]; err
 describe('CLI read-neighbors', () => {
   let exitSpy: ReturnType<typeof vi.spyOn>
   let stdoutSpy: ReturnType<typeof vi.spyOn>
+
+  beforeAll(async () => {
+    vi.resetModules()
+    vi.doMock('../../cli/common.js', cliCommonFactory)
+    ;({ runReadNeighbors } = await import('../../cli/read-neighbors.js'))
+  })
+
+  afterAll(() => {
+    for (const p of MOCKED_PATHS) vi.doUnmock(p)
+    vi.resetModules()
+  })
 
   beforeEach(() => {
     vi.clearAllMocks()

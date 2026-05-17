@@ -2,7 +2,7 @@
 // Test Type: Unit Test
 // Tests runStatus functionality with mocked dependencies
 
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 // ============================================
 // Mock Setup (vi.hoisted for isolate: false)
@@ -16,16 +16,19 @@ const mocks = vi.hoisted(() => {
   }
 })
 
-// Mock cli/common.js (createVectorStore factory)
-vi.mock('../../cli/common.js', () => ({
+// Mock factory — installed via `vi.doMock` in `beforeAll` and removed via
+// `vi.doUnmock` in `afterAll`. See `.claude/skills/project-context/SKILL.md`.
+
+const cliCommonFactory = () => ({
   createVectorStore: vi.fn().mockImplementation(() => ({
     initialize: mocks.initialize,
     getStatus: mocks.getStatus,
   })),
-}))
+})
 
-// Import after mocks are set up
-import { runStatus } from '../../cli/status.js'
+const MOCKED_PATHS = ['../../cli/common.js'] as const
+
+let runStatus: typeof import('../../cli/status.js').runStatus
 
 // ============================================
 // Helpers
@@ -56,6 +59,17 @@ function captureStderr(fn: () => Promise<void>): Promise<{ output: string[]; err
 describe('CLI status', () => {
   let exitSpy: ReturnType<typeof vi.spyOn>
   let stdoutSpy: ReturnType<typeof vi.spyOn>
+
+  beforeAll(async () => {
+    vi.resetModules()
+    vi.doMock('../../cli/common.js', cliCommonFactory)
+    ;({ runStatus } = await import('../../cli/status.js'))
+  })
+
+  afterAll(() => {
+    for (const p of MOCKED_PATHS) vi.doUnmock(p)
+    vi.resetModules()
+  })
 
   beforeEach(() => {
     vi.clearAllMocks()

@@ -2,7 +2,7 @@
 
 import { randomUUID } from 'node:crypto'
 import { readdir, readFile, unlink } from 'node:fs/promises'
-import { extname, join, resolve, sep } from 'node:path'
+import { basename, extname, join, resolve, sep } from 'node:path'
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import {
@@ -14,6 +14,8 @@ import {
 } from '@modelcontextprotocol/sdk/types.js'
 import { DEFAULT_MIN_CHUNK_LENGTH, SemanticChunker } from '../chunker/index.js'
 import { Embedder } from '../embedder/index.js'
+import { buildChunksAndEmbeddings } from '../ingest/compute.js'
+import { prepareVisualPdfChunks } from '../ingest/visual.js'
 import { parseHtml } from '../parser/html-parser.js'
 import { DocumentParser, SUPPORTED_EXTENSIONS } from '../parser/index.js'
 import { extractMarkdownTitle, extractTxtTitle } from '../parser/title-extractor.js'
@@ -55,18 +57,25 @@ export class RAGServer {
   private readonly parser: DocumentParser
   private readonly dbPath: string
   private readonly baseDir: string
+  private readonly cacheDir: string
   // Used by handleListFiles filter to exclude system-managed directories
   private readonly excludePaths: string[]
   private readonly configWarnings: string[]
   private readonly minChunkLength: number
+  // Read by the visual dispatch branch to construct the captioner
+  private readonly vlmModelName: string
+  private readonly device: string | undefined
   private queryWarningsShown = false
 
   constructor(config: RAGServerConfig) {
     this.dbPath = config.dbPath
     this.baseDir = config.baseDir
+    this.cacheDir = config.cacheDir
     this.configWarnings = config.configWarnings ?? []
     this.minChunkLength = config.chunkMinLength ?? DEFAULT_MIN_CHUNK_LENGTH
-    this.excludePaths = [`${resolve(config.dbPath)}${sep}`, `${resolve(config.cacheDir)}${sep}`]
+    this.vlmModelName = config.vlmModelName
+    this.device = config.device
+    this.excludePaths = [`${resolve(this.dbPath)}${sep}`, `${resolve(this.cacheDir)}${sep}`]
     this.server = new Server(
       { name: 'rag-mcp-server', version: '1.0.0' },
       { capabilities: { tools: {} } }
@@ -183,7 +192,7 @@ export class RAGServer {
    */
   async initialize(): Promise<void> {
     await this.vectorStore.initialize()
-    console.error('RAGServer initialized')
+    console.error(`RAGServer initialized (vlmModelName=${this.vlmModelName})`)
   }
 
   /**
@@ -246,6 +255,16 @@ export class RAGServer {
   async handleIngestFile(
     args: IngestFileInput
   ): Promise<{ content: [{ type: 'text'; text: string }] }> {
+    // Runtime validation (AC-012): the MCP JSON Schema declares `visual` as a
+    // boolean and `IngestFileInput.visual` types it as `boolean | undefined`,
+    // but tool arguments arrive as `unknown` at the SDK boundary so the
+    // structural type is not enforced by the compiler. Validation MUST fire
+    // BEFORE any parser/chunker/embedder/vectorStore access.
+    const visualArg: unknown = args.visual
+    if (visualArg !== undefined && typeof visualArg !== 'boolean') {
+      throw new McpError(ErrorCode.InvalidParams, "'visual' must be a boolean if provided")
+    }
+
     let backup: VectorChunk[] | null = null
 
     try {
@@ -255,24 +274,63 @@ export class RAGServer {
       const isPdf = args.filePath.toLowerCase().endsWith('.pdf')
       let text: string
       let title: string | null = null
+      let chunks: Awaited<ReturnType<typeof buildChunksAndEmbeddings>>['chunks']
+      let embeddings: Awaited<ReturnType<typeof buildChunksAndEmbeddings>>['embeddings']
       if (isRawDataPath(args.filePath)) {
         // Raw-data files: skip validation, read directly
         text = await readFile(args.filePath, 'utf-8')
         const meta = await loadMetaJson(args.filePath)
         title = meta?.title ?? null
         console.error(`Read raw-data file: ${args.filePath} (${text.length} characters)`)
+        ;({ chunks, embeddings } = await buildChunksAndEmbeddings(
+          text,
+          title,
+          this.chunker,
+          this.embedder
+        ))
+      } else if (visualArg === true && isPdf) {
+        // Visual dispatch — delegates to the shared `prepareVisualPdfChunks`
+        // helper (NFR-1: the `pdf-visual` dynamic import lives inside that
+        // helper, not here, so the default path's Proxy sentinel — AC-001 —
+        // still observes `pdf-visual` untouched). This handler keeps its
+        // backup/rollback/optimize/response-shaping persistence semantics
+        // (preserved below).
+        const visualResult = await prepareVisualPdfChunks(
+          args.filePath,
+          this.parser,
+          this.chunker,
+          this.embedder,
+          {
+            modelName: this.vlmModelName,
+            cacheDir: this.cacheDir,
+            device: this.device,
+          }
+        )
+        chunks = visualResult.chunks
+        embeddings = visualResult.embeddings
+        text = visualResult.text
+        title = visualResult.title
       } else if (isPdf) {
         const result = await this.parser.parsePdf(args.filePath, this.embedder)
         text = result.content
         title = result.title || null
+        ;({ chunks, embeddings } = await buildChunksAndEmbeddings(
+          text,
+          title,
+          this.chunker,
+          this.embedder
+        ))
       } else {
         const result = await this.parser.parseFile(args.filePath)
         text = result.content
         title = result.title || null
+        ;({ chunks, embeddings } = await buildChunksAndEmbeddings(
+          text,
+          title,
+          this.chunker,
+          this.embedder
+        ))
       }
-
-      // Split text into semantic chunks
-      const chunks = await this.chunker.chunkText(text, this.embedder)
 
       // Fail-fast: Prevent data loss when chunking produces 0 chunks
       // This check must happen BEFORE delete to preserve existing data on re-ingest
@@ -282,9 +340,6 @@ export class RAGServer {
           `No chunks generated from file: ${args.filePath}. The file may be empty or all content was filtered (minimum ${this.minChunkLength} characters required). Existing data has been preserved.`
         )
       }
-
-      // Generate embeddings for final chunks
-      const embeddings = await this.embedder.embedBatch(chunks.map((chunk) => chunk.text))
 
       // Create backup (if existing data exists)
       try {
@@ -333,9 +388,9 @@ export class RAGServer {
           text: chunk.text,
           vector: embedding,
           metadata: {
-            fileName: args.filePath.split('/').pop() || args.filePath,
+            fileName: basename(args.filePath),
             fileSize: text.length,
-            fileType: args.filePath.split('.').pop() || '',
+            fileType: extname(args.filePath).slice(1),
           },
           fileTitle: title || null,
           timestamp,

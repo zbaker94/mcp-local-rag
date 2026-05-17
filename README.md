@@ -119,6 +119,26 @@ Supports PDF, DOCX, TXT, and Markdown. The server extracts text, splits it into 
 
 Re-ingesting the same file replaces the old version automatically.
 
+##### Ingesting PDFs with figures (visual mode)
+
+PDFs with charts, tables, or diagrams can optionally add local VLM-generated captions to the related text chunks, giving visual content some searchable representation in the same vector + FTS pipeline.
+
+**Via MCP**:
+```
+"Ingest /Users/me/docs/api-spec.pdf with visual: true"
+```
+
+**Via CLI**:
+```bash
+npx mcp-local-rag ingest ./docs/spec.pdf --visual
+```
+
+Captions are inlined into the corresponding page's chunks as `[Visual content on page N: …]`. They flow through the existing chunker and embedder unchanged — no schema differences, no separate index.
+
+Visual mode is opt-in; normal ingest does not load the VLM. When visual mode is enabled, the VLM (`HuggingFaceTB/SmolVLM-256M-Instruct`) is cached under `CACHE_DIR` (default: `./models/`). The first download is hundreds of MB. The model identifier and quantization variant are fixed in this release; per-page VLM failures are tolerated — that page proceeds with text only.
+
+> **Security note**: Visual captions are derived from PDF contents and may inherit attacker-controlled text. Downstream LLM consumers should treat retrieved chunks as untrusted data, not as instructions. The `[Visual content on page N: …]` envelope helps consumers distinguish caption text from prose.
+
 #### Ingesting HTML Content
 
 Use `ingest_data` to ingest HTML content retrieved by your AI assistant (via web fetch, curl, browser tools, etc.):
@@ -433,7 +453,7 @@ Ensure file paths are within `BASE_DIR`. Use absolute paths.
 Yes. After model download, nothing leaves your machine. Verify with network monitoring.
 
 **Can I use this offline?**
-Yes, after the first model download (~90MB).
+Yes, after the required models are cached locally. Text ingest/search needs the embedding model. PDF visual mode is opt-in and also needs the VLM model on first use; the download is hundreds of MB for the default `q4` variant and is cached under `CACHE_DIR` (default: `./models/`).
 
 **How does this compare to cloud RAG?**
 Cloud services offer better accuracy at scale but require sending data externally. This trades some accuracy for complete privacy and zero runtime cost.

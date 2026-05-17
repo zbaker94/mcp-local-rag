@@ -2,12 +2,13 @@
 
 import { mkdir, rm, symlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { DocumentParser, FileOperationError, ValidationError } from '../index'
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 // ============================================
-// Mocks for parsePdf tests (vi.hoisted ensures availability in vi.mock factories)
+// Mocks
 // ============================================
+// Installed via `vi.doMock` in `beforeAll` and removed via `vi.doUnmock` in
+// `afterAll`. See `.claude/skills/project-context/SKILL.md`.
 
 const { mockOpenDocument, mockFilterPageBoundarySentences, mockExtractPdfTitle, mockChunkText } =
   vi.hoisted(() => ({
@@ -17,36 +18,65 @@ const { mockOpenDocument, mockFilterPageBoundarySentences, mockExtractPdfTitle, 
     mockChunkText: vi.fn(),
   }))
 
-vi.mock('mupdf', () => ({
+const mupdfFactory = () => ({
   Document: { openDocument: mockOpenDocument },
-}))
+})
 
-vi.mock('../pdf-filter.js', async (importOriginal) => {
-  const original = await importOriginal<typeof import('../pdf-filter.js')>()
+const pdfFilterFactory = async (
+  importOriginal: () => Promise<typeof import('../pdf-filter.js')>
+) => {
+  const original = await importOriginal()
   return {
     ...original,
     filterPageBoundarySentences: mockFilterPageBoundarySentences,
   }
-})
+}
 
-vi.mock('../title-extractor.js', async (importOriginal) => {
-  const original = await importOriginal<typeof import('../title-extractor.js')>()
+const titleExtractorFactory = async (
+  importOriginal: () => Promise<typeof import('../title-extractor.js')>
+) => {
+  const original = await importOriginal()
   return {
     ...original,
     extractPdfTitle: mockExtractPdfTitle,
   }
-})
+}
 
-vi.mock('../../chunker/index.js', () => ({
+const chunkerFactory = () => ({
   SemanticChunker: class {
     chunkText = mockChunkText
   },
-}))
+})
+
+const MOCKED_PATHS = [
+  'mupdf',
+  '../pdf-filter.js',
+  '../title-extractor.js',
+  '../../chunker/index.js',
+] as const
+
+let DocumentParser: typeof import('../index.js').DocumentParser
+let FileOperationError: typeof import('../index.js').FileOperationError
+let ValidationError: typeof import('../index.js').ValidationError
 
 describe('DocumentParser', () => {
-  let parser: DocumentParser
+  let parser: InstanceType<typeof DocumentParser>
   const testDir = join(process.cwd(), 'tmp', 'test-parser')
   const maxFileSize = 100 * 1024 * 1024 // 100MB
+
+  beforeAll(async () => {
+    vi.resetModules()
+    vi.doMock('mupdf', mupdfFactory)
+    vi.doMock('../pdf-filter.js', pdfFilterFactory)
+    vi.doMock('../title-extractor.js', titleExtractorFactory)
+    vi.doMock('../../chunker/index.js', chunkerFactory)
+    ;({ DocumentParser, FileOperationError, ValidationError } = await import('../index.js'))
+  })
+
+  afterAll(() => {
+    for (const p of MOCKED_PATHS) vi.doUnmock(p)
+    vi.resetModules()
+  })
 
   beforeEach(async () => {
     // Create test directory
@@ -350,6 +380,7 @@ describe('DocumentParser', () => {
         countPages: vi.fn().mockReturnValue(pages.length),
         loadPage: vi.fn().mockImplementation((i: number) => mockPages[i]),
         getMetaData: vi.fn().mockReturnValue(metadataTitle ?? ''),
+        destroy: vi.fn(),
       }
 
       mockOpenDocument.mockReturnValue(mockDoc)

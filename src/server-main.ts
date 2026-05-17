@@ -1,4 +1,5 @@
 // MCP Server entry point
+import { resolveDevice } from './cli/options.js'
 import { RAGServer } from './server/index.js'
 import type { GroupingMode } from './vectordb/index.js'
 
@@ -77,15 +78,6 @@ export function parseChunkMinLength(value: string | undefined): ParseResult<numb
   return { value: parsed }
 }
 
-/**
- * Resolve RAG_DEVICE. The value is passed through to transformers.js — no
- * allowlist is maintained here. Whitespace-only is treated as unset.
- */
-export function parseDevice(value: string | undefined): ParseResult<string> {
-  if (!value || value.trim() === '') return { value: 'cpu' }
-  return { value: value.trim() }
-}
-
 // ============================================
 // Server Startup
 // ============================================
@@ -97,8 +89,14 @@ export function parseDevice(value: string | undefined): ParseResult<string> {
  */
 export async function startServer(): Promise<void> {
   try {
+    // VLM model identifier and ONNX quantization variant are fixed for v1.
+    // `vlmModelName` is kept in the config so a future model-family adapter
+    // can swap this literal for a resolver without changing the surrounding
+    // wiring.
+    const vlmModelName = 'HuggingFaceTB/SmolVLM-256M-Instruct'
+
     // RAGServer configuration (env-only for MCP client compatibility)
-    const device = parseDevice(process.env['RAG_DEVICE']).value as string
+    const device = resolveDevice(process.env['RAG_DEVICE'])
     const config: ConstructorParameters<typeof RAGServer>[0] = {
       dbPath: process.env['DB_PATH'] || './lancedb/',
       modelName: process.env['MODEL_NAME'] || 'Xenova/all-MiniLM-L6-v2',
@@ -106,6 +104,7 @@ export async function startServer(): Promise<void> {
       baseDir: process.env['BASE_DIR'] || process.cwd(),
       maxFileSize: Number.parseInt(process.env['MAX_FILE_SIZE'] || '104857600', 10), // 100MB
       device,
+      vlmModelName,
     }
 
     // Collect configuration warnings

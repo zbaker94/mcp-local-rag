@@ -2,7 +2,7 @@
 // Test Type: Unit Test
 // Tests runList functionality with mocked dependencies
 
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 // ============================================
 // Mock Setup (vi.hoisted for isolate: false)
@@ -19,26 +19,32 @@ const mocks = vi.hoisted(() => {
   }
 })
 
-// Mock fs/promises
-vi.mock('node:fs/promises', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('node:fs/promises')>()
+// Mock factories — installed via `vi.doMock` in `beforeAll` and removed via
+// `vi.doUnmock` in `afterAll`. See `.claude/skills/project-context/SKILL.md`.
+
+const fsPromisesFactory = async (
+  importOriginal: () => Promise<typeof import('node:fs/promises')>
+) => {
+  const actual = await importOriginal()
   return {
     ...actual,
     readdir: mocks.readdir,
   }
-})
+}
 
-// Mock cli/common.js (only createVectorStore needed — list does not use Embedder)
-vi.mock('../../cli/common.js', () => ({
+const cliCommonFactory = () => ({
   createVectorStore: vi.fn().mockImplementation(() => ({
     initialize: mocks.initialize,
     listFiles: mocks.listFiles,
   })),
-}))
+})
 
-// Import after mocks are set up
+const MOCKED_PATHS = ['node:fs/promises', '../../cli/common.js'] as const
+
 import { resolve } from 'node:path'
-import { parseArgs, runList } from '../../cli/list.js'
+
+let parseArgs: typeof import('../../cli/list.js').parseArgs
+let runList: typeof import('../../cli/list.js').runList
 
 // ============================================
 // Helpers
@@ -98,6 +104,18 @@ function mockDirent(
 
 describe('CLI list', () => {
   let exitSpy: ReturnType<typeof vi.spyOn>
+
+  beforeAll(async () => {
+    vi.resetModules()
+    vi.doMock('node:fs/promises', fsPromisesFactory)
+    vi.doMock('../../cli/common.js', cliCommonFactory)
+    ;({ parseArgs, runList } = await import('../../cli/list.js'))
+  })
+
+  afterAll(() => {
+    for (const p of MOCKED_PATHS) vi.doUnmock(p)
+    vi.resetModules()
+  })
 
   beforeEach(() => {
     vi.clearAllMocks()

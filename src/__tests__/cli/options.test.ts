@@ -205,6 +205,7 @@ describe('CLI global options', () => {
         dbPath: GLOBAL_DEFAULTS.dbPath,
         cacheDir: GLOBAL_DEFAULTS.cacheDir,
         modelName: GLOBAL_DEFAULTS.modelName,
+        vlmModelName: GLOBAL_DEFAULTS.vlmModelName,
       })
     })
 
@@ -218,6 +219,7 @@ describe('CLI global options', () => {
         dbPath: '/cli/db',
         cacheDir: '/cli/cache',
         modelName: 'cli/model',
+        vlmModelName: GLOBAL_DEFAULTS.vlmModelName,
       })
     })
 
@@ -231,6 +233,7 @@ describe('CLI global options', () => {
         dbPath: '/env/db',
         cacheDir: '/env/cache',
         modelName: 'env/model',
+        vlmModelName: GLOBAL_DEFAULTS.vlmModelName,
       })
     })
 
@@ -248,6 +251,7 @@ describe('CLI global options', () => {
         dbPath: '/cli/db',
         cacheDir: '/cli/cache',
         modelName: 'cli/model',
+        vlmModelName: GLOBAL_DEFAULTS.vlmModelName,
       })
     })
 

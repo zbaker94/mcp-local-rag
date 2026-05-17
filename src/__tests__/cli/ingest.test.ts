@@ -2,7 +2,7 @@
 // Test Type: Unit Test
 // Tests runIngest functionality with mocked dependencies
 
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 // ============================================
 // Mock Setup (vi.hoisted for isolate: false)
@@ -39,34 +39,36 @@ const mocks = vi.hoisted(() => {
   }
 })
 
-// Mock fs/promises
-vi.mock('node:fs/promises', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('node:fs/promises')>()
+// Mock factories are installed via `vi.doMock` in `beforeAll` and removed
+// via `vi.doUnmock` in `afterAll`. See `.claude/skills/project-context/SKILL.md`
+// "Test Environment Constraints".
+
+const fsPromisesFactory = async (
+  importOriginal: () => Promise<typeof import('node:fs/promises')>
+) => {
+  const actual = await importOriginal()
   return {
     ...actual,
     stat: mocks.stat,
     opendir: mocks.opendir,
   }
-})
+}
 
-// Mock DocumentParser
-vi.mock('../../parser/index.js', () => ({
+const parserFactory = () => ({
   DocumentParser: vi.fn().mockImplementation(function (this: Record<string, unknown>) {
     this.parseFile = mocks.parseFile
     this.parsePdf = mocks.parsePdf
   }),
   SUPPORTED_EXTENSIONS: new Set(['.pdf', '.docx', '.txt', '.md']),
-}))
+})
 
-// Mock SemanticChunker
-vi.mock('../../chunker/index.js', () => ({
+const chunkerFactory = () => ({
   SemanticChunker: vi.fn().mockImplementation(function (this: Record<string, unknown>) {
     this.chunkText = mocks.chunkText
   }),
-}))
+})
 
-// Mock cli/common.js (createVectorStore / createEmbedder factories)
-vi.mock('../../cli/common.js', () => ({
+const cliCommonFactory = () => ({
   createEmbedder: vi.fn().mockImplementation(() => ({
     embedBatch: mocks.embedBatch,
     dispose: vi.fn(),
@@ -78,12 +80,29 @@ vi.mock('../../cli/common.js', () => ({
     optimize: mocks.optimize,
     close: vi.fn(),
   })),
-}))
+})
 
-// Import after mocks are set up
+const MOCKED_PATHS = [
+  'node:fs/promises',
+  '../../parser/index.js',
+  '../../chunker/index.js',
+  '../../cli/common.js',
+] as const
+
+// Import after mocks are set up.
+// `node:path.resolve` is statically importable (no vi.mock target).
+// `cli/ingest.js` and `cli/options.js` are dynamically imported in beforeAll
+// after vi.resetModules() — this is the test-convention isolation mechanism
+// under vitest `isolate: false` (vitest.config.mjs). Without it, a sibling
+// file like `ingest-visual.test.ts` that vi.mock's the same module paths
+// (e.g., ../../cli/common.js) can win the module-registry race and bind
+// runIngest's closures to that file's factories instead of this file's.
 import { resolve } from 'node:path'
-import { parseArgs, resolveConfig, runIngest } from '../../cli/ingest.js'
-import { resolveGlobalConfig } from '../../cli/options.js'
+
+let runIngest: typeof import('../../cli/ingest.js').runIngest
+let parseArgs: typeof import('../../cli/ingest.js').parseArgs
+let resolveConfig: typeof import('../../cli/ingest.js').resolveConfig
+let resolveGlobalConfig: typeof import('../../cli/options.js').resolveGlobalConfig
 
 // ============================================
 // Helpers
@@ -183,6 +202,21 @@ function setupSuccessfulIngestion() {
 
 describe('CLI ingest', () => {
   let exitSpy: ReturnType<typeof vi.spyOn>
+
+  beforeAll(async () => {
+    vi.resetModules()
+    vi.doMock('node:fs/promises', fsPromisesFactory)
+    vi.doMock('../../parser/index.js', parserFactory)
+    vi.doMock('../../chunker/index.js', chunkerFactory)
+    vi.doMock('../../cli/common.js', cliCommonFactory)
+    ;({ runIngest, parseArgs, resolveConfig } = await import('../../cli/ingest.js'))
+    ;({ resolveGlobalConfig } = await import('../../cli/options.js'))
+  })
+
+  afterAll(() => {
+    for (const p of MOCKED_PATHS) vi.doUnmock(p)
+    vi.resetModules()
+  })
 
   beforeEach(() => {
     vi.clearAllMocks()
