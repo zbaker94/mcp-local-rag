@@ -268,7 +268,11 @@ describe('Config warning delivery via MCP annotations', () => {
       await server.initialize()
     })
 
-    it('includes warnings on first query call only', async () => {
+    // AC-009 (P3-T3): config warnings must appear in every MCP tool response,
+    // not only the first. MCP clients may hide stderr and may not retain
+    // content across tool calls, so the previous "first call only" gate was
+    // removed when warning attachment was centralized in `withWarnings`.
+    it('includes warnings on every query call (AC-009)', async () => {
       const result1 = await server.handleQueryDocuments({ query: 'test' })
       expect(result1.content.length).toBe(2)
       expect(result1.content[1]?.text).toContain('Warning:')
@@ -278,7 +282,12 @@ describe('Config warning delivery via MCP annotations', () => {
       })
 
       const result2 = await server.handleQueryDocuments({ query: 'test again' })
-      expect(result2.content.length).toBe(1)
+      expect(result2.content.length).toBe(2)
+      expect(result2.content[1]?.text).toContain('Warning:')
+      expect(result2.content[1]?.annotations).toEqual({
+        audience: ['user', 'assistant'],
+        priority: 0.3,
+      })
     })
   })
 

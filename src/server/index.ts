@@ -6,7 +6,6 @@ import { basename, extname, join, resolve, sep } from 'node:path'
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import {
-  type Annotations,
   CallToolRequestSchema,
   ErrorCode,
   ListToolsRequestSchema,
@@ -32,7 +31,12 @@ import {
 } from '../utils/raw-data-utils.js'
 import { type VectorChunk, VectorStore } from '../vectordb/index.js'
 import { DatabaseError } from '../vectordb/types.js'
-import { formatErrorMessage } from './error-utils.js'
+import {
+  appendConfigWarnings,
+  buildConfigErrorBlock,
+  formatErrorMessage,
+  type RagContentBlock,
+} from './error-utils.js'
 import { toolDefinitions } from './tool-definitions.js'
 import type {
   DeleteFileInput,
@@ -84,7 +88,6 @@ export class RAGServer {
   private readonly configError: BaseDirsConfigError | null
   private readonly minChunkLength: number
   private readonly device: string | undefined
-  private queryWarningsShown = false
 
   constructor(config: RAGServerConfig) {
     this.dbPath = config.dbPath
@@ -167,25 +170,32 @@ export class RAGServer {
   }
 
   /**
-   * Build warning content blocks with MCP annotations.
-   * Returns an empty array if no warnings exist.
+   * Fail-fast guard for root-dependent tools. When a {@link BaseDirsConfigError}
+   * is stored on the instance the server is in degraded mode (invalid
+   * `BASE_DIRS` — see `resolveBaseDirs`) and every root-dependent tool MUST
+   * reject BEFORE any DB / embedder / parser access so the user sees the
+   * configuration problem unambiguously. Surfaces the error as an
+   * `McpError(InvalidParams)` so MCP clients render it as a structured tool
+   * error (per AC-009).
+   *
+   * `status` deliberately does NOT call this helper; it remains callable in
+   * degraded mode and exposes the error via a diagnostic content block so
+   * the user can recover via MCP without inspecting stderr.
    */
-  private buildWarningContentBlocks(): Array<{
-    type: 'text'
-    text: string
-    annotations: Annotations
-  }> {
-    if (this.configWarnings.length === 0) return []
-    return [
-      {
-        type: 'text' as const,
-        text: `Warning: ${this.configWarnings.join(' | ')}`,
-        annotations: {
-          audience: ['user', 'assistant'] as const,
-          priority: 0.3,
-        },
-      },
-    ]
+  private assertConfigOk(): void {
+    if (this.configError !== null) {
+      throw new McpError(ErrorCode.InvalidParams, this.configError.message)
+    }
+  }
+
+  /**
+   * Append the centralized config-warning blocks to a handler response.
+   * Every tool handler funnels through this method so the warning shape
+   * stays in exactly one place (design-doc-mandated countermeasure for the
+   * "warning shape changes touch many handlers" risk).
+   */
+  private withWarnings(content: RagContentBlock[]): RagContentBlock[] {
+    return appendConfigWarnings(content, this.configWarnings)
   }
 
   /**
@@ -244,9 +254,9 @@ export class RAGServer {
   /**
    * query_documents tool handler
    */
-  async handleQueryDocuments(
-    args: QueryDocumentsInput
-  ): Promise<{ content: Array<{ type: 'text'; text: string; annotations?: Annotations }> }> {
+  async handleQueryDocuments(args: QueryDocumentsInput): Promise<{ content: RagContentBlock[] }> {
+    // Root-dependent tool: fail fast on configError BEFORE any embedder/DB access.
+    this.assertConfigOk()
     try {
       // Generate query embedding
       const queryVector = await this.embedder.embed(args.query)
@@ -275,20 +285,17 @@ export class RAGServer {
         return queryResult
       })
 
-      const content: Array<{ type: 'text'; text: string; annotations?: Annotations }> = [
+      const content: RagContentBlock[] = [
         {
           type: 'text',
           text: JSON.stringify(results, null, 2),
         },
       ]
 
-      // Append config warnings on first query call only
-      if (!this.queryWarningsShown) {
-        content.push(...this.buildWarningContentBlocks())
-        this.queryWarningsShown = true
-      }
-
-      return { content }
+      // Append config warnings on every call. AC-009 requires visibility on
+      // every tool response because MCP clients may hide stderr and may not
+      // retain context across calls.
+      return { content: this.withWarnings(content) }
     } catch (error) {
       console.error('Failed to query documents:', error)
       throw error
@@ -298,9 +305,9 @@ export class RAGServer {
   /**
    * ingest_file tool handler (re-ingestion support, transaction processing, rollback capability)
    */
-  async handleIngestFile(
-    args: IngestFileInput
-  ): Promise<{ content: [{ type: 'text'; text: string }] }> {
+  async handleIngestFile(args: IngestFileInput): Promise<{ content: RagContentBlock[] }> {
+    // Root-dependent tool: fail fast on configError BEFORE any work.
+    this.assertConfigOk()
     // Runtime validation (AC-012): the MCP JSON Schema declares `visual` as a
     // boolean and `IngestFileInput.visual` types it as `boolean | undefined`,
     // but tool arguments arrive as `unknown` at the SDK boundary so the
@@ -497,12 +504,12 @@ export class RAGServer {
       }
 
       return {
-        content: [
+        content: this.withWarnings([
           {
             type: 'text',
             text: JSON.stringify(result, null, 2),
           },
-        ],
+        ]),
       }
     } catch (error) {
       // Re-throw McpError as-is to preserve error code
@@ -528,9 +535,9 @@ export class RAGServer {
    * - Converts to Markdown for better chunking
    * - Saves as .md file
    */
-  async handleIngestData(
-    args: IngestDataInput
-  ): Promise<{ content: [{ type: 'text'; text: string }] }> {
+  async handleIngestData(args: IngestDataInput): Promise<{ content: RagContentBlock[] }> {
+    // Root-dependent tool: fail fast on configError BEFORE any I/O.
+    this.assertConfigOk()
     try {
       let contentToSave = args.content
       let formatToSave: ContentFormat = args.metadata.format
@@ -638,7 +645,9 @@ export class RAGServer {
    *   producing-root annotation.
    * - Excludes `dbPath` and `cacheDir` uniformly across every root.
    */
-  async handleListFiles(): Promise<{ content: [{ type: 'text'; text: string }] }> {
+  async handleListFiles(): Promise<{ content: RagContentBlock[] }> {
+    // Root-dependent tool: fail fast on configError BEFORE any DB / FS access.
+    this.assertConfigOk()
     try {
       // Get all ingested entries from the vector store
       const ingested = await this.vectorStore.listFiles()
@@ -691,7 +700,7 @@ export class RAGServer {
         sources,
       }
       return {
-        content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+        content: this.withWarnings([{ type: 'text', text: JSON.stringify(result, null, 2) }]),
       }
     } catch (error) {
       console.error('Failed to list files:', error)
@@ -702,22 +711,27 @@ export class RAGServer {
   /**
    * status tool handler (Phase 1: basic implementation)
    */
-  async handleStatus(): Promise<{
-    content: Array<{ type: 'text'; text: string; annotations?: Annotations }>
-  }> {
+  async handleStatus(): Promise<{ content: RagContentBlock[] }> {
+    // `status` remains callable in degraded mode (configError set) so the
+    // user can diagnose the root configuration via MCP without inspecting
+    // stderr. Do NOT call `assertConfigOk` here.
     try {
       const status = await this.vectorStore.getStatus()
-      const content: Array<{ type: 'text'; text: string; annotations?: Annotations }> = [
+      const content: RagContentBlock[] = [
         {
           type: 'text',
           text: JSON.stringify(status, null, 2),
         },
       ]
 
-      // Always append config warnings to status responses
-      content.push(...this.buildWarningContentBlocks())
+      // Surface the configError as a diagnostic content block when present.
+      // Placed BEFORE warning blocks so it appears with the primary status
+      // payload at a higher priority annotation.
+      if (this.configError !== null) {
+        content.push(buildConfigErrorBlock(this.configError.message))
+      }
 
-      return { content }
+      return { content: this.withWarnings(content) }
     } catch (error) {
       console.error('Failed to get status:', error)
       throw error
@@ -729,9 +743,9 @@ export class RAGServer {
    * Deletes chunks from VectorDB and physical raw-data files
    * Supports both filePath (for ingest_file) and source (for ingest_data)
    */
-  async handleDeleteFile(
-    args: DeleteFileInput
-  ): Promise<{ content: [{ type: 'text'; text: string }] }> {
+  async handleDeleteFile(args: DeleteFileInput): Promise<{ content: RagContentBlock[] }> {
+    // Root-dependent tool: fail fast on configError BEFORE any DB / FS access.
+    this.assertConfigOk()
     try {
       let targetPath: string
       let skipValidation = false
@@ -780,12 +794,12 @@ export class RAGServer {
       }
 
       return {
-        content: [
+        content: this.withWarnings([
           {
             type: 'text',
             text: JSON.stringify(result, null, 2),
           },
-        ],
+        ]),
       }
     } catch (error) {
       const errorMessage = formatErrorMessage(error)
@@ -804,7 +818,9 @@ export class RAGServer {
    */
   async handleReadChunkNeighbors(
     args: ReadChunkNeighborsInput
-  ): Promise<{ content: [{ type: 'text'; text: string }] }> {
+  ): Promise<{ content: RagContentBlock[] }> {
+    // Root-dependent tool: fail fast on configError BEFORE any DB access.
+    this.assertConfigOk()
     try {
       // Validation (all before DB access, per Design Doc §Main Components → Handler).
       // Intentional: use McpError(InvalidParams) (upgrade from handleDeleteFile's plain Error).
@@ -878,12 +894,12 @@ export class RAGServer {
       })
 
       return {
-        content: [
+        content: this.withWarnings([
           {
             type: 'text',
             text: JSON.stringify(items, null, 2),
           },
-        ],
+        ]),
       }
     } catch (error) {
       // Re-throw McpError / DatabaseError as-is to preserve semantics.
