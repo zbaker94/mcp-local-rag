@@ -1,0 +1,346 @@
+// Shared base-dirs module.
+//
+// Provides one internal representation of the effective document roots used
+// by both the CLI (`ingest`, `list`, ...) and the MCP server entry point
+// (`server-main.ts`), plus the pure helpers needed to derive it from raw
+// configuration inputs (env vars, CLI flags).
+//
+// Scope: this file ships only pure helpers and the types. Wiring into
+// `DocumentParser`, `RAGServer`, and CLI subcommands is performed by later
+// tasks (P1-T2 / P1-T3 / P2-T1 / P3-T1). Keeping the wiring out of this
+// module lets every consumer adopt the same realpath/prefix-safety semantics
+// without duplicating the trailing-separator pattern that `DocumentParser`
+// currently inlines.
+
+import { realpath, stat } from 'node:fs/promises'
+import { resolve, sep } from 'node:path'
+
+// ============================================
+// Types
+// ============================================
+
+/**
+ * Internal representation of the effective document roots.
+ *
+ * `baseDirs` is the post-normalization, post-deduplication, post-nested-prune
+ * list of realpath-resolved directories used as the security boundary for
+ * file access. Order is preserved from the original configuration input so
+ * the first element is meaningful as the legacy single-root accessor (see
+ * {@link legacyBaseDir}).
+ */
+export interface BaseDirsConfig {
+  baseDirs: string[]
+}
+
+/**
+ * Discriminated union of configuration warnings surfaced by helpers in this
+ * module. Both CLI (stderr) and MCP (tool response content block) paths
+ * consume these — the consumer decides how to render them.
+ */
+export type BaseDirsConfigWarning =
+  | {
+      kind: 'nested-root-pruned'
+      message: string
+      parent: string
+      pruned: string
+    }
+  | {
+      kind: 'base-dirs-overrides-base-dir'
+      message: string
+    }
+
+/**
+ * Configuration error raised by parsers and the realpath helper. Modeled as
+ * a dedicated subclass so consumers can distinguish configuration problems
+ * from other I/O errors (e.g. `ValidationError` from `DocumentParser`).
+ */
+export class BaseDirsConfigError extends Error {
+  constructor(
+    message: string,
+    public override readonly cause?: Error
+  ) {
+    super(message)
+    this.name = 'BaseDirsConfigError'
+  }
+}
+
+/**
+ * Result of {@link parseBaseDirsEnv}. A discriminated union avoids forcing
+ * callers to use `try/catch` for what is a routine configuration-validation
+ * branch (invalid input → structured error → user-facing message).
+ */
+export type ParseBaseDirsResult =
+  | { ok: true; value: string[] }
+  | { ok: false; error: BaseDirsConfigError }
+
+// ============================================
+// JSON-array parser for BASE_DIRS
+// ============================================
+
+/**
+ * Parse the `BASE_DIRS` environment variable.
+ *
+ * Accepts only a JSON array of one or more non-empty, non-whitespace-only
+ * strings — e.g. `'["/Users/me/work","/Users/me/specs"]'`. Anything else
+ * (delimiter syntax such as `'/a:/b'`, an empty array, an array containing
+ * empty strings, non-string elements, JSON scalars, JSON objects, ...)
+ * produces a {@link BaseDirsConfigError}.
+ *
+ * This helper performs only syntactic validation. It does not resolve
+ * realpaths or check that the directories exist — that is the job of
+ * {@link normalizeRealpath} after the resolver picks a source.
+ */
+export function parseBaseDirsEnv(raw: string): ParseBaseDirsResult {
+  const trimmed = raw.trim()
+  if (trimmed.length === 0) {
+    return {
+      ok: false,
+      error: new BaseDirsConfigError(
+        'BASE_DIRS must be a JSON array of non-empty path strings (received empty value).'
+      ),
+    }
+  }
+
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(trimmed)
+  } catch (error) {
+    return {
+      ok: false,
+      error: new BaseDirsConfigError(
+        `BASE_DIRS must be a JSON array of non-empty path strings. Failed to parse as JSON: ${truncate(raw)}`,
+        error as Error
+      ),
+    }
+  }
+
+  if (!Array.isArray(parsed)) {
+    return {
+      ok: false,
+      error: new BaseDirsConfigError(
+        `BASE_DIRS must be a JSON array (received ${describeJsonShape(parsed)}).`
+      ),
+    }
+  }
+
+  if (parsed.length === 0) {
+    return {
+      ok: false,
+      error: new BaseDirsConfigError('BASE_DIRS must not be an empty array.'),
+    }
+  }
+
+  const value: string[] = []
+  for (let i = 0; i < parsed.length; i++) {
+    const item = parsed[i]
+    if (typeof item !== 'string') {
+      return {
+        ok: false,
+        error: new BaseDirsConfigError(
+          `BASE_DIRS[${i}] must be a string (received ${describeJsonShape(item)}).`
+        ),
+      }
+    }
+    if (item.trim().length === 0) {
+      return {
+        ok: false,
+        error: new BaseDirsConfigError(
+          `BASE_DIRS[${i}] must be a non-empty, non-whitespace path string.`
+        ),
+      }
+    }
+    value.push(item)
+  }
+
+  return { ok: true, value }
+}
+
+// ============================================
+// Realpath normalization
+// ============================================
+
+/**
+ * Append a trailing path separator if the input does not already end with
+ * one. This is the prefix-safety pattern used throughout the parser
+ * (`/foo/bar` must not match `/foo/barista`).
+ */
+export function withTrailingSeparator(path: string): string {
+  return path.endsWith(sep) ? path : path + sep
+}
+
+/**
+ * Resolve a directory to its realpath form and append a trailing separator
+ * so the result can be used directly as a prefix in security checks.
+ *
+ * Throws {@link BaseDirsConfigError} when the directory does not exist or
+ * is not a directory — root configuration must point at real directories
+ * the process is allowed to read.
+ */
+export async function normalizeRealpath(path: string): Promise<string> {
+  let resolved: string
+  try {
+    resolved = await realpath(resolve(path))
+  } catch (error) {
+    throw new BaseDirsConfigError(
+      `Failed to resolve base directory: ${path}. The directory may not exist or is inaccessible.`,
+      error as Error
+    )
+  }
+
+  let stats: Awaited<ReturnType<typeof stat>>
+  try {
+    stats = await stat(resolved)
+  } catch (error) {
+    throw new BaseDirsConfigError(
+      `Failed to stat resolved base directory: ${resolved}.`,
+      error as Error
+    )
+  }
+
+  if (!stats.isDirectory()) {
+    throw new BaseDirsConfigError(
+      `Base directory is not a directory: ${path} (resolved: ${resolved}).`
+    )
+  }
+
+  return withTrailingSeparator(resolved)
+}
+
+// ============================================
+// Deduplication and nested-root pruning
+// ============================================
+
+/**
+ * Output of {@link dedupAndPruneRoots}.
+ */
+export interface DedupAndPruneResult {
+  /** Effective roots in input order, after exact dedup and nested pruning. */
+  roots: string[]
+  /** Warnings describing pruned nested roots, in pruning order. */
+  warnings: BaseDirsConfigWarning[]
+}
+
+/**
+ * Reduce a list of realpath-normalized roots to the effective set.
+ *
+ * Behavior:
+ *  - Exact duplicates (`A === B` after realpath normalization) are silently
+ *    deduplicated. This is treated as user convenience rather than a
+ *    configuration mistake, so no warning is emitted.
+ *  - Nested roots (`B` lives under `A` after realpath normalization) are
+ *    pruned: the parent `A` is kept, the child `B` is dropped, and a
+ *    `nested-root-pruned` warning describes both paths. This avoids
+ *    duplicate `list_files` / CLI scan output without widening the security
+ *    boundary beyond the parent root the user already configured.
+ *
+ * Input order is preserved for the surviving roots so the first element
+ * remains a meaningful legacy `baseDir` (see {@link legacyBaseDir}).
+ *
+ * All inputs MUST already have a trailing separator (see
+ * {@link normalizeRealpath}) — that is what makes the `startsWith`-based
+ * nested check safe against sibling-prefix paths like `/foo/barista`.
+ */
+export function dedupAndPruneRoots(inputs: string[]): DedupAndPruneResult {
+  // Phase 1: exact dedup, preserving order.
+  const deduped: string[] = []
+  const seen = new Set<string>()
+  for (const root of inputs) {
+    if (!seen.has(root)) {
+      seen.add(root)
+      deduped.push(root)
+    }
+  }
+
+  // Phase 2: nested-root pruning.
+  //
+  // A root `child` is pruned when some other root `parent` (parent !== child)
+  // is a strict prefix of `child`. Because every input ends with `sep`, the
+  // prefix check correctly distinguishes `/foo/bar/` (parent of `/foo/bar/baz/`)
+  // from `/foo/barista/` (sibling, not a parent).
+  //
+  // When a chain like `[grandparent, parent, child]` is provided, both
+  // `parent` and `child` are pruned and each emits a warning referencing the
+  // closest surviving ancestor (the grandparent). This is the same result the
+  // user would have gotten by passing only the grandparent.
+  const roots: string[] = []
+  const warnings: BaseDirsConfigWarning[] = []
+  for (const candidate of deduped) {
+    const parent = findParent(candidate, deduped)
+    if (parent === undefined) {
+      roots.push(candidate)
+      continue
+    }
+    warnings.push({
+      kind: 'nested-root-pruned',
+      message: `Nested base directory pruned: ${candidate} is inside ${parent}. Keeping ${parent} only.`,
+      parent,
+      pruned: candidate,
+    })
+  }
+
+  return { roots, warnings }
+}
+
+/**
+ * Return the closest ancestor of `candidate` in `all` (excluding `candidate`
+ * itself), or `undefined` if no ancestor exists. Closest is measured by
+ * prefix length — longer prefix wins so we report the most specific
+ * surviving parent.
+ */
+function findParent(candidate: string, all: string[]): string | undefined {
+  let best: string | undefined
+  for (const other of all) {
+    if (other === candidate) continue
+    // `other` ends with `sep` (precondition), so this prefix check is
+    // sibling-prefix safe.
+    if (candidate.startsWith(other)) {
+      if (best === undefined || other.length > best.length) {
+        best = other
+      }
+    }
+  }
+  return best
+}
+
+// ============================================
+// Legacy single-root accessor
+// ============================================
+
+/**
+ * Return the legacy single-root `baseDir` value for a {@link BaseDirsConfig}.
+ *
+ * Used for backward compatibility with consumers (and response fields) that
+ * pre-date the multi-root model. The contract is "first effective root after
+ * normalization and nested-root pruning"; callers must build the config via
+ * {@link dedupAndPruneRoots} for this to hold.
+ */
+export function legacyBaseDir(config: BaseDirsConfig): string {
+  const first = config.baseDirs[0]
+  if (first === undefined) {
+    throw new BaseDirsConfigError('BaseDirsConfig must contain at least one base directory.')
+  }
+  return first
+}
+
+// ============================================
+// Private helpers
+// ============================================
+
+/**
+ * Describe a JSON value's shape for error messages without dumping its full
+ * (possibly large) content.
+ */
+function describeJsonShape(value: unknown): string {
+  if (value === null) return 'null'
+  if (Array.isArray(value)) return 'array'
+  return typeof value
+}
+
+/**
+ * Truncate user-supplied input so configuration error messages stay readable
+ * even when the offending value is large.
+ */
+function truncate(input: string, max = 100): string {
+  if (input.length <= max) return input
+  return `${input.slice(0, max)}...`
+}
