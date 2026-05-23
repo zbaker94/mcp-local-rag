@@ -281,6 +281,41 @@ describe('resolveBaseDirs — cwd fallback', () => {
     expect(result.ok).toBe(false)
   })
 
+  it('treats an empty-string envBaseDirs as unset and falls through to BASE_DIR', async () => {
+    // BASE_DIRS being an empty string (e.g. `BASE_DIRS=` with no value) is
+    // distinguishable from "set to invalid JSON" — the resolver should treat
+    // it the same as "not set" so existing single-root users who export an
+    // empty BASE_DIRS alongside their BASE_DIR are not broken.
+    const result = await resolveBaseDirs({
+      envBaseDirs: '',
+      envBaseDir: dirA,
+      cwd: tmpRoot,
+    })
+
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.config.baseDirs).toEqual([withTrailingSeparator(realA)])
+      // Empty envBaseDirs means "not set", so no precedence warning.
+      expect(result.warnings).toEqual([])
+    }
+  })
+
+  it('falls back to cwd when both envBaseDirs and envBaseDir are empty strings', async () => {
+    // Both env vars exported but empty — e.g., `BASE_DIRS= BASE_DIR=` — must
+    // resolve to cwd, matching the behavior of fully unset env vars.
+    const result = await resolveBaseDirs({
+      envBaseDirs: '',
+      envBaseDir: '',
+      cwd: dirA,
+    })
+
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.config.baseDirs).toEqual([withTrailingSeparator(realA)])
+      expect(result.warnings).toEqual([])
+    }
+  })
+
   it('treats an explicitly empty cliRoots array as "no CLI override"', async () => {
     // The CLI parser will pass `cliRoots: undefined` when no --base-dir flag
     // is present, but defensively the resolver should also accept an empty

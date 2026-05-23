@@ -270,6 +270,18 @@ describe('DocumentParser', () => {
       }
     })
 
+    it('should reject construction with an empty baseDirs array', () => {
+      // An empty allow-list would silently permit zero files; the constructor
+      // must surface this as a configuration error rather than build a parser
+      // that rejects every path with a confusing "outside BASE_DIR" message.
+      expect(() => new DocumentParser({ baseDirs: [], maxFileSize })).toThrow(
+        expect.objectContaining({
+          name: 'ValidationError',
+          message: expect.stringMatching(/at least one base directory/),
+        })
+      )
+    })
+
     it('should produce identical behavior for { baseDir } and { baseDirs: [baseDir] } shapes', async () => {
       const legacy = new DocumentParser({ baseDir: rootA, maxFileSize })
       const modern = new DocumentParser({ baseDirs: [rootA], maxFileSize })

@@ -224,6 +224,40 @@ describe('dedupAndPruneRoots', () => {
     expect(warnings).toHaveLength(1)
   })
 
+  it('prunes both child and grandchild in a 3-level chain, keeping only the grandparent', async () => {
+    // Chain: grandparent / parent / child — the implementation documents that
+    // both descendants get pruned and each warning references the closest
+    // surviving ancestor (the grandparent, since `parent` is itself pruned).
+    const grandparent = join(tmpRoot, 'chain-grand')
+    const parent = join(grandparent, 'middle')
+    const child = join(parent, 'leaf')
+    mkdirSync(child, { recursive: true })
+    const resolvedGrand = await normalizeRealpath(grandparent)
+    const resolvedParent = await normalizeRealpath(parent)
+    const resolvedChild = await normalizeRealpath(child)
+
+    const { roots, warnings } = dedupAndPruneRoots([resolvedGrand, resolvedParent, resolvedChild])
+
+    expect(roots).toEqual([resolvedGrand])
+    expect(warnings).toHaveLength(2)
+    // Both pruned entries should reference the grandparent as the closest
+    // surviving ancestor, not the (also-pruned) parent.
+    for (const warning of warnings) {
+      expect(warning.kind).toBe('nested-root-pruned')
+      if (warning.kind === 'nested-root-pruned') {
+        expect(warning.parent).toBe(resolvedGrand)
+      }
+    }
+    const prunedPaths = warnings
+      .filter(
+        (w): w is Extract<BaseDirsConfigWarning, { kind: 'nested-root-pruned' }> =>
+          w.kind === 'nested-root-pruned'
+      )
+      .map((w) => w.pruned)
+    expect(prunedPaths).toContain(resolvedParent)
+    expect(prunedPaths).toContain(resolvedChild)
+  })
+
   it('keeps unrelated sibling roots that share a prefix but are not nested', async () => {
     // /foo/bar should NOT be considered nested under /foo/barista.
     const bar = join(tmpRoot, 'bar')

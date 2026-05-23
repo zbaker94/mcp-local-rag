@@ -260,20 +260,36 @@ export function dedupAndPruneRoots(inputs: string[]): DedupAndPruneResult {
   //
   // When a chain like `[grandparent, parent, child]` is provided, both
   // `parent` and `child` are pruned and each emits a warning referencing the
-  // closest surviving ancestor (the grandparent). This is the same result the
-  // user would have gotten by passing only the grandparent.
+  // closest SURVIVING ancestor (the grandparent). This is the same result the
+  // user would have gotten by passing only the grandparent, and avoids the
+  // confusing case where a warning points at another path that was itself
+  // pruned. Implementation note: a single pass over `deduped` in input order
+  // works because exact-prefix ancestors of a candidate must precede it in
+  // the realpath-sorted-by-discovery order only when shorter; we therefore
+  // compute the closest ancestor against the surviving `roots` set so the
+  // reported parent is always a surviving root.
   const roots: string[] = []
   const warnings: BaseDirsConfigWarning[] = []
+  // Pre-pass: identify every candidate that has any ancestor in `deduped`
+  // (these are the pruned candidates). The candidates that do NOT have any
+  // ancestor in `deduped` are the surviving roots.
+  const survivors: string[] = []
   for (const candidate of deduped) {
-    const parent = findParent(candidate, deduped)
-    if (parent === undefined) {
+    if (findParent(candidate, deduped) === undefined) {
+      survivors.push(candidate)
+    }
+  }
+  for (const candidate of deduped) {
+    const survivingAncestor = findParent(candidate, survivors)
+    if (survivingAncestor === undefined) {
+      // This candidate is itself a surviving root.
       roots.push(candidate)
       continue
     }
     warnings.push({
       kind: 'nested-root-pruned',
-      message: `Nested base directory pruned: ${candidate} is inside ${parent}. Keeping ${parent} only.`,
-      parent,
+      message: `Nested base directory pruned: ${candidate} is inside ${survivingAncestor}. Keeping ${survivingAncestor} only.`,
+      parent: survivingAncestor,
       pruned: candidate,
     })
   }
