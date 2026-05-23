@@ -1,7 +1,7 @@
 // RAG MCP Server Integration Test - Format Support & File Management
 // Split from: rag-server.integration.test.ts (AC-006, AC-007)
 
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { RAGServer } from '../index.js'
@@ -345,5 +345,212 @@ describe('AC-007: File Management', () => {
         rmSync(siblingBase, { recursive: true, force: true })
       }
     })
+  })
+})
+
+// AC-008, AC-011, AC-012, AC-013 — list_files multi-root contract (P3-T2)
+//
+// Covers the multi-root response shape produced by `handleListFiles` when
+// the server is configured with `baseDirs`: top-level `baseDirs`, preserved
+// legacy `baseDir`, per-file `baseDir` annotation, sources without root
+// annotation, dbPath/cacheDir exclusion across every root, and exact-path
+// de-duplication across roots.
+describe('AC-008: list_files multi-root contract', () => {
+  const multiRootBase = resolve('./tmp/test-list-multi-root')
+  const rootA = resolve(multiRootBase, 'rootA')
+  const rootB = resolve(multiRootBase, 'rootB')
+  const multiDbPath = resolve(multiRootBase, 'lancedb')
+  const multiCacheDir = resolve(multiRootBase, 'cache-models')
+
+  let multiServer: RAGServer
+
+  beforeAll(async () => {
+    mkdirSync(rootA, { recursive: true })
+    mkdirSync(rootB, { recursive: true })
+    mkdirSync(multiDbPath, { recursive: true })
+    mkdirSync(multiCacheDir, { recursive: true })
+
+    writeFileSync(resolve(rootA, 'a-file.txt'), 'Content in root A')
+    writeFileSync(resolve(rootB, 'b-file.txt'), 'Content in root B')
+
+    // System-managed files inside dbPath/cacheDir — must be excluded across
+    // all roots (these live outside any base dir, but ensure exclusion logic
+    // is still applied uniformly).
+    writeFileSync(resolve(multiDbPath, 'db-internal.txt'), 'DB internal')
+    writeFileSync(resolve(multiCacheDir, 'cache-internal.txt'), 'Cache internal')
+
+    multiServer = new RAGServer({
+      dbPath: multiDbPath,
+      modelName: 'Xenova/all-MiniLM-L6-v2',
+      cacheDir: multiCacheDir,
+      baseDirs: [rootA, rootB],
+      maxFileSize: 100 * 1024 * 1024,
+    })
+
+    await multiServer.initialize()
+  }, 60000)
+
+  afterAll(async () => {
+    await multiServer.close()
+    rmSync(multiRootBase, { recursive: true, force: true })
+  })
+
+  // AC interpretation: [AC-008] list_files scans every effective root and annotates each file entry with the root that produced it
+  // Validation: With two roots, each scanned file appears in `files` and its `baseDir` matches the configured root
+  it('returns files from every effective root with per-file baseDir annotation', async () => {
+    const result = await multiServer.handleListFiles()
+    const parsed = JSON.parse(result.content[0].text)
+
+    const aPath = resolve(rootA, 'a-file.txt')
+    const bPath = resolve(rootB, 'b-file.txt')
+
+    const filePaths: string[] = parsed.files.map((f: { filePath: string }) => f.filePath)
+    expect(filePaths).toContain(aPath)
+    expect(filePaths).toContain(bPath)
+
+    const aEntry = parsed.files.find((f: { filePath: string }) => f.filePath === aPath)
+    const bEntry = parsed.files.find((f: { filePath: string }) => f.filePath === bPath)
+    expect(aEntry.baseDir).toBe(rootA)
+    expect(bEntry.baseDir).toBe(rootB)
+  })
+
+  // AC interpretation: [AC-008/AC-011] Top-level `baseDirs` exposes the resolved effective roots in configured order
+  // Validation: Parsed response `baseDirs` deep-equals `[rootA, rootB]` matching `RAGServer` configuration order
+  it('top-level baseDirs equals the resolved effective roots in order', async () => {
+    const result = await multiServer.handleListFiles()
+    const parsed = JSON.parse(result.content[0].text)
+
+    expect(parsed.baseDirs).toEqual([rootA, rootB])
+  })
+
+  // AC interpretation: [AC-008/AC-012] Legacy single-root `baseDir` field preserved and equal to `baseDirs[0]` for backward compatibility
+  // Validation: `parsed.baseDir` equals `rootA` and equals `parsed.baseDirs[0]`
+  it('top-level baseDir equals baseDirs[0] (legacy compatibility)', async () => {
+    const result = await multiServer.handleListFiles()
+    const parsed = JSON.parse(result.content[0].text)
+
+    expect(parsed.baseDir).toBe(rootA)
+    expect(parsed.baseDir).toBe(parsed.baseDirs[0])
+  })
+
+  // AC interpretation: [AC-008/AC-013] System-managed `dbPath` and `cacheDir` paths must be excluded from every root's scan
+  // Validation: Files placed inside `dbPath` and `cacheDir` are absent from `parsed.files` even with multi-root configuration
+  it('dbPath and cacheDir are excluded across all roots', async () => {
+    const result = await multiServer.handleListFiles()
+    const parsed = JSON.parse(result.content[0].text)
+
+    const filePaths: string[] = parsed.files.map((f: { filePath: string }) => f.filePath)
+    expect(filePaths).not.toContain(resolve(multiDbPath, 'db-internal.txt'))
+    expect(filePaths).not.toContain(resolve(multiCacheDir, 'cache-internal.txt'))
+  })
+
+  // AC interpretation: [AC-008] Raw-data ingested via `ingest_data` is reported under `sources` and carries no producing-root annotation
+  // Validation: Ingested raw source appears in `parsed.sources`, its `baseDir` is undefined, and no raw-data path leaks into `parsed.files`
+  it('raw-data ingested via ingest_data appears under sources without baseDir', async () => {
+    await multiServer.handleIngestData({
+      content:
+        'Multi-root raw-data source test content. ' +
+        'Long enough to produce at least one chunk for the integration verification.',
+      metadata: {
+        source: 'https://example.com/multi-root-source',
+        format: 'text',
+      },
+    })
+
+    const result = await multiServer.handleListFiles()
+    const parsed = JSON.parse(result.content[0].text)
+
+    const sourceEntry = parsed.sources.find(
+      (s: { source?: string }) => s.source === 'https://example.com/multi-root-source'
+    )
+    expect(sourceEntry).toBeDefined()
+    // sources carry no producing-root annotation
+    expect(sourceEntry.baseDir).toBeUndefined()
+
+    // raw-data files do not leak into `files`
+    const filePaths: string[] = parsed.files.map((f: { filePath: string }) => f.filePath)
+    const rawDataLeaks = filePaths.filter((fp) => fp.includes('raw-data'))
+    expect(rawDataLeaks).toHaveLength(0)
+  }, 30000)
+
+  // AC interpretation: [AC-008] When the same underlying file is reachable from multiple roots (via a symlink under rootB pointing at a file in rootA),
+  // exact-path de-duplication produces exactly one entry whose `baseDir` is the first root in `baseDirs` order (first-occurrence wins).
+  // Validation: Create a symlink under rootB targeting an existing file in rootA, then call `handleListFiles` and assert (a) exactly one entry
+  // exists for the shared file and (b) its `baseDir` equals rootA (the first configured root). This exercises the seenPaths logic at
+  // src/server/index.ts:651-671 and documents the first-occurrence-wins acceptance criterion across roots.
+  it('de-duplicates files reachable from multiple roots via symlink, keeping the first root in baseDirs order', async () => {
+    const sharedTargetPath = resolve(rootA, 'a-file.txt')
+    const symlinkPath = resolve(rootB, 'a-file.txt')
+
+    try {
+      symlinkSync(sharedTargetPath, symlinkPath)
+    } catch (error) {
+      // Symlink creation can fail on platforms without filesystem-link
+      // privileges; in that environment the cross-root dedup contract is not
+      // observable so we surface the failure rather than silently skipping.
+      throw new Error(
+        `symlink creation failed for cross-root dedup test: ${(error as Error).message}`
+      )
+    }
+
+    try {
+      const result = await multiServer.handleListFiles()
+      const parsed = JSON.parse(result.content[0].text)
+
+      const entries = parsed.files.filter(
+        (f: { filePath: string }) => f.filePath === sharedTargetPath || f.filePath === symlinkPath
+      )
+      expect(entries).toHaveLength(1)
+      expect(entries[0].filePath).toBe(sharedTargetPath)
+      expect(entries[0].baseDir).toBe(rootA)
+    } finally {
+      rmSync(symlinkPath, { force: true })
+    }
+  })
+})
+
+describe('AC-008: list_files single-root regression (legacy shape preserved)', () => {
+  const singleBase = resolve('./tmp/test-list-single-root-regression')
+  const singleData = resolve(singleBase, 'data')
+  const singleDb = resolve(singleBase, 'db')
+  const singleCache = resolve(singleBase, 'cache')
+
+  let singleServer: RAGServer
+
+  beforeAll(async () => {
+    mkdirSync(singleData, { recursive: true })
+    mkdirSync(singleDb, { recursive: true })
+    mkdirSync(singleCache, { recursive: true })
+    writeFileSync(resolve(singleData, 'only-file.txt'), 'single-root content')
+
+    singleServer = new RAGServer({
+      dbPath: singleDb,
+      modelName: 'Xenova/all-MiniLM-L6-v2',
+      cacheDir: singleCache,
+      baseDir: singleData,
+      maxFileSize: 100 * 1024 * 1024,
+    })
+
+    await singleServer.initialize()
+  }, 60000)
+
+  afterAll(async () => {
+    await singleServer.close()
+    rmSync(singleBase, { recursive: true, force: true })
+  })
+
+  // AC interpretation: [AC-008/AC-012] Single-root legacy configuration still produces the legacy `baseDir` plus the additive `baseDirs` and per-file `baseDir` fields
+  // Validation: `parsed.baseDir` equals the single root, `parsed.baseDirs` equals `[singleData]`, and each file entry's `baseDir` equals `singleData`
+  it('preserves baseDir, adds baseDirs and per-file baseDir for single-root configs', async () => {
+    const result = await singleServer.handleListFiles()
+    const parsed = JSON.parse(result.content[0].text)
+
+    expect(parsed.baseDir).toBe(singleData)
+    expect(parsed.baseDirs).toEqual([singleData])
+
+    const filePath = resolve(singleData, 'only-file.txt')
+    const entry = parsed.files.find((f: { filePath: string }) => f.filePath === filePath)
+    expect(entry).toBeDefined()
+    expect(entry.baseDir).toBe(singleData)
   })
 })

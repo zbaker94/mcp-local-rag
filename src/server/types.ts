@@ -143,11 +143,23 @@ export interface IngestResult {
 }
 
 /**
- * list_files tool output — entry for a file found in BASE_DIR
+ * list_files tool output — entry for a file found under one of the effective
+ * base directories.
+ *
+ * `baseDir` identifies the producing root (one of `ListFilesResult.baseDirs`).
+ * Always present, including in single-root configurations — the field is
+ * additive over the legacy shape, so existing clients that ignore it continue
+ * to work. (P3-T2, AC-008)
  */
 export type FileEntry =
-  | { filePath: string; ingested: true; chunkCount: number; timestamp: string }
-  | { filePath: string; ingested: false }
+  | {
+      filePath: string
+      baseDir: string
+      ingested: true
+      chunkCount: number
+      timestamp: string
+    }
+  | { filePath: string; baseDir: string; ingested: false }
 
 /**
  * list_files tool output — entry for content ingested via ingest_data,
@@ -158,10 +170,24 @@ export type SourceEntry =
   | { filePath: string; chunkCount: number; timestamp: string }
 
 /**
- * list_files tool output
+ * list_files tool output.
+ *
+ * Multi-root contract (P3-T2, AC-008):
+ * - `baseDirs`: all effective roots (post realpath normalization and
+ *   nested-root pruning).
+ * - `baseDir`: the first effective root (`baseDirs[0]`). Preserved as a
+ *   legacy field so clients written against the single-root shape continue to
+ *   work.
+ * - `files`: union across roots, each annotated with its producing `baseDir`.
+ *   Exact duplicate paths across roots are de-duplicated (first occurrence
+ *   wins, preserving root iteration order).
+ * - `sources`: raw-data entries (from `ingest_data`) and orphaned DB entries
+ *   whose files no longer exist on disk. Sources are not produced by any
+ *   root, so they carry no `baseDir` annotation.
  */
 export interface ListFilesResult {
   baseDir: string
+  baseDirs: string[]
   files: FileEntry[]
   sources: SourceEntry[]
 }

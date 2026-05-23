@@ -604,8 +604,39 @@ export class RAGServer {
   }
 
   /**
+   * Scan a single base directory recursively for supported files, excluding
+   * system-managed paths (dbPath, cacheDir). Returns sorted absolute paths.
+   *
+   * Extracted from `handleListFiles` so multi-root iteration stays readable
+   * and each root applies the exact same exclusion + extension filter. Errors
+   * propagate: a `readdir` failure for any root is fatal for `list_files`
+   * (the same as the legacy single-root behavior).
+   */
+  private async scanBaseDir(baseDir: string): Promise<string[]> {
+    const entries = await readdir(baseDir, { recursive: true, withFileTypes: true })
+    return entries
+      .filter((e) => e.isFile() && SUPPORTED_EXTENSIONS.has(extname(e.name).toLowerCase()))
+      .map((e) => join(e.parentPath, e.name))
+      .filter((filePath) => !this.excludePaths.some((ep) => filePath.startsWith(ep)))
+      .sort()
+  }
+
+  /**
    * list_files tool handler
-   * Scans BASE_DIR for supported files and cross-references with ingested documents
+   *
+   * Scans every effective base directory (`this.baseDirs`) for supported
+   * files and cross-references with ingested documents. Multi-root contract
+   * (P3-T2, AC-008):
+   * - Returns top-level `baseDirs` (all effective roots, already realpath-
+   *   normalized and nested-root-pruned by `resolveBaseDirs`).
+   * - Preserves legacy top-level `baseDir = baseDirs[0]` for clients written
+   *   against the single-root shape.
+   * - Annotates each file entry with the producing `baseDir`.
+   * - De-duplicates exact duplicate file paths across roots (first occurrence
+   *   wins, preserving root iteration order).
+   * - Preserves raw-data / orphaned DB entries under `sources` with no
+   *   producing-root annotation.
+   * - Excludes `dbPath` and `cacheDir` uniformly across every root.
    */
   async handleListFiles(): Promise<{ content: [{ type: 'text'; text: string }] }> {
     try {
@@ -613,33 +644,38 @@ export class RAGServer {
       const ingested = await this.vectorStore.listFiles()
       const ingestedMap = new Map(ingested.map((f) => [f.filePath, f]))
 
-      // Scan BASE_DIR recursively for supported files.
-      // Errors propagate to the outer catch: if readdir fails, ingest_file and
-      // delete_file won't work either, so surfacing the error is appropriate.
-      const entries = await readdir(this.baseDir, { recursive: true, withFileTypes: true })
-      const baseDirFiles = entries
-        .filter((e) => e.isFile() && SUPPORTED_EXTENSIONS.has(extname(e.name).toLowerCase()))
-        .map((e) => {
-          const dir = e.parentPath
-          return join(dir, e.name)
-        })
-        .filter((filePath) => !this.excludePaths.some((ep) => filePath.startsWith(ep)))
-        .sort()
-
-      const baseDirSet = new Set(baseDirFiles)
-
-      // Files in BASE_DIR with ingestion status
-      const files: FileEntry[] = baseDirFiles.map((filePath) => {
-        const entry = ingestedMap.get(filePath)
-        return entry
-          ? { filePath, ingested: true, chunkCount: entry.chunkCount, timestamp: entry.timestamp }
-          : { filePath, ingested: false }
-      })
+      // Iterate every effective root and collect entries with their producing
+      // root. Deduplicate exact duplicate file paths across roots; the first
+      // occurrence wins so iteration order in `this.baseDirs` determines the
+      // recorded producing root for files reachable from multiple roots.
+      const files: FileEntry[] = []
+      const seenPaths = new Set<string>()
+      for (const baseDir of this.baseDirs) {
+        const scanned = await this.scanBaseDir(baseDir)
+        for (const filePath of scanned) {
+          if (seenPaths.has(filePath)) continue
+          seenPaths.add(filePath)
+          const entry = ingestedMap.get(filePath)
+          files.push(
+            entry
+              ? {
+                  filePath,
+                  baseDir,
+                  ingested: true,
+                  chunkCount: entry.chunkCount,
+                  timestamp: entry.timestamp,
+                }
+              : { filePath, baseDir, ingested: false }
+          )
+        }
+      }
 
       // Content ingested via ingest_data (web pages, clipboard, etc.) plus any
-      // orphaned DB entries whose files no longer exist on disk
+      // orphaned DB entries whose files no longer exist on disk. `seenPaths`
+      // is the union across every scanned root, so a DB entry is only a
+      // source when it is not reachable from any effective root.
       const sources: SourceEntry[] = ingested
-        .filter((f) => !baseDirSet.has(f.filePath))
+        .filter((f) => !seenPaths.has(f.filePath))
         .map((f) => {
           if (isRawDataPath(f.filePath)) {
             const source = extractSourceFromPath(f.filePath)
@@ -648,7 +684,12 @@ export class RAGServer {
           return { filePath: f.filePath, chunkCount: f.chunkCount, timestamp: f.timestamp }
         })
 
-      const result: ListFilesResult = { baseDir: this.baseDir, files, sources }
+      const result: ListFilesResult = {
+        baseDir: this.baseDir,
+        baseDirs: [...this.baseDirs],
+        files,
+        sources,
+      }
       return {
         content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
       }
