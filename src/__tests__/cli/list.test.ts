@@ -364,6 +364,139 @@ describe('CLI list', () => {
   })
 
   // --------------------------------------------
+  // Multi-root scan (P2-T2)
+  // --------------------------------------------
+  it('should walk every effective root and aggregate files across roots', async () => {
+    // Arrange: two disjoint effective roots, each contributing one file.
+    // Reset `initialize` because the preceding error-handling test leaves a
+    // rejection installed and `vi.clearAllMocks()` does not reset
+    // `mockRejectedValue` (only call history). Same for the other multi-root
+    // tests below.
+    mocks.initialize.mockResolvedValue(undefined)
+    const rootA = resolve('/tmp/list/rootA')
+    const rootB = resolve('/tmp/list/rootB')
+    mocks.resolveCliBaseDirs.mockResolvedValue({
+      config: { baseDirs: [rootA, rootB] },
+      warnings: [],
+    })
+    // readdir is called once per root; mock matches the requested path so
+    // the per-root file lists do not bleed across roots.
+    mocks.readdir.mockImplementation(async (path: string) => {
+      if (path === rootA) return [mockDirent('a.md', rootA)]
+      if (path === rootB) return [mockDirent('b.md', rootB)]
+      return []
+    })
+    mocks.listFiles.mockResolvedValue([])
+
+    // Act
+    const { stdout, error } = await captureOutput(() =>
+      runList(['--base-dir', rootA, '--base-dir', rootB])
+    )
+
+    // Assert
+    expect(error).toBeUndefined()
+    const result = JSON.parse(stdout.join(''))
+    const filePaths = result.files.map((f: Record<string, unknown>) => f.filePath)
+    expect(filePaths).toContain(resolve(rootA, 'a.md'))
+    expect(filePaths).toContain(resolve(rootB, 'b.md'))
+    expect(filePaths).toHaveLength(2)
+  })
+
+  it('should dedup file entries when roots surface the same absolute path', async () => {
+    // Arrange: two roots, each yielding the same file path (overlap that
+    // survived nested-root pruning — e.g. symlink-equivalent realpaths).
+    // The list output must contain the file exactly once.
+    mocks.initialize.mockResolvedValue(undefined)
+    const rootA = resolve('/tmp/list/share')
+    const rootB = resolve('/tmp/list/share') // duplicate after normalization
+    const sharedPath = resolve(rootA, 'shared.md')
+    mocks.resolveCliBaseDirs.mockResolvedValue({
+      config: { baseDirs: [rootA, rootB] },
+      warnings: [],
+    })
+    mocks.readdir.mockImplementation(async () => [mockDirent('shared.md', rootA)])
+    mocks.listFiles.mockResolvedValue([])
+
+    // Act
+    const { stdout, error } = await captureOutput(() => runList(['--base-dir', rootA]))
+
+    // Assert: file appears once
+    expect(error).toBeUndefined()
+    const result = JSON.parse(stdout.join(''))
+    const filePaths = result.files.map((f: Record<string, unknown>) => f.filePath)
+    expect(filePaths.filter((p: string) => p === sharedPath)).toHaveLength(1)
+  })
+
+  it('should preserve dbPath and cacheDir exclusion across all roots', async () => {
+    // Arrange: two roots, each containing a file under the global
+    // dbPath/cacheDir path. Both must be excluded.
+    mocks.initialize.mockResolvedValue(undefined)
+    const rootA = resolve('/tmp/list/dbA')
+    const rootB = resolve('/tmp/list/dbB')
+    const dbPath = resolve('/tmp/list/dbA/lancedb')
+    mocks.resolveCliBaseDirs.mockResolvedValue({
+      config: { baseDirs: [rootA, rootB] },
+      warnings: [],
+    })
+    mocks.readdir.mockImplementation(async (path: string) => {
+      if (path === rootA) {
+        return [mockDirent('keep.md', rootA), mockDirent('chunks.md', dbPath)]
+      }
+      if (path === rootB) {
+        return [mockDirent('also-keep.md', rootB)]
+      }
+      return []
+    })
+    mocks.listFiles.mockResolvedValue([])
+
+    // Act
+    const { stdout, error } = await captureOutput(() =>
+      runList(['--base-dir', rootA, '--base-dir', rootB], {
+        dbPath,
+        cacheDir: '/tmp/list/cache',
+        modelName: 'm',
+      })
+    )
+
+    // Assert: only the two non-excluded files were listed
+    expect(error).toBeUndefined()
+    const result = JSON.parse(stdout.join(''))
+    const filePaths = result.files.map((f: Record<string, unknown>) => f.filePath)
+    expect(filePaths).toContain(resolve(rootA, 'keep.md'))
+    expect(filePaths).toContain(resolve(rootB, 'also-keep.md'))
+    expect(filePaths.some((p: string) => p.includes('chunks.md'))).toBe(false)
+  })
+
+  it('should surface nested-root pruning warnings from the resolver to stderr', async () => {
+    // Arrange: resolver returns a single effective root plus a pruning
+    // warning. The CLI prints warnings on stderr so the JSON stdout
+    // contract stays clean.
+    mocks.initialize.mockResolvedValue(undefined)
+    const root = resolve('/tmp/list/parent')
+    mocks.resolveCliBaseDirs.mockResolvedValue({
+      config: { baseDirs: [root] },
+      warnings: [
+        {
+          kind: 'nested-root-pruned',
+          message: `Nested base directory pruned: ${root}/child/ is inside ${root}/. Keeping ${root}/ only.`,
+          parent: `${root}/`,
+          pruned: `${root}/child/`,
+        },
+      ],
+    })
+    mocks.readdir.mockResolvedValue([])
+    mocks.listFiles.mockResolvedValue([])
+
+    // Act
+    const { stderr, error } = await captureOutput(() => runList([]))
+
+    // Assert: warning appears on stderr
+    expect(error).toBeUndefined()
+    const joined = stderr.join('\n')
+    expect(joined).toContain('Nested base directory pruned')
+  })
+
+  // --------------------------------------------
   // parseArgs unit tests
   // --------------------------------------------
   describe('parseArgs', () => {
