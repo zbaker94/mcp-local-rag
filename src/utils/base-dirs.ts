@@ -303,6 +303,177 @@ function findParent(candidate: string, all: string[]): string | undefined {
 }
 
 // ============================================
+// Root resolver
+// ============================================
+
+/**
+ * Input to {@link resolveBaseDirs}. Each axis maps directly to one of the
+ * configuration sources defined in the multi-base-dirs plan:
+ *
+ *  - `cliRoots` — collected `--base-dir` flag occurrences (highest precedence)
+ *  - `envBaseDirs` — raw `BASE_DIRS` env value (JSON array)
+ *  - `envBaseDir` — raw `BASE_DIR` env value (single path string)
+ *  - `cwd` — `process.cwd()` snapshot (lowest precedence, always required)
+ *
+ * The resolver is pure with respect to its inputs (no `process.env` reads,
+ * no `process.cwd()` calls) so it can be exercised under deterministic tests
+ * and reused from both the CLI entry and the MCP server entry without
+ * implicitly depending on process state.
+ */
+export interface ResolveBaseDirsInput {
+  cliRoots?: string[] | undefined
+  envBaseDirs?: string | undefined
+  envBaseDir?: string | undefined
+  cwd: string
+}
+
+/**
+ * Result of {@link resolveBaseDirs}. Discriminated by `ok` so callers can
+ * branch on configuration validity without try/catch — invalid `BASE_DIRS`
+ * is a routine user-facing error path, not an exceptional condition.
+ *
+ * On success, `warnings` aggregates every warning surfaced during resolution
+ * in display order:
+ *  1. `base-dirs-overrides-base-dir` (when applicable) — shown first so the
+ *     precedence note is visible before per-root pruning notes.
+ *  2. `nested-root-pruned` — one warning per pruned child, in pruning order.
+ */
+export type ResolveBaseDirsResult =
+  | { ok: true; config: BaseDirsConfig; warnings: BaseDirsConfigWarning[] }
+  | { ok: false; error: BaseDirsConfigError }
+
+/**
+ * Resolve effective base directories from CLI / env / cwd inputs.
+ *
+ * Resolution order (per the multi-base-dirs plan):
+ *   1. `cliRoots` (one or more `--base-dir` flags) — when non-empty, replaces
+ *      env roots. CLI and env are never merged.
+ *   2. `envBaseDirs` (JSON array) — when CLI roots are absent.
+ *   3. `envBaseDir` (single path) — when CLI and `BASE_DIRS` are absent.
+ *   4. `cwd` — when none of the above are set.
+ *
+ * Warning rules:
+ *  - `BASE_DIRS > BASE_DIR` precedence warning fires only when CLI roots are
+ *    absent AND both `BASE_DIRS` and `BASE_DIR` are set. CLI-driven runs do
+ *    not produce this warning even if both env vars are also set.
+ *  - Nested-root pruning warnings always fire when applicable, regardless
+ *    of which source provided the roots.
+ *
+ * Error rules:
+ *  - Invalid `BASE_DIRS` (malformed JSON, non-array, empty array, empty
+ *    string element, ...) returns `{ ok: false, error }`. The resolver does
+ *    NOT fall back to `BASE_DIR` or `cwd` — callers surface the error per
+ *    their UI contract (CLI exit code, MCP tool error, `status` diagnostic).
+ *  - A path that fails realpath resolution (does not exist, not a directory,
+ *    permission denied) also returns `{ ok: false, error }`. Roots must
+ *    point at real directories the process is allowed to read.
+ *
+ * Post-resolution normalization:
+ *  - Every selected path is realpath-normalized and gets a trailing path
+ *    separator (see {@link normalizeRealpath}) so it can be used as a prefix
+ *    in security checks.
+ *  - Exact duplicates are silently deduplicated.
+ *  - Nested roots are pruned with a warning (see {@link dedupAndPruneRoots}).
+ */
+export async function resolveBaseDirs(input: ResolveBaseDirsInput): Promise<ResolveBaseDirsResult> {
+  const selection = selectRoots(input)
+  if (!selection.ok) {
+    return selection
+  }
+
+  const warnings: BaseDirsConfigWarning[] = []
+  if (selection.precedenceWarning) {
+    warnings.push(selection.precedenceWarning)
+  }
+
+  // Realpath-normalize each selected root. Failures (missing directory,
+  // permission denied, ...) are surfaced as a structured config error.
+  const normalized: string[] = []
+  for (const root of selection.roots) {
+    try {
+      normalized.push(await normalizeRealpath(root))
+    } catch (error) {
+      if (error instanceof BaseDirsConfigError) {
+        return { ok: false, error }
+      }
+      throw error
+    }
+  }
+
+  const { roots, warnings: pruningWarnings } = dedupAndPruneRoots(normalized)
+  warnings.push(...pruningWarnings)
+
+  return {
+    ok: true,
+    config: { baseDirs: roots },
+    warnings,
+  }
+}
+
+/**
+ * Output of {@link selectRoots}. Either picks a source's raw paths (still
+ * un-normalized) plus an optional precedence warning, or returns a structured
+ * error so the caller can short-circuit.
+ */
+type SelectRootsResult =
+  | {
+      ok: true
+      roots: string[]
+      precedenceWarning?: BaseDirsConfigWarning
+    }
+  | { ok: false; error: BaseDirsConfigError }
+
+/**
+ * Apply the source-precedence rules to pick which input set of roots to use.
+ *
+ * Kept as a small helper so the realpath normalization in
+ * {@link resolveBaseDirs} stays focused on I/O, not precedence logic. This
+ * function performs only string-level parsing and selection — no fs access.
+ */
+function selectRoots(input: ResolveBaseDirsInput): SelectRootsResult {
+  // 1. CLI roots — when non-empty, replace env entirely (no precedence
+  //    warning even if env vars are also set, because the user explicitly
+  //    overrode them via CLI).
+  if (input.cliRoots !== undefined && input.cliRoots.length > 0) {
+    return { ok: true, roots: input.cliRoots }
+  }
+
+  // 2. BASE_DIRS — when CLI absent. Whitespace-only is treated as an
+  //    invalid value (consistent with parseBaseDirsEnv), not as "unset",
+  //    so the user notices a malformed env var instead of silently falling
+  //    through to BASE_DIR.
+  if (input.envBaseDirs !== undefined && input.envBaseDirs.length > 0) {
+    const parsed = parseBaseDirsEnv(input.envBaseDirs)
+    if (!parsed.ok) {
+      return { ok: false, error: parsed.error }
+    }
+
+    const precedenceWarning =
+      input.envBaseDir !== undefined && input.envBaseDir.trim().length > 0
+        ? ({
+            kind: 'base-dirs-overrides-base-dir',
+            message:
+              'BASE_DIRS is set; BASE_DIR is ignored. Unset BASE_DIR or remove BASE_DIRS to silence this warning.',
+          } satisfies BaseDirsConfigWarning)
+        : undefined
+
+    return precedenceWarning
+      ? { ok: true, roots: parsed.value, precedenceWarning }
+      : { ok: true, roots: parsed.value }
+  }
+
+  // 3. BASE_DIR — when CLI and BASE_DIRS are absent. Whitespace-only is
+  //    treated as "unset" (a user clearing the value with spaces gets the
+  //    same behavior as not setting it at all).
+  if (input.envBaseDir !== undefined && input.envBaseDir.trim().length > 0) {
+    return { ok: true, roots: [input.envBaseDir] }
+  }
+
+  // 4. cwd — final fallback.
+  return { ok: true, roots: [input.cwd] }
+}
+
+// ============================================
 // Legacy single-root accessor
 // ============================================
 
