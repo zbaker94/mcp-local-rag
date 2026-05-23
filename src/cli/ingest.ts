@@ -1,7 +1,7 @@
 // CLI ingest subcommand — bulk file ingestion with single optimize() at end
 
 import { randomUUID } from 'node:crypto'
-import { opendir, stat } from 'node:fs/promises'
+import { opendir, realpath, stat } from 'node:fs/promises'
 import { basename, extname, join, resolve, sep } from 'node:path'
 
 import { SemanticChunker } from '../chunker/index.js'
@@ -10,10 +10,12 @@ import { buildChunksAndEmbeddings } from '../ingest/compute.js'
 import { prepareVisualPdfChunks } from '../ingest/visual.js'
 import { DocumentParser, SUPPORTED_EXTENSIONS } from '../parser/index.js'
 import type { QualityProfile } from '../pdf-visual/types.js'
+import type { BaseDirsConfig, BaseDirsConfigWarning } from '../utils/base-dirs.js'
 import type { VectorChunk, VectorStore } from '../vectordb/index.js'
-import { createEmbedder, createVectorStore } from './common.js'
+import { createEmbedder, createVectorStore, resolveCliBaseDirsOrExit } from './common.js'
 import type { GlobalOptions, ResolvedGlobalConfig } from './options.js'
 import {
+  consumeBaseDirArg,
   resolveDevice,
   resolveGlobalConfig,
   validateChunkMinLength,
@@ -32,7 +34,8 @@ const MAX_DEPTH = 10
 // ============================================
 
 interface IngestConfig {
-  baseDir: string
+  baseDirs: BaseDirsConfig
+  baseDirsWarnings: BaseDirsConfigWarning[]
   dbPath: string
   cacheDir: string
   modelName: string
@@ -47,7 +50,12 @@ interface IngestSummary {
 }
 
 interface IngestCliOptions {
-  baseDir?: string | undefined
+  /**
+   * Collected `--base-dir` values in CLI order. Repeatable: each flag
+   * occurrence appends one entry. An empty array means the flag was not
+   * provided (resolver then falls through to env / cwd).
+   */
+  baseDirs?: string[] | undefined
   maxFileSize?: number | undefined
   chunkMinLength?: number | undefined
   visual?: boolean | undefined
@@ -82,7 +90,7 @@ const HELP_TEXT = `Usage: mcp-local-rag [global-options] ingest [options] <path>
 Ingest a single file or all supported files under a directory.
 
 Options:
-  --base-dir <path>          Base directory for documents (default: cwd)
+  --base-dir <path>          Base directory for documents (repeatable: pass once per root; default: BASE_DIRS/BASE_DIR env or cwd)
   --max-file-size <n>        Max file size in bytes (default: ${INGEST_DEFAULTS.maxFileSize})
   --chunk-min-length <n>     Minimum chunk length in characters (default: 50, range: 1-10000)
   --visual                   Enable VLM captioning for PDF figure pages (PDFs only; no effect on other types)
@@ -118,13 +126,15 @@ export function parseArgs(args: string[]): ParsedArgs {
         i++
         break
       case '--base-dir': {
-        const value = args[++i]
-        if (value === undefined || value.startsWith('-')) {
-          console.error('Missing value for --base-dir')
-          process.exit(1)
+        // Repeatable: each `--base-dir <path>` occurrence appends one entry
+        // to `options.baseDirs`. The accumulator is lazily initialized so
+        // an absent flag leaves `options.baseDirs` as `undefined`, which
+        // the resolver treats as "fall through to env / cwd".
+        if (options.baseDirs === undefined) {
+          options.baseDirs = []
         }
-        options.baseDir = value
-        i++
+        const valueIndex = consumeBaseDirArg(args, i, options.baseDirs)
+        i = valueIndex + 1
         break
       }
       case '--max-file-size': {
@@ -204,14 +214,40 @@ export function parseArgs(args: string[]): ParsedArgs {
 
 /**
  * Resolve ingest config by merging global config with ingest-specific options.
- * Ingest-specific: baseDir, maxFileSize (CLI flags > env vars > defaults).
- * Validates all resolved values before returning.
+ *
+ * Base directories are resolved via the shared CLI resolver
+ * ({@link resolveCliBaseDirsOrExit}) which applies the documented precedence
+ * (CLI roots > `BASE_DIRS` > `BASE_DIR` > `cwd`), realpath-normalizes every
+ * effective root, dedupes exact duplicates, and prunes nested roots. CLI
+ * roots are pre-validated against the sensitive-path policy here so the
+ * user sees `--base-dir`-attributed errors before the resolver touches the
+ * filesystem.
+ *
+ * Other ingest-specific values (maxFileSize, chunkMinLength) follow the
+ * existing CLI > env > defaults order and are validated against the same
+ * ranges as before.
  */
-export function resolveConfig(
+export async function resolveConfig(
   globalConfig: ResolvedGlobalConfig,
   ingestOptions: IngestCliOptions = {}
-): IngestConfig {
-  const baseDir = ingestOptions.baseDir ?? process.env['BASE_DIR'] ?? process.cwd()
+): Promise<IngestConfig> {
+  const cliBaseDirs = ingestOptions.baseDirs ?? []
+
+  // Validate CLI-supplied paths against the sensitive-path policy before
+  // calling the resolver. Doing this here (rather than relying on the
+  // resolver) keeps the error message attributed to `--base-dir` and avoids
+  // an unnecessary realpath round-trip on a path we will reject anyway.
+  for (const root of cliBaseDirs) {
+    const baseDirError = validatePath(root, '--base-dir')
+    if (baseDirError) {
+      console.error(baseDirError)
+      process.exit(1)
+    }
+  }
+
+  const { config: baseDirs, warnings: baseDirsWarnings } =
+    await resolveCliBaseDirsOrExit(cliBaseDirs)
+
   const maxFileSize =
     ingestOptions.maxFileSize ??
     (process.env['MAX_FILE_SIZE']
@@ -222,13 +258,6 @@ export function resolveConfig(
     (process.env['CHUNK_MIN_LENGTH']
       ? Number.parseInt(process.env['CHUNK_MIN_LENGTH'], 10)
       : undefined)
-
-  // Validate baseDir path
-  const baseDirError = validatePath(baseDir, '--base-dir')
-  if (baseDirError) {
-    console.error(baseDirError)
-    process.exit(1)
-  }
 
   // Validate maxFileSize range
   const maxFileSizeError = validateMaxFileSize(maxFileSize)
@@ -250,7 +279,8 @@ export function resolveConfig(
     dbPath: globalConfig.dbPath,
     cacheDir: globalConfig.cacheDir,
     modelName: globalConfig.modelName,
-    baseDir,
+    baseDirs,
+    baseDirsWarnings,
     maxFileSize,
   }
   if (chunkMinLength !== undefined) {
@@ -264,12 +294,63 @@ export function resolveConfig(
 // ============================================
 
 /**
- * Collect files to ingest from a path.
- * - If path is a file with supported extension, return [path].
- * - If path is a directory, walk with BFS up to MAX_DEPTH levels.
- * - Skip symlinks, permission errors, and excluded directories.
+ * BFS-walk a single directory up to {@link MAX_DEPTH} levels, returning every
+ * supported file path under it. Skips symlinks, permission errors, and excluded
+ * directories. Reports a single shared `depthLimited` flag via an out-param so
+ * the caller can emit one combined warning across multiple roots instead of
+ * one per root.
  */
-async function collectFiles(targetPath: string, excludePaths: string[]): Promise<string[]> {
+async function walkDirectory(
+  rootPath: string,
+  excludePaths: string[],
+  state: { depthLimited: boolean }
+): Promise<string[]> {
+  const files: string[] = []
+
+  const queue: { dirPath: string; depth: number }[] = [{ dirPath: rootPath, depth: 0 }]
+
+  while (queue.length > 0) {
+    const { dirPath, depth } = queue.shift()!
+
+    if (depth >= MAX_DEPTH) {
+      state.depthLimited = true
+      continue
+    }
+
+    let dir: Awaited<ReturnType<typeof opendir>>
+    try {
+      dir = await opendir(dirPath)
+    } catch {
+      console.error(`Warning: cannot read directory: ${dirPath}`)
+      continue
+    }
+
+    for await (const entry of dir) {
+      const fullPath = join(dirPath, entry.name)
+
+      // `join(dirPath, entry.name)` always produces a path under `dirPath`,
+      // which itself stays under `rootPath` because the BFS only enqueues
+      // descendants of `rootPath`. We therefore do not need a per-entry
+      // `startsWith(rootPath)` re-check here.
+      if (entry.isSymbolicLink()) continue
+      if (excludePaths.some((ep) => fullPath.startsWith(ep))) continue
+
+      if (entry.isDirectory()) {
+        queue.push({ dirPath: fullPath, depth: depth + 1 })
+      } else if (entry.isFile() && SUPPORTED_EXTENSIONS.has(extname(entry.name).toLowerCase())) {
+        files.push(fullPath)
+      }
+    }
+  }
+
+  return files
+}
+
+async function collectFiles(
+  targetPath: string,
+  baseDirs: readonly string[],
+  excludePaths: string[]
+): Promise<string[]> {
   const resolved = resolve(targetPath)
   const info = await stat(resolved)
 
@@ -285,49 +366,33 @@ async function collectFiles(targetPath: string, excludePaths: string[]): Promise
   }
 
   if (info.isDirectory()) {
-    const files: string[] = []
-    let depthLimited = false
-
-    const queue: { dirPath: string; depth: number }[] = [{ dirPath: resolved, depth: 0 }]
-
-    while (queue.length > 0) {
-      const { dirPath, depth } = queue.shift()!
-
-      if (depth >= MAX_DEPTH) {
-        depthLimited = true
-        continue
-      }
-
-      let dir: Awaited<ReturnType<typeof opendir>>
-      try {
-        dir = await opendir(dirPath)
-      } catch {
-        console.error(`Warning: cannot read directory: ${dirPath}`)
-        continue
-      }
-
-      for await (const entry of dir) {
-        const fullPath = join(dirPath, entry.name)
-
-        if (!fullPath.startsWith(resolved)) continue
-        if (entry.isSymbolicLink()) continue
-        if (excludePaths.some((ep) => fullPath.startsWith(ep))) continue
-
-        if (entry.isDirectory()) {
-          queue.push({ dirPath: fullPath, depth: depth + 1 })
-        } else if (entry.isFile() && SUPPORTED_EXTENSIONS.has(extname(entry.name).toLowerCase())) {
-          files.push(fullPath)
-        }
-      }
+    // realpath both sides so a symlinked positional path still matches a
+    // root whose realpath agrees. baseDirs from resolveCliBaseDirsOrExit
+    // are already realpath-normalized with a trailing sep.
+    const realResolved = await realpath(resolved)
+    const realResolvedWithSep = realResolved.endsWith(sep) ? realResolved : realResolved + sep
+    const insideAnyRoot = baseDirs.some(
+      (root) => realResolvedWithSep === root || realResolvedWithSep.startsWith(root)
+    )
+    if (!insideAnyRoot) {
+      console.error(
+        `Error: ${targetPath} is not under any configured base directory. ` +
+          `Allowed roots: ${baseDirs.join(', ')}. ` +
+          `Provide a path inside one of the configured roots, or set BASE_DIRS / --base-dir to include the desired tree.`
+      )
+      process.exit(1)
     }
 
-    if (depthLimited) {
+    const state = { depthLimited: false }
+    const collected = await walkDirectory(resolved, excludePaths, state)
+
+    if (state.depthLimited) {
       console.error(
         `Warning: some directories were skipped because they exceed the maximum depth (${MAX_DEPTH})`
       )
     }
 
-    return files.sort()
+    return [...new Set(collected)].sort()
   }
 
   return []
@@ -524,11 +589,21 @@ export async function runIngest(args: string[], globalOptions: GlobalOptions = {
 
   // Resolve config: CLI flags > env vars > defaults
   const globalConfig = resolveGlobalConfig(globalOptions)
-  const config = resolveConfig(globalConfig, options)
+  const config = await resolveConfig(globalConfig, options)
   const excludePaths = [`${resolve(config.dbPath)}${sep}`, `${resolve(config.cacheDir)}${sep}`]
 
-  // Collect files
-  const files = await collectFiles(targetPath, excludePaths)
+  // Surface resolver warnings (precedence, nested-root pruning) on stderr
+  // before scan output starts. Scan-loop multi-root behavior is P2-T2; this
+  // task only wires the resolver so the warnings are visible today.
+  for (const warning of config.baseDirsWarnings) {
+    console.error(warning.message)
+  }
+
+  // Collect files: when `targetPath` is a directory, the scan iterates every
+  // effective root in `config.baseDirs.baseDirs` (P2-T2) — the positional
+  // directory only triggers directory mode and is no longer the scan target.
+  // Single-file mode is unchanged. See `collectFiles` for the full rationale.
+  const files = await collectFiles(targetPath, config.baseDirs.baseDirs, excludePaths)
   if (files.length === 0) {
     console.error('No supported files found.')
     process.exit(1)
@@ -536,9 +611,14 @@ export async function runIngest(args: string[], globalOptions: GlobalOptions = {
 
   console.error(`Found ${files.length} file(s) to ingest.`)
 
-  // Initialize components (single instances reused across all files)
+  // Initialize components (single instances reused across all files).
+  // The parser receives the full multi-root config. The directory-scan loop
+  // (`collectFiles`) iterates every effective root in `config.baseDirs.baseDirs`
+  // (P2-T2). Under a single configured root this is byte-identical to the
+  // pre-P2-T2 single-root scan; under multiple roots it walks each one and
+  // dedupes overlap.
   const parser = new DocumentParser({
-    baseDir: config.baseDir,
+    baseDirs: config.baseDirs.baseDirs,
     maxFileSize: config.maxFileSize,
   })
   const chunker = new SemanticChunker(

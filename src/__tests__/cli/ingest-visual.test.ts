@@ -107,6 +107,16 @@ const cliCommonFactory = () => ({
     optimize: mocks.optimize,
     close: vi.fn(),
   })),
+  // Stub the shared CLI base-dirs resolver so visual-mode tests skip the
+  // realpath I/O the production resolver performs. The visual tests do not
+  // exercise base-dir precedence — they only need a valid config so the
+  // `DocumentParser` constructor receives a `baseDirs` array.
+  resolveCliBaseDirsOrExit: vi.fn().mockImplementation((cliRoots: string[]) =>
+    Promise.resolve({
+      config: { baseDirs: cliRoots.length > 0 ? cliRoots : ['/mock/cwd/'] },
+      warnings: [],
+    })
+  ),
 })
 
 // Real-shaped pdf-visual barrel. `detectVisualCandidates` reflects

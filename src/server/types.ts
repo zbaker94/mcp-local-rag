@@ -1,20 +1,21 @@
 // Type definitions for RAGServer
 
+import type { BaseDirsConfigError } from '../utils/base-dirs.js'
 import type { ContentFormat } from '../utils/raw-data-utils.js'
 import type { GroupingMode } from '../vectordb/index.js'
 
 /**
- * RAGServer configuration
+ * Fields shared by both `RAGServerConfig` shapes (legacy single-root and
+ * multi-root). Extracted so the union below only needs to describe the
+ * `baseDir` / `baseDirs` axis.
  */
-export interface RAGServerConfig {
+interface RAGServerConfigBase {
   /** LanceDB database path */
   dbPath: string
   /** Transformers.js model path */
   modelName: string
   /** Model cache directory */
   cacheDir: string
-  /** Document base directory */
-  baseDir: string
   /** Maximum file size (100MB) */
   maxFileSize: number
   /** Compute device (cpu, webgpu, dml, etc) */
@@ -31,7 +32,36 @@ export interface RAGServerConfig {
   chunkMinLength?: number
   /** Configuration validation warnings to surface to users via MCP annotations */
   configWarnings?: string[]
+  /**
+   * Structured base-dirs resolution error. When present, the server is in
+   * degraded mode: `status` remains callable so the user can diagnose the
+   * problem via MCP, while root-dependent tools surface the error (handled
+   * in P3-T3). See `resolveBaseDirs` for the error semantics.
+   */
+  configError?: BaseDirsConfigError
 }
+
+/**
+ * RAGServer configuration.
+ *
+ * Accepts either a single `baseDir` (legacy shape — preserved so existing
+ * direct callers and tests that pass `{ baseDir }` continue to work) or
+ * `baseDirs` (multi-root shape produced by `resolveBaseDirs`). Exactly one
+ * of the two MUST be supplied. The constructor normalizes both into a single
+ * `baseDirs: string[]` internally and derives the legacy `baseDir` accessor
+ * as `baseDirs[0]`.
+ */
+export type RAGServerConfig =
+  | (RAGServerConfigBase & {
+      /** Document base directory (legacy single-root shape). */
+      baseDir: string
+      baseDirs?: undefined
+    })
+  | (RAGServerConfigBase & {
+      /** One or more allowed document base directories (multi-root shape). */
+      baseDirs: string[]
+      baseDir?: undefined
+    })
 
 /**
  * query_documents tool input
@@ -113,11 +143,23 @@ export interface IngestResult {
 }
 
 /**
- * list_files tool output — entry for a file found in BASE_DIR
+ * list_files tool output — entry for a file found under one of the effective
+ * base directories.
+ *
+ * `baseDir` identifies the producing root (one of `ListFilesResult.baseDirs`).
+ * Always present, including in single-root configurations — the field is
+ * additive over the legacy shape, so existing clients that ignore it continue
+ * to work. (P3-T2, AC-008)
  */
 export type FileEntry =
-  | { filePath: string; ingested: true; chunkCount: number; timestamp: string }
-  | { filePath: string; ingested: false }
+  | {
+      filePath: string
+      baseDir: string
+      ingested: true
+      chunkCount: number
+      timestamp: string
+    }
+  | { filePath: string; baseDir: string; ingested: false }
 
 /**
  * list_files tool output — entry for content ingested via ingest_data,
@@ -128,10 +170,24 @@ export type SourceEntry =
   | { filePath: string; chunkCount: number; timestamp: string }
 
 /**
- * list_files tool output
+ * list_files tool output.
+ *
+ * Multi-root contract (P3-T2, AC-008):
+ * - `baseDirs`: all effective roots (post realpath normalization and
+ *   nested-root pruning).
+ * - `baseDir`: the first effective root (`baseDirs[0]`). Preserved as a
+ *   legacy field so clients written against the single-root shape continue to
+ *   work.
+ * - `files`: union across roots, each annotated with its producing `baseDir`.
+ *   Exact duplicate paths across roots are de-duplicated (first occurrence
+ *   wins, preserving root iteration order).
+ * - `sources`: raw-data entries (from `ingest_data`) and orphaned DB entries
+ *   whose files no longer exist on disk. Sources are not produced by any
+ *   root, so they carry no `baseDir` annotation.
  */
 export interface ListFilesResult {
   baseDir: string
+  baseDirs: string[]
   files: FileEntry[]
   sources: SourceEntry[]
 }

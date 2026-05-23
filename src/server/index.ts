@@ -6,7 +6,6 @@ import { basename, extname, join, resolve, sep } from 'node:path'
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import {
-  type Annotations,
   CallToolRequestSchema,
   ErrorCode,
   ListToolsRequestSchema,
@@ -19,19 +18,27 @@ import { prepareVisualPdfChunks } from '../ingest/visual.js'
 import { parseHtml } from '../parser/html-parser.js'
 import { DocumentParser, SUPPORTED_EXTENSIONS } from '../parser/index.js'
 import { extractMarkdownTitle, extractTxtTitle } from '../parser/title-extractor.js'
+import { type BaseDirsConfigError, displayPath } from '../utils/base-dirs.js'
 import {
   type ContentFormat,
   extractSourceFromPath,
   generateMetaJsonPath,
   generateRawDataPath,
-  isRawDataPath,
+  isPathInRawDataDir,
+  isPathInRawDataDirLexical,
   loadMetaJson,
+  looksLikeRawDataPath,
   saveMetaJson,
   saveRawData,
 } from '../utils/raw-data-utils.js'
 import { type VectorChunk, VectorStore } from '../vectordb/index.js'
 import { DatabaseError } from '../vectordb/types.js'
-import { formatErrorMessage } from './error-utils.js'
+import {
+  appendConfigWarnings,
+  buildConfigErrorBlock,
+  formatErrorMessage,
+  type RagContentBlock,
+} from './error-utils.js'
 import { toolDefinitions } from './tool-definitions.js'
 import type {
   DeleteFileInput,
@@ -56,20 +63,62 @@ export class RAGServer {
   private readonly chunker: SemanticChunker
   private readonly parser: DocumentParser
   private readonly dbPath: string
+  /**
+   * One or more allowed document base directories. The single source of
+   * truth for both the security boundary (passed to `DocumentParser`) and
+   * for scan iteration in `list_files` (P3-T2). Normalized from either the
+   * legacy `{ baseDir }` config shape or the new `{ baseDirs }` shape so
+   * downstream readers do not need to branch on shape.
+   */
+  private readonly baseDirs: readonly string[]
+  /**
+   * Legacy single-root accessor. Derived from `baseDirs[0]`. Preserved so
+   * the legacy `ListFilesResult.baseDir` field and any direct readers of
+   * `this.baseDir` continue to work; multi-root iteration uses `baseDirs`.
+   */
   private readonly baseDir: string
   private readonly cacheDir: string
   // Used by handleListFiles filter to exclude system-managed directories
   private readonly excludePaths: string[]
   private readonly configWarnings: string[]
+  /**
+   * Structured base-dirs resolution error. When non-null, the server is in
+   * degraded mode: `status` remains callable so the user can diagnose the
+   * problem via MCP, while root-dependent tools should surface this error
+   * (wired in P3-T3). See `resolveBaseDirs` for the error semantics.
+   */
+  private readonly configError: BaseDirsConfigError | null
   private readonly minChunkLength: number
   private readonly device: string | undefined
-  private queryWarningsShown = false
 
   constructor(config: RAGServerConfig) {
     this.dbPath = config.dbPath
-    this.baseDir = config.baseDir
+    // Normalize both config shapes into a single `baseDirs: string[]`.
+    // Exactly one of `baseDir` / `baseDirs` is supplied (enforced by the
+    // discriminated union in `RAGServerConfig`); the runtime check below
+    // catches misuse from JS-only callers and degraded-mode bugs.
+    const normalizedBaseDirs =
+      config.baseDirs !== undefined ? [...config.baseDirs] : [config.baseDir]
+    const firstBaseDir = normalizedBaseDirs[0]
+    // Empty `baseDirs` is accepted ONLY in degraded mode (configError set).
+    // In that case the server stays constructible so `status` remains
+    // callable, but every root-dependent tool fails fast via
+    // `assertConfigOk` before any baseDirs-dependent work. Without
+    // configError, an empty array is a misuse: reject up front rather than
+    // build a parser that silently rejects every path.
+    if (firstBaseDir === undefined && config.configError === undefined) {
+      throw new Error(
+        'RAGServerConfig must provide either `baseDir` or a non-empty `baseDirs` array (empty `baseDirs` is allowed only in degraded mode with `configError` set).'
+      )
+    }
+    this.baseDirs = normalizedBaseDirs
+    // Legacy single-root accessor — empty-string when in degraded mode with
+    // an empty `baseDirs` array. `baseDir` is never consulted in degraded
+    // mode because `assertConfigOk` fires before any handler reaches it.
+    this.baseDir = firstBaseDir ?? ''
     this.cacheDir = config.cacheDir
     this.configWarnings = config.configWarnings ?? []
+    this.configError = config.configError ?? null
     this.minChunkLength = config.chunkMinLength ?? DEFAULT_MIN_CHUNK_LENGTH
     this.device = config.device
     this.excludePaths = [`${resolve(this.dbPath)}${sep}`, `${resolve(this.cacheDir)}${sep}`]
@@ -109,8 +158,12 @@ export class RAGServer {
     this.chunker = new SemanticChunker(
       config.chunkMinLength !== undefined ? { minChunkLength: config.chunkMinLength } : {}
     )
+    // Always construct the parser with the multi-root shape — the parser
+    // accepts a single-element `baseDirs` array as the byte-equivalent of
+    // the legacy `baseDir` shape, so passing `this.baseDirs` covers both
+    // config inputs without branching here.
     this.parser = new DocumentParser({
-      baseDir: config.baseDir,
+      baseDirs: this.baseDirs,
       maxFileSize: config.maxFileSize,
     })
 
@@ -118,25 +171,42 @@ export class RAGServer {
   }
 
   /**
-   * Build warning content blocks with MCP annotations.
-   * Returns an empty array if no warnings exist.
+   * Expose the base-dirs resolution error (if any) for the warning/error
+   * attachment layer added in P3-T3. Returns `null` when configuration
+   * resolved cleanly. Kept as a method so the field stays `private readonly`
+   * — only the handler layer that wires error responses needs read access.
    */
-  private buildWarningContentBlocks(): Array<{
-    type: 'text'
-    text: string
-    annotations: Annotations
-  }> {
-    if (this.configWarnings.length === 0) return []
-    return [
-      {
-        type: 'text' as const,
-        text: `Warning: ${this.configWarnings.join(' | ')}`,
-        annotations: {
-          audience: ['user', 'assistant'] as const,
-          priority: 0.3,
-        },
-      },
-    ]
+  getConfigError(): BaseDirsConfigError | null {
+    return this.configError
+  }
+
+  /**
+   * Fail-fast guard for root-dependent tools. When a {@link BaseDirsConfigError}
+   * is stored on the instance the server is in degraded mode (invalid
+   * `BASE_DIRS` — see `resolveBaseDirs`) and every root-dependent tool MUST
+   * reject BEFORE any DB / embedder / parser access so the user sees the
+   * configuration problem unambiguously. Surfaces the error as an
+   * `McpError(InvalidParams)` so MCP clients render it as a structured tool
+   * error (per AC-009).
+   *
+   * `status` deliberately does NOT call this helper; it remains callable in
+   * degraded mode and exposes the error via a diagnostic content block so
+   * the user can recover via MCP without inspecting stderr.
+   */
+  private assertConfigOk(): void {
+    if (this.configError !== null) {
+      throw new McpError(ErrorCode.InvalidParams, this.configError.message)
+    }
+  }
+
+  /**
+   * Append the centralized config-warning blocks to a handler response.
+   * Every tool handler funnels through this method so the warning shape
+   * stays in exactly one place (design-doc-mandated countermeasure for the
+   * "warning shape changes touch many handlers" risk).
+   */
+  private withWarnings(content: RagContentBlock[]): RagContentBlock[] {
+    return appendConfigWarnings(content, this.configWarnings)
   }
 
   /**
@@ -195,9 +265,11 @@ export class RAGServer {
   /**
    * query_documents tool handler
    */
-  async handleQueryDocuments(
-    args: QueryDocumentsInput
-  ): Promise<{ content: Array<{ type: 'text'; text: string; annotations?: Annotations }> }> {
+  async handleQueryDocuments(args: QueryDocumentsInput): Promise<{ content: RagContentBlock[] }> {
+    // query_documents operates over the LanceDB only (no baseDirs access), so
+    // it stays callable in degraded mode (configError present). The warning
+    // and error blocks attached via `withWarnings` / status remain the user-
+    // visible diagnostic surface for the config problem.
     try {
       // Generate query embedding
       const queryVector = await this.embedder.embed(args.query)
@@ -215,8 +287,7 @@ export class RAGServer {
           fileTitle: result.fileTitle ?? null,
         }
 
-        // Restore source for raw-data files (ingested via ingest_data)
-        if (isRawDataPath(result.filePath)) {
+        if (looksLikeRawDataPath(result.filePath)) {
           const source = extractSourceFromPath(result.filePath)
           if (source) {
             queryResult.source = source
@@ -226,20 +297,17 @@ export class RAGServer {
         return queryResult
       })
 
-      const content: Array<{ type: 'text'; text: string; annotations?: Annotations }> = [
+      const content: RagContentBlock[] = [
         {
           type: 'text',
           text: JSON.stringify(results, null, 2),
         },
       ]
 
-      // Append config warnings on first query call only
-      if (!this.queryWarningsShown) {
-        content.push(...this.buildWarningContentBlocks())
-        this.queryWarningsShown = true
-      }
-
-      return { content }
+      // Append config warnings on every call. AC-009 requires visibility on
+      // every tool response because MCP clients may hide stderr and may not
+      // retain context across calls.
+      return { content: this.withWarnings(content) }
     } catch (error) {
       console.error('Failed to query documents:', error)
       throw error
@@ -249,9 +317,12 @@ export class RAGServer {
   /**
    * ingest_file tool handler (re-ingestion support, transaction processing, rollback capability)
    */
-  async handleIngestFile(
-    args: IngestFileInput
-  ): Promise<{ content: [{ type: 'text'; text: string }] }> {
+  async handleIngestFile(args: IngestFileInput): Promise<{ content: RagContentBlock[] }> {
+    // Skip the configError gate only for paths structurally inside
+    // `<dbPath>/raw-data/` (internal invocation from handleIngestData).
+    if (!(await isPathInRawDataDir(args.filePath, this.dbPath))) {
+      this.assertConfigOk()
+    }
     // Runtime validation (AC-012): the MCP JSON Schema declares `visual` as a
     // boolean and `IngestFileInput.visual` types it as `boolean | undefined`,
     // but tool arguments arrive as `unknown` at the SDK boundary so the
@@ -290,8 +361,8 @@ export class RAGServer {
       let title: string | null = null
       let chunks: Awaited<ReturnType<typeof buildChunksAndEmbeddings>>['chunks']
       let embeddings: Awaited<ReturnType<typeof buildChunksAndEmbeddings>>['embeddings']
-      if (isRawDataPath(args.filePath)) {
-        // Raw-data files: skip validation, read directly
+      if (await isPathInRawDataDir(args.filePath, this.dbPath)) {
+        // Raw-data files: skip parser validation, read directly.
         text = await readFile(args.filePath, 'utf-8')
         const meta = await loadMetaJson(args.filePath)
         title = meta?.title ?? null
@@ -448,12 +519,12 @@ export class RAGServer {
       }
 
       return {
-        content: [
+        content: this.withWarnings([
           {
             type: 'text',
             text: JSON.stringify(result, null, 2),
           },
-        ],
+        ]),
       }
     } catch (error) {
       // Re-throw McpError as-is to preserve error code
@@ -479,9 +550,13 @@ export class RAGServer {
    * - Converts to Markdown for better chunking
    * - Saves as .md file
    */
-  async handleIngestData(
-    args: IngestDataInput
-  ): Promise<{ content: [{ type: 'text'; text: string }] }> {
+  async handleIngestData(args: IngestDataInput): Promise<{ content: RagContentBlock[] }> {
+    // ingest_data writes only to `dbPath`/raw-data — it never reads from a
+    // configured `baseDir`. Keeping it callable in degraded mode means a user
+    // with invalid BASE_DIRS can still capture raw-data via MCP while they
+    // diagnose the config error from `status`. The internal `handleIngestFile`
+    // call below operates on a generated raw-data path, which routes
+    // around `parser.validateFilePath`, so no baseDirs access happens.
     try {
       let contentToSave = args.content
       let formatToSave: ContentFormat = args.metadata.format
@@ -555,54 +630,170 @@ export class RAGServer {
   }
 
   /**
-   * list_files tool handler
-   * Scans BASE_DIR for supported files and cross-references with ingested documents
+   * Bounded BFS scan of a single base directory for supported files,
+   * excluding system-managed paths (dbPath, cacheDir). Returns sorted
+   * absolute paths plus a list of non-fatal warnings (Finding #10).
+   *
+   * Behavior contract:
+   *  - Depth is bounded by {@link RAGServer.LIST_MAX_DEPTH}, mirroring the
+   *    CLI ingest walker so the same "how deep do we look under a root"
+   *    boundary applies to every list/ingest surface.
+   *  - A `readdir` failure under one directory is captured as a warning
+   *    rather than aborting the whole list call. Pre-Finding-#10 behavior
+   *    propagated the error, which meant one unreadable root could hide
+   *    files under the other roots — the multi-root contract makes this
+   *    asymmetry user-visible, so the policy is now best-effort per root.
+   *  - Symlinks are skipped (mirrors the CLI ingest walker).
    */
-  async handleListFiles(): Promise<{ content: [{ type: 'text'; text: string }] }> {
+  private async scanBaseDir(baseDir: string): Promise<{ files: string[]; warnings: string[] }> {
+    const files: string[] = []
+    const warnings: string[] = []
+    let depthLimited = false
+
+    const queue: { dirPath: string; depth: number }[] = [{ dirPath: baseDir, depth: 0 }]
+
+    while (queue.length > 0) {
+      const { dirPath, depth } = queue.shift()!
+
+      if (depth >= RAGServer.LIST_MAX_DEPTH) {
+        depthLimited = true
+        continue
+      }
+
+      // TypeScript's `readdir` has overloads keyed on the options shape;
+      // pin the encoding to `'utf8'` and cast so the loop body operates on
+      // string-encoded Dirent entries (matches the rest of the codebase).
+      let entries: import('node:fs').Dirent<string>[]
+      try {
+        entries = (await readdir(dirPath, {
+          withFileTypes: true,
+          encoding: 'utf8',
+        })) as import('node:fs').Dirent<string>[]
+      } catch (error) {
+        const code =
+          error && typeof error === 'object' && 'code' in error
+            ? ((error as NodeJS.ErrnoException).code ?? 'UNKNOWN')
+            : 'UNKNOWN'
+        warnings.push(`cannot read directory: ${displayPath(dirPath)} (${code})`)
+        continue
+      }
+
+      for (const entry of entries) {
+        const fullPath = join(dirPath, entry.name)
+        if (entry.isSymbolicLink()) continue
+        if (this.excludePaths.some((ep) => fullPath.startsWith(ep))) continue
+        if (entry.isDirectory()) {
+          queue.push({ dirPath: fullPath, depth: depth + 1 })
+        } else if (entry.isFile() && SUPPORTED_EXTENSIONS.has(extname(entry.name).toLowerCase())) {
+          files.push(fullPath)
+        }
+      }
+    }
+
+    if (depthLimited) {
+      warnings.push(
+        `some directories under ${displayPath(baseDir)} were skipped because they exceed the maximum depth (${RAGServer.LIST_MAX_DEPTH})`
+      )
+    }
+
+    files.sort()
+    return { files, warnings }
+  }
+
+  /**
+   * Maximum directory recursion depth for `list_files` scans. Mirrors the
+   * CLI ingest walker's `MAX_DEPTH` so the same boundary applies across
+   * every list/ingest surface.
+   */
+  private static readonly LIST_MAX_DEPTH = 10
+
+  /**
+   * list_files tool handler
+   *
+   * Scans every effective base directory (`this.baseDirs`) for supported
+   * files and cross-references with ingested documents. Multi-root contract
+   * (P3-T2, AC-008):
+   * - Returns top-level `baseDirs` (all effective roots, already realpath-
+   *   normalized and nested-root-pruned by `resolveBaseDirs`).
+   * - Preserves legacy top-level `baseDir = baseDirs[0]` for clients written
+   *   against the single-root shape.
+   * - Annotates each file entry with the producing `baseDir`.
+   * - De-duplicates exact duplicate file paths across roots (first occurrence
+   *   wins, preserving root iteration order).
+   * - Preserves raw-data / orphaned DB entries under `sources` with no
+   *   producing-root annotation.
+   * - Excludes `dbPath` and `cacheDir` uniformly across every root.
+   */
+  async handleListFiles(): Promise<{ content: RagContentBlock[] }> {
+    // Root-dependent tool: fail fast on configError BEFORE any DB / FS access.
+    this.assertConfigOk()
     try {
       // Get all ingested entries from the vector store
       const ingested = await this.vectorStore.listFiles()
       const ingestedMap = new Map(ingested.map((f) => [f.filePath, f]))
 
-      // Scan BASE_DIR recursively for supported files.
-      // Errors propagate to the outer catch: if readdir fails, ingest_file and
-      // delete_file won't work either, so surfacing the error is appropriate.
-      const entries = await readdir(this.baseDir, { recursive: true, withFileTypes: true })
-      const baseDirFiles = entries
-        .filter((e) => e.isFile() && SUPPORTED_EXTENSIONS.has(extname(e.name).toLowerCase()))
-        .map((e) => {
-          const dir = e.parentPath
-          return join(dir, e.name)
-        })
-        .filter((filePath) => !this.excludePaths.some((ep) => filePath.startsWith(ep)))
-        .sort()
-
-      const baseDirSet = new Set(baseDirFiles)
-
-      // Files in BASE_DIR with ingestion status
-      const files: FileEntry[] = baseDirFiles.map((filePath) => {
-        const entry = ingestedMap.get(filePath)
-        return entry
-          ? { filePath, ingested: true, chunkCount: entry.chunkCount, timestamp: entry.timestamp }
-          : { filePath, ingested: false }
-      })
+      // Iterate every effective root and collect entries with their producing
+      // root. Deduplicate exact duplicate file paths across roots; the first
+      // occurrence wins so iteration order in `this.baseDirs` determines the
+      // recorded producing root for files reachable from multiple roots.
+      // Per-root scan warnings (Finding #10) are aggregated and surfaced
+      // alongside the primary content block via `withWarnings` below.
+      const files: FileEntry[] = []
+      const seenPaths = new Set<string>()
+      const scanWarnings: string[] = []
+      for (const baseDir of this.baseDirs) {
+        const { files: scanned, warnings: rootWarnings } = await this.scanBaseDir(baseDir)
+        for (const w of rootWarnings) {
+          scanWarnings.push(`[${baseDir}] ${w}`)
+        }
+        for (const filePath of scanned) {
+          if (seenPaths.has(filePath)) continue
+          seenPaths.add(filePath)
+          const entry = ingestedMap.get(filePath)
+          files.push(
+            entry
+              ? {
+                  filePath,
+                  baseDir,
+                  ingested: true,
+                  chunkCount: entry.chunkCount,
+                  timestamp: entry.timestamp,
+                }
+              : { filePath, baseDir, ingested: false }
+          )
+        }
+      }
 
       // Content ingested via ingest_data (web pages, clipboard, etc.) plus any
-      // orphaned DB entries whose files no longer exist on disk
+      // orphaned DB entries whose files no longer exist on disk. `seenPaths`
+      // is the union across every scanned root, so a DB entry is only a
+      // source when it is not reachable from any effective root.
       const sources: SourceEntry[] = ingested
-        .filter((f) => !baseDirSet.has(f.filePath))
+        .filter((f) => !seenPaths.has(f.filePath))
         .map((f) => {
-          if (isRawDataPath(f.filePath)) {
+          if (looksLikeRawDataPath(f.filePath)) {
             const source = extractSourceFromPath(f.filePath)
             if (source) return { source, chunkCount: f.chunkCount, timestamp: f.timestamp }
           }
           return { filePath: f.filePath, chunkCount: f.chunkCount, timestamp: f.timestamp }
         })
 
-      const result: ListFilesResult = { baseDir: this.baseDir, files, sources }
-      return {
-        content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+      const result: ListFilesResult = {
+        baseDir: this.baseDir,
+        baseDirs: [...this.baseDirs],
+        files,
+        sources,
       }
+      // Build the response with the primary JSON block first, then any
+      // per-root scan warnings (Finding #10) as additional text blocks so
+      // clients see the warnings alongside the file list without needing
+      // to inspect stderr. Config-level warnings (`configWarnings`) are
+      // still appended via `withWarnings`.
+      const content: RagContentBlock[] = [{ type: 'text', text: JSON.stringify(result, null, 2) }]
+      for (const w of scanWarnings) {
+        content.push({ type: 'text', text: `Warning: ${w}` })
+      }
+      return { content: this.withWarnings(content) }
     } catch (error) {
       console.error('Failed to list files:', error)
       throw error
@@ -612,22 +803,27 @@ export class RAGServer {
   /**
    * status tool handler (Phase 1: basic implementation)
    */
-  async handleStatus(): Promise<{
-    content: Array<{ type: 'text'; text: string; annotations?: Annotations }>
-  }> {
+  async handleStatus(): Promise<{ content: RagContentBlock[] }> {
+    // `status` remains callable in degraded mode (configError set) so the
+    // user can diagnose the root configuration via MCP without inspecting
+    // stderr. Do NOT call `assertConfigOk` here.
     try {
       const status = await this.vectorStore.getStatus()
-      const content: Array<{ type: 'text'; text: string; annotations?: Annotations }> = [
+      const content: RagContentBlock[] = [
         {
           type: 'text',
           text: JSON.stringify(status, null, 2),
         },
       ]
 
-      // Always append config warnings to status responses
-      content.push(...this.buildWarningContentBlocks())
+      // Surface the configError as a diagnostic content block when present.
+      // Placed BEFORE warning blocks so it appears with the primary status
+      // payload at a higher priority annotation.
+      if (this.configError !== null) {
+        content.push(buildConfigErrorBlock(this.configError.message))
+      }
 
-      return { content }
+      return { content: this.withWarnings(content) }
     } catch (error) {
       console.error('Failed to get status:', error)
       throw error
@@ -639,19 +835,24 @@ export class RAGServer {
    * Deletes chunks from VectorDB and physical raw-data files
    * Supports both filePath (for ingest_file) and source (for ingest_data)
    */
-  async handleDeleteFile(
-    args: DeleteFileInput
-  ): Promise<{ content: [{ type: 'text'; text: string }] }> {
+  async handleDeleteFile(args: DeleteFileInput): Promise<{ content: RagContentBlock[] }> {
     try {
       let targetPath: string
       let skipValidation = false
 
       if (args.source) {
         // Generate raw-data path from source (extension is always .md)
-        // Internal path generation is secure, skip baseDir validation
+        // Internal path generation is secure, skip baseDir validation.
+        // The `source` branch never touches `baseDirs`, so it stays callable
+        // in degraded mode (configError present).
         targetPath = generateRawDataPath(this.dbPath, args.source, 'markdown')
         skipValidation = true
       } else if (args.filePath) {
+        // Root-dependent branch: a user-supplied filePath is validated against
+        // the configured roots, so we must fail fast when the config is
+        // invalid. Placed AFTER the `source` branch so source-mode requests
+        // continue to work in degraded mode.
+        this.assertConfigOk()
         targetPath = args.filePath
       } else {
         throw new Error('Either filePath or source must be provided')
@@ -666,8 +867,8 @@ export class RAGServer {
       await this.vectorStore.deleteChunks(targetPath)
       await this.vectorStore.optimize()
 
-      // Also delete physical raw-data file if applicable
-      if (isRawDataPath(targetPath)) {
+      // Also delete physical raw-data file if applicable.
+      if (isPathInRawDataDirLexical(targetPath, this.dbPath)) {
         try {
           await unlink(targetPath)
           console.error(`Deleted raw-data file: ${targetPath}`)
@@ -690,14 +891,21 @@ export class RAGServer {
       }
 
       return {
-        content: [
+        content: this.withWarnings([
           {
             type: 'text',
             text: JSON.stringify(result, null, 2),
           },
-        ],
+        ]),
       }
     } catch (error) {
+      // Re-throw McpError as-is so structured tool errors (e.g. from
+      // `assertConfigOk` in the filePath branch) preserve their code at the
+      // MCP boundary instead of being wrapped in a generic Error.
+      if (error instanceof McpError) {
+        console.error('Failed to delete file:', error.message)
+        throw error
+      }
       const errorMessage = formatErrorMessage(error)
 
       console.error('Failed to delete file:', errorMessage)
@@ -714,7 +922,7 @@ export class RAGServer {
    */
   async handleReadChunkNeighbors(
     args: ReadChunkNeighborsInput
-  ): Promise<{ content: [{ type: 'text'; text: string }] }> {
+  ): Promise<{ content: RagContentBlock[] }> {
     try {
       // Validation (all before DB access, per Design Doc §Main Components → Handler).
       // Intentional: use McpError(InvalidParams) (upgrade from handleDeleteFile's plain Error).
@@ -752,6 +960,12 @@ export class RAGServer {
       // Dual-input resolution (mirrors handleDeleteFile).
       // Use the same non-empty predicates as the XOR check above so an empty
       // string ('' / whitespace-only) is ignored here too, not just in validation.
+      //
+      // configError gating happens AFTER the input-shape validation but BEFORE
+      // any parser/DB access on the user-supplied filePath. The `source` branch
+      // never touches `baseDirs`, so it stays callable in degraded mode; the
+      // `filePath` branch must fail fast because `parser.validateFilePath`
+      // depends on the configured roots being valid.
       let targetPath: string
       let skipValidation = false
       if (hasSource) {
@@ -759,6 +973,7 @@ export class RAGServer {
         skipValidation = true
       } else {
         // XOR + hasSource === false guarantees filePath is a non-empty string here.
+        this.assertConfigOk()
         targetPath = args.filePath as string
       }
       if (!skipValidation) {
@@ -773,7 +988,7 @@ export class RAGServer {
       const rows = await this.vectorStore.getChunksByRange(targetPath, minIdx, maxIdx)
 
       // Post-fetch marking: isTarget per item; source attached for raw-data rows.
-      const isRaw = isRawDataPath(targetPath)
+      const isRaw = looksLikeRawDataPath(targetPath)
       const sourceForAll = isRaw ? extractSourceFromPath(targetPath) : null
       const items: ReadChunkNeighborsResultItem[] = rows.map((row) => {
         const item: ReadChunkNeighborsResultItem = {
@@ -788,12 +1003,12 @@ export class RAGServer {
       })
 
       return {
-        content: [
+        content: this.withWarnings([
           {
             type: 'text',
             text: JSON.stringify(items, null, 2),
           },
-        ],
+        ]),
       }
     } catch (error) {
       // Re-throw McpError / DatabaseError as-is to preserve semantics.

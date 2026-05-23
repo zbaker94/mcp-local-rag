@@ -1,43 +1,20 @@
 // Shared CLI global options — parsed before subcommand routing
 
+import { checkSensitivePath } from '../utils/sensitive-path.js'
+
 // ============================================
 // Validation Helpers
 // ============================================
 
 /**
- * Sensitive system directories that should never be used as data paths.
- * Checked as path prefixes (after resolving ~ to $HOME).
- */
-const SENSITIVE_PATH_PREFIXES = ['/etc', '/usr', '/sys', '/proc', '/var']
-const SENSITIVE_HOME_PREFIXES = ['.ssh', '.gnupg']
-
-/**
  * Validate that a path is not a sensitive system directory.
+ * Delegates to the shared `checkSensitivePath` helper so the CLI and the
+ * MCP server entry point share one policy implementation.
+ *
  * Returns an error message if invalid, or undefined if valid.
  */
 export function validatePath(value: string, flagName: string): string | undefined {
-  const normalized = value.startsWith('~/')
-    ? `${process.env['HOME'] ?? ''}/${value.slice(2)}`
-    : value
-
-  for (const prefix of SENSITIVE_PATH_PREFIXES) {
-    if (normalized === prefix || normalized.startsWith(`${prefix}/`)) {
-      return `Refusing to use sensitive system path for ${flagName}: ${value}`
-    }
-  }
-
-  for (const dir of SENSITIVE_HOME_PREFIXES) {
-    const homePath = `${process.env['HOME'] ?? ''}/${dir}`
-    if (normalized === homePath || normalized.startsWith(`${homePath}/`)) {
-      return `Refusing to use sensitive system path for ${flagName}: ${value}`
-    }
-    // Also check the unexpanded form
-    if (value === `~/${dir}` || value.startsWith(`~/${dir}/`)) {
-      return `Refusing to use sensitive system path for ${flagName}: ${value}`
-    }
-  }
-
-  return undefined
+  return checkSensitivePath(value, flagName)
 }
 
 /**
@@ -75,6 +52,39 @@ export function validateChunkMinLength(value: number): string | undefined {
     return '--chunk-min-length must be between 1 and 10000'
   }
   return undefined
+}
+
+// ============================================
+// Repeatable --base-dir parsing
+// ============================================
+
+/**
+ * Consume the value that follows a `--base-dir` flag and append it to
+ * `collected`. Designed to be called from each subcommand's argv loop so
+ * `--base-dir <path>` can be provided one or more times, with the order
+ * preserved.
+ *
+ * `argv` is the full argv slice the loop is iterating; `flagIndex` is the
+ * index of the `--base-dir` token itself. On success returns the index of
+ * the value (so the caller can advance past it). On failure prints
+ * `Missing value for --base-dir` to stderr and calls `process.exit(1)` —
+ * matching the existing single-value error path so callers don't have to
+ * special-case the new shape.
+ *
+ * Why a shared helper: both `ingest` and `list` parse `--base-dir` in
+ * identical fashion, so centralizing the accumulate-and-validate step keeps
+ * the two argv loops in lockstep when the contract evolves (e.g. P2-T2
+ * adding per-path validation).
+ */
+export function consumeBaseDirArg(argv: string[], flagIndex: number, collected: string[]): number {
+  const valueIndex = flagIndex + 1
+  const value = argv[valueIndex]
+  if (value === undefined || value.startsWith('-')) {
+    console.error('Missing value for --base-dir')
+    process.exit(1)
+  }
+  collected.push(value)
+  return valueIndex
 }
 
 // ============================================

@@ -1,6 +1,8 @@
 // MCP Server entry point
 import { resolveDevice } from './cli/options.js'
 import { RAGServer } from './server/index.js'
+import { BaseDirsConfigError, parseBaseDirsEnv, resolveBaseDirs } from './utils/base-dirs.js'
+import { checkSensitivePath } from './utils/sensitive-path.js'
 import type { GroupingMode } from './vectordb/index.js'
 
 // ============================================
@@ -93,17 +95,95 @@ export async function startServer(): Promise<void> {
     // VLM profile selection (`fast` vs `quality`) is a per-ingest parameter
     // on the `ingest_file` MCP tool and is not configured here.
     const device = resolveDevice(process.env['RAG_DEVICE'])
+
+    // Collect configuration warnings (resolver + parse* helpers all funnel
+    // into this single array so RAGServer.configWarnings stays the one
+    // source of truth surfaced via MCP content blocks — P3-T3).
+    const configWarnings: string[] = []
+
+    // Resolve effective base directories from env. The resolver is the
+    // single source of truth for BASE_DIRS / BASE_DIR / cwd precedence and
+    // never silently falls back on invalid BASE_DIRS (AC-010 — root-
+    // dependent tools will surface the error; `status` remains callable).
+    // Server startup does not consume CLI flags (env-only for MCP client
+    // compatibility), so `cliRoots` is intentionally omitted here.
+    //
+    // Sensitive-path pre-check on the RAW user-supplied paths (Finding #3):
+    // run the policy against the values supplied via env before the resolver
+    // realpath-normalizes them. On platforms where `/etc` realpaths to
+    // `/private/etc` (macOS), checking only the post-realpath value would
+    // miss the sensitive prefix. Errors from this pre-check produce a
+    // configError mirroring the post-realpath path below.
+    const rawSensitiveErrors: string[] = []
+    if (process.env['BASE_DIRS'] !== undefined && process.env['BASE_DIRS'].length > 0) {
+      const parsed = parseBaseDirsEnv(process.env['BASE_DIRS'])
+      if (parsed.ok) {
+        for (const raw of parsed.value) {
+          const sensitive = checkSensitivePath(raw, 'BASE_DIRS')
+          if (sensitive) rawSensitiveErrors.push(sensitive)
+        }
+      }
+      // Malformed BASE_DIRS surfaces via resolveBaseDirs below; nothing
+      // additional to do here.
+    } else if (process.env['BASE_DIR'] !== undefined && process.env['BASE_DIR'].trim().length > 0) {
+      const sensitive = checkSensitivePath(process.env['BASE_DIR'], 'BASE_DIR')
+      if (sensitive) rawSensitiveErrors.push(sensitive)
+    }
+
+    const baseDirsResult = await resolveBaseDirs({
+      envBaseDirs: process.env['BASE_DIRS'],
+      envBaseDir: process.env['BASE_DIR'],
+      cwd: process.cwd(),
+    })
+
+    let baseDirsForServer: string[]
+    let configError: BaseDirsConfigError | undefined
+    // Raw sensitive-path matches take precedence over resolver errors — on
+    // platforms where the sensitive path does not exist (e.g. `/etc` on
+    // Windows) the resolver fails with a generic "Failed to resolve" before
+    // the post-realpath check runs, but the raw check has already flagged
+    // the security policy violation and that is the actionable message.
+    if (rawSensitiveErrors.length > 0) {
+      baseDirsForServer = []
+      configError = new BaseDirsConfigError([...new Set(rawSensitiveErrors)].join('; '))
+      configWarnings.push(configError.message)
+    } else if (baseDirsResult.ok) {
+      const sourceFlag =
+        process.env['BASE_DIRS'] !== undefined && process.env['BASE_DIRS'].length > 0
+          ? 'BASE_DIRS'
+          : 'BASE_DIR'
+      const sensitiveErrors: string[] = []
+      for (const root of baseDirsResult.config.baseDirs) {
+        const sensitive = checkSensitivePath(root, sourceFlag)
+        if (sensitive) sensitiveErrors.push(sensitive)
+      }
+      if (sensitiveErrors.length > 0) {
+        baseDirsForServer = []
+        configError = new BaseDirsConfigError([...new Set(sensitiveErrors)].join('; '))
+        configWarnings.push(configError.message)
+      } else {
+        baseDirsForServer = baseDirsResult.config.baseDirs
+        for (const warning of baseDirsResult.warnings) {
+          configWarnings.push(warning.message)
+        }
+      }
+    } else {
+      baseDirsForServer = []
+      configError = baseDirsResult.error
+      configWarnings.push(baseDirsResult.error.message)
+    }
+
+    // Build the immutable config object. `baseDirs` carries the resolver
+    // output (or the degraded-mode cwd fallback); the discriminated union
+    // in RAGServerConfig forbids passing `baseDir` alongside `baseDirs`.
     const config: ConstructorParameters<typeof RAGServer>[0] = {
       dbPath: process.env['DB_PATH'] || './lancedb/',
       modelName: process.env['MODEL_NAME'] || 'Xenova/all-MiniLM-L6-v2',
       cacheDir: process.env['CACHE_DIR'] || './models/',
-      baseDir: process.env['BASE_DIR'] || process.cwd(),
+      baseDirs: baseDirsForServer,
       maxFileSize: Number.parseInt(process.env['MAX_FILE_SIZE'] || '104857600', 10), // 100MB
       device,
     }
-
-    // Collect configuration warnings
-    const configWarnings: string[] = []
 
     // Add quality filter settings only if defined
     const maxDistance = parseMaxDistance(process.env['RAG_MAX_DISTANCE'])
@@ -145,6 +225,9 @@ export async function startServer(): Promise<void> {
     if (configWarnings.length > 0) {
       config.configWarnings = configWarnings
       console.error('Configuration warnings:', configWarnings.join(' | '))
+    }
+    if (configError !== undefined) {
+      config.configError = configError
     }
 
     console.error('Starting RAG MCP Server...')
