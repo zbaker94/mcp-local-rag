@@ -346,28 +346,6 @@ async function walkDirectory(
   return files
 }
 
-/**
- * Collect files to ingest.
- *
- * Two modes:
- *  - **Single-file mode**: `targetPath` resolves to a regular file. Returns
- *    `[resolved]` when the extension is supported, otherwise the empty array
- *    (after warning on stderr). The parser still validates the file path
- *    against the configured roots, so a file outside all roots is rejected
- *    downstream.
- *  - **Directory mode**: `targetPath` resolves to a directory. Walks only the
- *    positional directory `resolved` using {@link walkDirectory}. The multi-
- *    root configuration is the SECURITY boundary (passed to the parser via
- *    `DocumentParser.validateFilePath`), not a replacement for the user's
- *    scan target. `resolved` must live under one of the configured roots
- *    after realpath normalization; otherwise we fail loud with a clear
- *    message rather than scanning every configured root (which was the
- *    pre-Finding-#1 behavior and broke the `ingest <dir>` contract).
- *
- * Sibling-prefix safety: the `startsWith(root)` check uses `baseDirs`
- * entries with their realpath-normalized trailing separator, so
- * `/foo/barista` does not match root `/foo/bar/`.
- */
 async function collectFiles(
   targetPath: string,
   baseDirs: readonly string[],
@@ -388,23 +366,15 @@ async function collectFiles(
   }
 
   if (info.isDirectory()) {
-    // Resolve the symlink-targets of the positional path before the prefix
-    // check, so a symlinked CLI argument still passes when its realpath
-    // agrees with one of the configured (already-realpath-normalized) roots.
-    // Roots from `resolveCliBaseDirsOrExit` already end with `sep`.
+    // realpath both sides so a symlinked positional path still matches a
+    // root whose realpath agrees. baseDirs from resolveCliBaseDirsOrExit
+    // are already realpath-normalized with a trailing sep.
     const realResolved = await realpath(resolved)
-    // Append a trailing separator to the positional path so the
-    // `startsWith` prefix-check is sibling-prefix safe in BOTH directions.
     const realResolvedWithSep = realResolved.endsWith(sep) ? realResolved : realResolved + sep
-    // A path is "under" a root iff:
-    //  - the path equals the root (with both ending in sep), or
-    //  - the path starts with the root's trailing-separator form.
     const insideAnyRoot = baseDirs.some(
       (root) => realResolvedWithSep === root || realResolvedWithSep.startsWith(root)
     )
     if (!insideAnyRoot) {
-      // Fail loud — silently scanning baseDirs in this case (the pre-fix
-      // behavior) violated the CLI contract by ingesting unrelated content.
       console.error(
         `Error: ${targetPath} is not under any configured base directory. ` +
           `Allowed roots: ${baseDirs.join(', ')}. ` +
@@ -413,10 +383,6 @@ async function collectFiles(
       process.exit(1)
     }
 
-    // Walk only the user-supplied positional directory. The configured roots
-    // remain the security boundary (enforced by the parser); they do not
-    // replace the user's scan target. This restores the pre-multi-root CLI
-    // contract: `ingest <dir>` scans `<dir>`, not every configured root.
     const state = { depthLimited: false }
     const collected = await walkDirectory(resolved, excludePaths, state)
 
@@ -426,8 +392,6 @@ async function collectFiles(
       )
     }
 
-    // Single-tree scan — no cross-root dedup necessary. Sort for
-    // deterministic ingest order.
     return [...new Set(collected)].sort()
   }
 

@@ -8,20 +8,27 @@
     "url": "https://github.com/shinpr/mcp-local-rag",
     "source": "github"
   },
-  "version": "0.14.1",
+  "version": "0.14.2",
   "packages": [
     {
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "mcp-local-rag",
-      "version": "0.14.1",
+      "version": "0.14.2",
       "transport": {
         "type": "stdio"
       },
       "environmentVariables": [
         {
           "name": "BASE_DIR",
-          "description": "Base directory for document storage (defaults to current working directory)",
+          "description": "Base directory for document storage (defaults to current working directory). Ignored when BASE_DIRS is set.",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false
+        },
+        {
+          "name": "BASE_DIRS",
+          "description": "JSON array of base directories (e.g. '[\"/a\",\"/b\"]'). Takes precedence over BASE_DIR.",
           "isRequired": false,
           "format": "string",
           "isSecret": false

@@ -384,11 +384,7 @@ describe('CLI ingest', () => {
     expect(joined).toContain('Succeeded: 1')
   })
 
-  it('should exit 1 with a clear message when the positional path is outside all configured roots', async () => {
-    // Regression test for Finding #1: previously the CLI silently fell back
-    // to scanning every configured root when the positional path lived
-    // outside all of them. The contract is now: fail loud, exit 1, and tell
-    // the user which roots are allowed.
+  it('should exit 1 with a clear message when the positional directory is outside all configured roots', async () => {
     const rootA = resolve('/tmp/test/rootA')
     const rootB = resolve('/tmp/test/rootB')
     const outsidePath = resolve('/tmp/test/outside')
@@ -402,11 +398,9 @@ describe('CLI ingest', () => {
       runIngest(['--base-dir', rootA, '--base-dir', rootB, outsidePath])
     )
 
-    // Process exits with code 1.
     expect(error).toBeInstanceOf(Error)
     expect((error as Error).message).toBe('process.exit(1)')
 
-    // Error message names the offending path and lists the allowed roots.
     const joined = output.join('\n')
     expect(joined).toContain('not under any configured base directory')
     expect(joined).toContain(outsidePath)

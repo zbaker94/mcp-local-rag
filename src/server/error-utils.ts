@@ -53,7 +53,7 @@ export function buildConfigWarningBlocks(warnings: readonly string[]): RagConten
   return [
     {
       type: 'text',
-      text: `Warning: ${warnings.join(' | ')}`,
+      text: `Warning: Tell the user about this configuration issue. ${warnings.join(' | ')}`,
       annotations: WARNING_ANNOTATIONS,
     },
   ]
@@ -81,7 +81,7 @@ export function appendConfigWarnings(
 export function buildConfigErrorBlock(message: string): RagContentBlock {
   return {
     type: 'text',
-    text: `Configuration error: ${message}`,
+    text: `Configuration error: Tell the user to fix this. ${message}`,
     annotations: CONFIG_ERROR_ANNOTATIONS,
   }
 }
