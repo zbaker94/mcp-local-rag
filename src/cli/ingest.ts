@@ -294,12 +294,84 @@ export async function resolveConfig(
 // ============================================
 
 /**
- * Collect files to ingest from a path.
- * - If path is a file with supported extension, return [path].
- * - If path is a directory, walk with BFS up to MAX_DEPTH levels.
- * - Skip symlinks, permission errors, and excluded directories.
+ * BFS-walk a single directory up to {@link MAX_DEPTH} levels, returning every
+ * supported file path under it. Skips symlinks, permission errors, and excluded
+ * directories. Reports a single shared `depthLimited` flag via an out-param so
+ * the caller can emit one combined warning across multiple roots instead of
+ * one per root.
  */
-async function collectFiles(targetPath: string, excludePaths: string[]): Promise<string[]> {
+async function walkDirectory(
+  rootPath: string,
+  excludePaths: string[],
+  state: { depthLimited: boolean }
+): Promise<string[]> {
+  const files: string[] = []
+
+  const queue: { dirPath: string; depth: number }[] = [{ dirPath: rootPath, depth: 0 }]
+
+  while (queue.length > 0) {
+    const { dirPath, depth } = queue.shift()!
+
+    if (depth >= MAX_DEPTH) {
+      state.depthLimited = true
+      continue
+    }
+
+    let dir: Awaited<ReturnType<typeof opendir>>
+    try {
+      dir = await opendir(dirPath)
+    } catch {
+      console.error(`Warning: cannot read directory: ${dirPath}`)
+      continue
+    }
+
+    for await (const entry of dir) {
+      const fullPath = join(dirPath, entry.name)
+
+      if (!fullPath.startsWith(rootPath)) continue
+      if (entry.isSymbolicLink()) continue
+      if (excludePaths.some((ep) => fullPath.startsWith(ep))) continue
+
+      if (entry.isDirectory()) {
+        queue.push({ dirPath: fullPath, depth: depth + 1 })
+      } else if (entry.isFile() && SUPPORTED_EXTENSIONS.has(extname(entry.name).toLowerCase())) {
+        files.push(fullPath)
+      }
+    }
+  }
+
+  return files
+}
+
+/**
+ * Collect files to ingest.
+ *
+ * Two modes:
+ *  - **Single-file mode**: `targetPath` resolves to a regular file. Returns
+ *    `[resolved]` when the extension is supported, otherwise the empty array
+ *    (after warning on stderr). Single-file mode ignores `baseDirs` because
+ *    the parser still validates the file path against the configured roots —
+ *    this preserves the pre-P2-T2 behavior for users who pass an explicit
+ *    file path to ingest.
+ *  - **Directory mode**: `targetPath` resolves to a directory. Walks EVERY
+ *    effective root in `baseDirs` (not `targetPath`) using {@link walkDirectory},
+ *    aggregates the per-root file lists, and deduplicates by absolute path so
+ *    overlap that survived nested-root pruning (e.g. symlinks pointing into
+ *    multiple roots) does not produce duplicate ingest activity. Sorted for
+ *    deterministic ingest order.
+ *
+ * Why iterate `baseDirs` rather than `targetPath` in directory mode: the
+ * multi-base-dirs plan (§ Phase 2 completion criteria, AC-008/AC-011/AC-012)
+ * makes the configured roots the security AND scan boundary. A directory
+ * positional with multiple `--base-dir` flags scans across all roots, not
+ * only the positional directory. Users who want to ingest a single subtree
+ * can pass it via `--base-dir` or use the single-file mode.
+ */
+async function collectFiles(
+  targetPath: string,
+  baseDirs: readonly string[],
+  excludePaths: string[]
+): Promise<string[]> {
   const resolved = resolve(targetPath)
   const info = await stat(resolved)
 
@@ -315,49 +387,28 @@ async function collectFiles(targetPath: string, excludePaths: string[]): Promise
   }
 
   if (info.isDirectory()) {
-    const files: string[] = []
-    let depthLimited = false
-
-    const queue: { dirPath: string; depth: number }[] = [{ dirPath: resolved, depth: 0 }]
-
-    while (queue.length > 0) {
-      const { dirPath, depth } = queue.shift()!
-
-      if (depth >= MAX_DEPTH) {
-        depthLimited = true
-        continue
-      }
-
-      let dir: Awaited<ReturnType<typeof opendir>>
-      try {
-        dir = await opendir(dirPath)
-      } catch {
-        console.error(`Warning: cannot read directory: ${dirPath}`)
-        continue
-      }
-
-      for await (const entry of dir) {
-        const fullPath = join(dirPath, entry.name)
-
-        if (!fullPath.startsWith(resolved)) continue
-        if (entry.isSymbolicLink()) continue
-        if (excludePaths.some((ep) => fullPath.startsWith(ep))) continue
-
-        if (entry.isDirectory()) {
-          queue.push({ dirPath: fullPath, depth: depth + 1 })
-        } else if (entry.isFile() && SUPPORTED_EXTENSIONS.has(extname(entry.name).toLowerCase())) {
-          files.push(fullPath)
-        }
-      }
+    const state = { depthLimited: false }
+    const collected: string[] = []
+    for (const root of baseDirs) {
+      // `baseDirs` entries from `resolveCliBaseDirsOrExit` already carry a
+      // trailing separator (realpath-normalized). `walkDirectory`'s
+      // `startsWith(rootPath)` prefix check uses that separator so it stays
+      // sibling-prefix safe across roots.
+      const perRoot = await walkDirectory(root, excludePaths, state)
+      collected.push(...perRoot)
     }
 
-    if (depthLimited) {
+    if (state.depthLimited) {
       console.error(
         `Warning: some directories were skipped because they exceed the maximum depth (${MAX_DEPTH})`
       )
     }
 
-    return files.sort()
+    // Cross-root dedup by absolute path string. Nested-root pruning already
+    // removes ancestor/descendant overlap at resolve time, but two disjoint
+    // realpath-normalized roots can still surface the same file via symlinks
+    // or bind mounts. Use a Set so the output is unique-and-sorted.
+    return [...new Set(collected)].sort()
   }
 
   return []
@@ -564,8 +615,11 @@ export async function runIngest(args: string[], globalOptions: GlobalOptions = {
     console.error(warning.message)
   }
 
-  // Collect files
-  const files = await collectFiles(targetPath, excludePaths)
+  // Collect files: when `targetPath` is a directory, the scan iterates every
+  // effective root in `config.baseDirs.baseDirs` (P2-T2) — the positional
+  // directory only triggers directory mode and is no longer the scan target.
+  // Single-file mode is unchanged. See `collectFiles` for the full rationale.
+  const files = await collectFiles(targetPath, config.baseDirs.baseDirs, excludePaths)
   if (files.length === 0) {
     console.error('No supported files found.')
     process.exit(1)
@@ -574,10 +628,11 @@ export async function runIngest(args: string[], globalOptions: GlobalOptions = {
   console.error(`Found ${files.length} file(s) to ingest.`)
 
   // Initialize components (single instances reused across all files).
-  // The parser receives the full multi-root config; P2-T2 will switch the
-  // scan loop (`collectFiles`) to iterate every effective root. Today the
-  // scan still walks `targetPath`, which keeps single-root behavior
-  // byte-identical when exactly one root is configured.
+  // The parser receives the full multi-root config. The directory-scan loop
+  // (`collectFiles`) iterates every effective root in `config.baseDirs.baseDirs`
+  // (P2-T2). Under a single configured root this is byte-identical to the
+  // pre-P2-T2 single-root scan; under multiple roots it walks each one and
+  // dedupes overlap.
   const parser = new DocumentParser({
     baseDirs: config.baseDirs.baseDirs,
     maxFileSize: config.maxFileSize,

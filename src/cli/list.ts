@@ -11,6 +11,27 @@ import type { GlobalOptions } from './options.js'
 import { consumeBaseDirArg, resolveGlobalConfig, validatePath } from './options.js'
 
 // ============================================
+// Helpers
+// ============================================
+
+/**
+ * Scan a single root with `readdir({ recursive: true })`, returning every
+ * supported file under it (absolute paths) after excluding paths under
+ * `excludePaths`. Mirrors the pre-P2-T2 single-root scan body so per-root
+ * behavior is byte-identical when exactly one root is configured.
+ */
+async function scanRoot(root: string, excludePaths: string[]): Promise<string[]> {
+  const entries = await readdir(root, { recursive: true, withFileTypes: true })
+  return entries
+    .filter((e) => e.isFile() && SUPPORTED_EXTENSIONS.has(extname(e.name).toLowerCase()))
+    .map((e) => {
+      const dir = e.parentPath
+      return join(dir, e.name)
+    })
+    .filter((filePath) => !excludePaths.some((ep) => filePath.startsWith(ep)))
+}
+
+// ============================================
 // Types
 // ============================================
 
@@ -161,10 +182,10 @@ export async function runList(args: string[], globalOptions: GlobalOptions = {})
     console.error(warning.message)
   }
 
-  // The scan loop still walks a single directory in this task; P2-T2 will
-  // switch it to iterate every effective root. `legacyBaseDir` returns the
-  // first effective root, which under a single-root configuration is byte-
-  // identical to the previous `options.baseDir ?? BASE_DIR ?? cwd` chain.
+  // Scan every effective root (P2-T2). `legacyBaseDir` still surfaces the
+  // first effective root as the JSON `baseDir` field for response back-compat;
+  // the `list_files` MCP response evolves to add `baseDirs` and per-file
+  // annotations in P3-T2, which is intentionally out of scope here.
   const baseDir = legacyBaseDir(baseDirsConfig)
 
   try {
@@ -172,7 +193,10 @@ export async function runList(args: string[], globalOptions: GlobalOptions = {})
     const vectorStore = createVectorStore(globalConfig)
     await vectorStore.initialize()
 
-    // Build exclude paths (resolved to absolute, platform-aware trailing separator)
+    // Build exclude paths (resolved to absolute, platform-aware trailing
+    // separator). Applied uniformly to every root so dbPath/cacheDir remain
+    // excluded under each root even when they happen to live below one of
+    // them (AC-011).
     const excludePaths = [
       `${resolve(globalConfig.dbPath)}${sep}`,
       `${resolve(globalConfig.cacheDir)}${sep}`,
@@ -182,16 +206,18 @@ export async function runList(args: string[], globalOptions: GlobalOptions = {})
     const ingested = await vectorStore.listFiles()
     const ingestedMap = new Map(ingested.map((f) => [f.filePath, f]))
 
-    // Scan baseDir recursively for supported files
-    const entries = await readdir(baseDir, { recursive: true, withFileTypes: true })
-    const baseDirFiles = entries
-      .filter((e) => e.isFile() && SUPPORTED_EXTENSIONS.has(extname(e.name).toLowerCase()))
-      .map((e) => {
-        const dir = e.parentPath
-        return join(dir, e.name)
-      })
-      .filter((filePath) => !excludePaths.some((ep) => filePath.startsWith(ep)))
-      .sort()
+    // Scan every effective root. Per-root file lists are concatenated, then
+    // deduped by absolute path string. Nested-root pruning already removes
+    // ancestor/descendant overlap at resolve time, but disjoint roots can
+    // still surface the same file through symlinks or bind mounts — dedup
+    // here guarantees no duplicate file entry under any configuration
+    // (AC-012).
+    const collected: string[] = []
+    for (const root of baseDirsConfig.baseDirs) {
+      const perRoot = await scanRoot(root, excludePaths)
+      collected.push(...perRoot)
+    }
+    const baseDirFiles = [...new Set(collected)].sort()
 
     const baseDirSet = new Set(baseDirFiles)
 
