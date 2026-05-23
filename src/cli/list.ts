@@ -4,17 +4,23 @@ import { readdir } from 'node:fs/promises'
 import { extname, join, resolve, sep } from 'node:path'
 
 import { SUPPORTED_EXTENSIONS } from '../parser/index.js'
+import { legacyBaseDir } from '../utils/base-dirs.js'
 import { extractSourceFromPath, isRawDataPath } from '../utils/raw-data-utils.js'
-import { createVectorStore } from './common.js'
+import { createVectorStore, resolveCliBaseDirsOrExit } from './common.js'
 import type { GlobalOptions } from './options.js'
-import { resolveGlobalConfig, validatePath } from './options.js'
+import { consumeBaseDirArg, resolveGlobalConfig, validatePath } from './options.js'
 
 // ============================================
 // Types
 // ============================================
 
 interface ListCliOptions {
-  baseDir?: string | undefined
+  /**
+   * Collected `--base-dir` values in CLI order. Repeatable: each flag
+   * occurrence appends one entry. `undefined` means the flag was not
+   * provided.
+   */
+  baseDirs?: string[] | undefined
 }
 
 interface ParsedArgs {
@@ -51,7 +57,7 @@ const HELP_TEXT = `Usage: mcp-local-rag [global-options] list [options]
 List files and their ingestion status.
 
 Options:
-  --base-dir <path>      Base directory to scan for files (default: BASE_DIR env or cwd)
+  --base-dir <path>      Base directory to scan for files (repeatable: pass once per root; default: BASE_DIRS/BASE_DIR env or cwd)
   -h, --help             Show this help
 
 Global options (must appear before "list"):
@@ -83,13 +89,15 @@ export function parseArgs(args: string[]): ParsedArgs {
         i++
         break
       case '--base-dir': {
-        const value = args[++i]
-        if (value === undefined || value.startsWith('-')) {
-          console.error('Missing value for --base-dir')
-          process.exit(1)
+        // Repeatable: each `--base-dir <path>` occurrence appends one entry
+        // to `options.baseDirs`. The accumulator is lazily initialized so an
+        // absent flag leaves `options.baseDirs` as `undefined`, which the
+        // resolver treats as "fall through to env / cwd".
+        if (options.baseDirs === undefined) {
+          options.baseDirs = []
         }
-        options.baseDir = value
-        i++
+        const valueIndex = consumeBaseDirArg(args, i, options.baseDirs)
+        i = valueIndex + 1
         break
       }
       default:
@@ -129,15 +137,35 @@ export async function runList(args: string[], globalOptions: GlobalOptions = {})
   // Resolve global config
   const globalConfig = resolveGlobalConfig(globalOptions)
 
-  // Resolve baseDir: CLI flag > BASE_DIR env > cwd
-  const baseDir = options.baseDir ?? process.env['BASE_DIR'] ?? process.cwd()
-
-  // Validate baseDir path
-  const baseDirError = validatePath(baseDir, '--base-dir')
-  if (baseDirError) {
-    console.error(baseDirError)
-    process.exit(1)
+  // Validate CLI-supplied paths against the sensitive-path policy BEFORE
+  // calling the resolver, so the user sees a `--base-dir`-attributed error
+  // without an unnecessary realpath round-trip on a rejected path.
+  const cliBaseDirs = options.baseDirs ?? []
+  for (const root of cliBaseDirs) {
+    const baseDirError = validatePath(root, '--base-dir')
+    if (baseDirError) {
+      console.error(baseDirError)
+      process.exit(1)
+    }
   }
+
+  // Resolve effective base directories via the shared CLI resolver
+  // (CLI > BASE_DIRS > BASE_DIR > cwd). Resolver errors (invalid BASE_DIRS,
+  // missing directory, ...) exit non-zero with a clear stderr message and
+  // do NOT fall back. Resolver warnings (`base-dirs-overrides-base-dir`,
+  // `nested-root-pruned`) are routed to stderr so the JSON-only stdout
+  // contract is preserved.
+  const { config: baseDirsConfig, warnings: baseDirsWarnings } =
+    await resolveCliBaseDirsOrExit(cliBaseDirs)
+  for (const warning of baseDirsWarnings) {
+    console.error(warning.message)
+  }
+
+  // The scan loop still walks a single directory in this task; P2-T2 will
+  // switch it to iterate every effective root. `legacyBaseDir` returns the
+  // first effective root, which under a single-root configuration is byte-
+  // identical to the previous `options.baseDir ?? BASE_DIR ?? cwd` chain.
+  const baseDir = legacyBaseDir(baseDirsConfig)
 
   try {
     // Initialize VectorStore only (no Embedder needed for list)

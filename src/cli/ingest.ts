@@ -10,10 +10,12 @@ import { buildChunksAndEmbeddings } from '../ingest/compute.js'
 import { prepareVisualPdfChunks } from '../ingest/visual.js'
 import { DocumentParser, SUPPORTED_EXTENSIONS } from '../parser/index.js'
 import type { QualityProfile } from '../pdf-visual/types.js'
+import type { BaseDirsConfig, BaseDirsConfigWarning } from '../utils/base-dirs.js'
 import type { VectorChunk, VectorStore } from '../vectordb/index.js'
-import { createEmbedder, createVectorStore } from './common.js'
+import { createEmbedder, createVectorStore, resolveCliBaseDirsOrExit } from './common.js'
 import type { GlobalOptions, ResolvedGlobalConfig } from './options.js'
 import {
+  consumeBaseDirArg,
   resolveDevice,
   resolveGlobalConfig,
   validateChunkMinLength,
@@ -32,7 +34,8 @@ const MAX_DEPTH = 10
 // ============================================
 
 interface IngestConfig {
-  baseDir: string
+  baseDirs: BaseDirsConfig
+  baseDirsWarnings: BaseDirsConfigWarning[]
   dbPath: string
   cacheDir: string
   modelName: string
@@ -47,7 +50,12 @@ interface IngestSummary {
 }
 
 interface IngestCliOptions {
-  baseDir?: string | undefined
+  /**
+   * Collected `--base-dir` values in CLI order. Repeatable: each flag
+   * occurrence appends one entry. An empty array means the flag was not
+   * provided (resolver then falls through to env / cwd).
+   */
+  baseDirs?: string[] | undefined
   maxFileSize?: number | undefined
   chunkMinLength?: number | undefined
   visual?: boolean | undefined
@@ -82,7 +90,7 @@ const HELP_TEXT = `Usage: mcp-local-rag [global-options] ingest [options] <path>
 Ingest a single file or all supported files under a directory.
 
 Options:
-  --base-dir <path>          Base directory for documents (default: cwd)
+  --base-dir <path>          Base directory for documents (repeatable: pass once per root; default: BASE_DIRS/BASE_DIR env or cwd)
   --max-file-size <n>        Max file size in bytes (default: ${INGEST_DEFAULTS.maxFileSize})
   --chunk-min-length <n>     Minimum chunk length in characters (default: 50, range: 1-10000)
   --visual                   Enable VLM captioning for PDF figure pages (PDFs only; no effect on other types)
@@ -118,13 +126,15 @@ export function parseArgs(args: string[]): ParsedArgs {
         i++
         break
       case '--base-dir': {
-        const value = args[++i]
-        if (value === undefined || value.startsWith('-')) {
-          console.error('Missing value for --base-dir')
-          process.exit(1)
+        // Repeatable: each `--base-dir <path>` occurrence appends one entry
+        // to `options.baseDirs`. The accumulator is lazily initialized so
+        // an absent flag leaves `options.baseDirs` as `undefined`, which
+        // the resolver treats as "fall through to env / cwd".
+        if (options.baseDirs === undefined) {
+          options.baseDirs = []
         }
-        options.baseDir = value
-        i++
+        const valueIndex = consumeBaseDirArg(args, i, options.baseDirs)
+        i = valueIndex + 1
         break
       }
       case '--max-file-size': {
@@ -204,14 +214,40 @@ export function parseArgs(args: string[]): ParsedArgs {
 
 /**
  * Resolve ingest config by merging global config with ingest-specific options.
- * Ingest-specific: baseDir, maxFileSize (CLI flags > env vars > defaults).
- * Validates all resolved values before returning.
+ *
+ * Base directories are resolved via the shared CLI resolver
+ * ({@link resolveCliBaseDirsOrExit}) which applies the documented precedence
+ * (CLI roots > `BASE_DIRS` > `BASE_DIR` > `cwd`), realpath-normalizes every
+ * effective root, dedupes exact duplicates, and prunes nested roots. CLI
+ * roots are pre-validated against the sensitive-path policy here so the
+ * user sees `--base-dir`-attributed errors before the resolver touches the
+ * filesystem.
+ *
+ * Other ingest-specific values (maxFileSize, chunkMinLength) follow the
+ * existing CLI > env > defaults order and are validated against the same
+ * ranges as before.
  */
-export function resolveConfig(
+export async function resolveConfig(
   globalConfig: ResolvedGlobalConfig,
   ingestOptions: IngestCliOptions = {}
-): IngestConfig {
-  const baseDir = ingestOptions.baseDir ?? process.env['BASE_DIR'] ?? process.cwd()
+): Promise<IngestConfig> {
+  const cliBaseDirs = ingestOptions.baseDirs ?? []
+
+  // Validate CLI-supplied paths against the sensitive-path policy before
+  // calling the resolver. Doing this here (rather than relying on the
+  // resolver) keeps the error message attributed to `--base-dir` and avoids
+  // an unnecessary realpath round-trip on a path we will reject anyway.
+  for (const root of cliBaseDirs) {
+    const baseDirError = validatePath(root, '--base-dir')
+    if (baseDirError) {
+      console.error(baseDirError)
+      process.exit(1)
+    }
+  }
+
+  const { config: baseDirs, warnings: baseDirsWarnings } =
+    await resolveCliBaseDirsOrExit(cliBaseDirs)
+
   const maxFileSize =
     ingestOptions.maxFileSize ??
     (process.env['MAX_FILE_SIZE']
@@ -222,13 +258,6 @@ export function resolveConfig(
     (process.env['CHUNK_MIN_LENGTH']
       ? Number.parseInt(process.env['CHUNK_MIN_LENGTH'], 10)
       : undefined)
-
-  // Validate baseDir path
-  const baseDirError = validatePath(baseDir, '--base-dir')
-  if (baseDirError) {
-    console.error(baseDirError)
-    process.exit(1)
-  }
 
   // Validate maxFileSize range
   const maxFileSizeError = validateMaxFileSize(maxFileSize)
@@ -250,7 +279,8 @@ export function resolveConfig(
     dbPath: globalConfig.dbPath,
     cacheDir: globalConfig.cacheDir,
     modelName: globalConfig.modelName,
-    baseDir,
+    baseDirs,
+    baseDirsWarnings,
     maxFileSize,
   }
   if (chunkMinLength !== undefined) {
@@ -524,8 +554,15 @@ export async function runIngest(args: string[], globalOptions: GlobalOptions = {
 
   // Resolve config: CLI flags > env vars > defaults
   const globalConfig = resolveGlobalConfig(globalOptions)
-  const config = resolveConfig(globalConfig, options)
+  const config = await resolveConfig(globalConfig, options)
   const excludePaths = [`${resolve(config.dbPath)}${sep}`, `${resolve(config.cacheDir)}${sep}`]
+
+  // Surface resolver warnings (precedence, nested-root pruning) on stderr
+  // before scan output starts. Scan-loop multi-root behavior is P2-T2; this
+  // task only wires the resolver so the warnings are visible today.
+  for (const warning of config.baseDirsWarnings) {
+    console.error(warning.message)
+  }
 
   // Collect files
   const files = await collectFiles(targetPath, excludePaths)
@@ -536,9 +573,13 @@ export async function runIngest(args: string[], globalOptions: GlobalOptions = {
 
   console.error(`Found ${files.length} file(s) to ingest.`)
 
-  // Initialize components (single instances reused across all files)
+  // Initialize components (single instances reused across all files).
+  // The parser receives the full multi-root config; P2-T2 will switch the
+  // scan loop (`collectFiles`) to iterate every effective root. Today the
+  // scan still walks `targetPath`, which keeps single-root behavior
+  // byte-identical when exactly one root is configured.
   const parser = new DocumentParser({
-    baseDir: config.baseDir,
+    baseDirs: config.baseDirs.baseDirs,
     maxFileSize: config.maxFileSize,
   })
   const chunker = new SemanticChunker(

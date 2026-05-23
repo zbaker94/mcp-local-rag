@@ -16,6 +16,11 @@ const mocks = vi.hoisted(() => {
     // VectorStore instance methods
     initialize: vi.fn().mockResolvedValue(undefined),
     listFiles: vi.fn().mockResolvedValue([]),
+
+    // Shared CLI base-dirs resolver. Per-test impls can mirror precedence
+    // (CLI roots replace env roots, env falls through to cwd) or simulate
+    // resolver errors.
+    resolveCliBaseDirs: vi.fn(),
   }
 })
 
@@ -37,6 +42,9 @@ const cliCommonFactory = () => ({
     initialize: mocks.initialize,
     listFiles: mocks.listFiles,
   })),
+  resolveCliBaseDirsOrExit: vi
+    .fn()
+    .mockImplementation((cliRoots: string[]) => mocks.resolveCliBaseDirs(cliRoots)),
 })
 
 const MOCKED_PATHS = ['node:fs/promises', '../../cli/common.js'] as const
@@ -119,6 +127,14 @@ describe('CLI list', () => {
 
   beforeEach(() => {
     vi.clearAllMocks()
+    // Default resolver impl: CLI roots when provided, otherwise the
+    // BASE_DIR env value if set (so existing precedence tests continue to
+    // verify CLI > env), otherwise cwd. Per-test impls can override before
+    // calling `runList`.
+    mocks.resolveCliBaseDirs.mockImplementation((cliRoots: string[]) => {
+      const first = cliRoots[0] ?? process.env['BASE_DIR'] ?? process.cwd()
+      return Promise.resolve({ config: { baseDirs: [first] }, warnings: [] })
+    })
     exitSpy = vi
       .spyOn(process, 'exit')
       .mockImplementation((code?: number | string | null | undefined) => {
@@ -358,7 +374,22 @@ describe('CLI list', () => {
 
     it('should parse --base-dir flag', () => {
       const result = parseArgs(['--base-dir', '/my/docs'])
-      expect(result).toEqual({ options: { baseDir: '/my/docs' }, help: false })
+      expect(result).toEqual({ options: { baseDirs: ['/my/docs'] }, help: false })
+    })
+
+    it('should accumulate repeated --base-dir into baseDirs array in CLI order', () => {
+      const result = parseArgs(['--base-dir', '/a', '--base-dir', '/b'])
+      expect(result.options.baseDirs).toEqual(['/a', '/b'])
+    })
+
+    it('should leave baseDirs undefined when --base-dir is not provided', () => {
+      const result = parseArgs([])
+      expect(result.options.baseDirs).toBeUndefined()
+    })
+
+    it('should keep single --base-dir backward-compatible (array of one)', () => {
+      const result = parseArgs(['--base-dir', '/only'])
+      expect(result.options.baseDirs).toEqual(['/only'])
     })
 
     it('should parse --help flag', () => {

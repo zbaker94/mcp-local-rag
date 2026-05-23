@@ -9,10 +9,21 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 // ============================================
 
 const mocks = vi.hoisted(() => {
+  // Default base-dirs resolution: CLI roots when provided, otherwise a fixed
+  // cwd-derived stand-in. Each test can reassign `mocks.resolveCliBaseDirs`
+  // before invoking `runIngest` / `resolveConfig` to inject scenario-specific
+  // results (precedence, warnings, ...).
+  const defaultResolve = (cliRoots: string[]) => {
+    const baseDirs = cliRoots.length > 0 ? cliRoots : ['/mock/cwd/']
+    return Promise.resolve({ config: { baseDirs }, warnings: [] })
+  }
   return {
     // fs/promises
     stat: vi.fn(),
     opendir: vi.fn(),
+
+    // Shared CLI base-dirs resolver
+    resolveCliBaseDirs: vi.fn().mockImplementation(defaultResolve),
 
     // Component instances
     parseFile: vi.fn(),
@@ -80,6 +91,12 @@ const cliCommonFactory = () => ({
     optimize: mocks.optimize,
     close: vi.fn(),
   })),
+  // Mock the shared CLI base-dirs resolver to skip realpath I/O. Each test
+  // sets `mocks.resolveCliBaseDirs` to mirror the precedence under test
+  // (e.g. CLI roots replace env roots; env roots fall through to cwd).
+  resolveCliBaseDirsOrExit: vi
+    .fn()
+    .mockImplementation((cliRoots: string[]) => mocks.resolveCliBaseDirs(cliRoots)),
 })
 
 const MOCKED_PATHS = [
@@ -220,6 +237,12 @@ describe('CLI ingest', () => {
 
   beforeEach(() => {
     vi.clearAllMocks()
+    // Restore the default base-dirs resolution after vi.clearAllMocks so
+    // tests that don't customize the resolver still get a valid config.
+    mocks.resolveCliBaseDirs.mockImplementation((cliRoots: string[]) => {
+      const baseDirs = cliRoots.length > 0 ? cliRoots : ['/mock/cwd/']
+      return Promise.resolve({ config: { baseDirs }, warnings: [] })
+    })
     // Mock process.exit to throw so we can catch it
     exitSpy = vi
       .spyOn(process, 'exit')
@@ -702,11 +725,15 @@ describe('CLI ingest', () => {
       })
     )
 
-    // Assert: DocumentParser was called with ingest-specific base-dir and max-file-size
+    // Assert: DocumentParser was called with the resolved multi-root config.
+    // The CLI resolver mock echoes CLI roots verbatim, so a single
+    // --base-dir A surfaces as `baseDirs: ['/cli/base']` here. P2-T1 keeps
+    // the single-root scan path identical; only the constructor shape
+    // changes (baseDir → baseDirs).
     const { DocumentParser } = await import('../../parser/index.js')
     expect(DocumentParser).toHaveBeenCalledWith(
       expect.objectContaining({
-        baseDir: '/cli/base',
+        baseDirs: ['/cli/base'],
         maxFileSize: 555,
       })
     )
@@ -831,10 +858,26 @@ describe('CLI ingest', () => {
 
       expect(result.positional).toBe('/target')
       expect(result.options).toEqual({
-        baseDir: '/base',
+        baseDirs: ['/base'],
         maxFileSize: 1024,
       })
       expect(result.help).toBe(false)
+    })
+
+    it('should accumulate repeated --base-dir into baseDirs array in CLI order', () => {
+      const result = parseArgs(['--base-dir', '/a', '--base-dir', '/b', '/target'])
+      expect(result.positional).toBe('/target')
+      expect(result.options.baseDirs).toEqual(['/a', '/b'])
+    })
+
+    it('should leave baseDirs undefined when --base-dir is not provided', () => {
+      const result = parseArgs(['/target'])
+      expect(result.options.baseDirs).toBeUndefined()
+    })
+
+    it('should keep single --base-dir backward-compatible (array of one)', () => {
+      const result = parseArgs(['--base-dir', '/only', '/target'])
+      expect(result.options.baseDirs).toEqual(['/only'])
     })
 
     it('should parse --help flag', () => {
@@ -850,13 +893,13 @@ describe('CLI ingest', () => {
     it('should handle flags before positional', () => {
       const result = parseArgs(['--base-dir', '/base', '/target'])
       expect(result.positional).toBe('/target')
-      expect(result.options.baseDir).toBe('/base')
+      expect(result.options.baseDirs).toEqual(['/base'])
     })
 
     it('should handle flags after positional', () => {
       const result = parseArgs(['/target', '--base-dir', '/base'])
       expect(result.positional).toBe('/target')
-      expect(result.options.baseDir).toBe('/base')
+      expect(result.options.baseDirs).toEqual(['/base'])
     })
 
     it('should error on unknown flags', () => {
@@ -1026,24 +1069,35 @@ describe('CLI ingest', () => {
       delete process.env['CHUNK_MIN_LENGTH']
     })
 
-    it('should error when BASE_DIR env var points to sensitive path', () => {
+    it('should error when BASE_DIR env var points to sensitive path', async () => {
+      // After the multi-root resolver rewiring (P2-T1), env-derived
+      // sensitive-path rejection lives in `resolveCliBaseDirsOrExit` rather
+      // than in `resolveConfig` itself. The shared CLI common mock here
+      // delegates to a per-test impl, so we simulate the resolver returning
+      // a BASE_DIR-resolved root and trust the unit under test
+      // (resolveConfig) to propagate the rejection by letting the mocked
+      // resolveCliBaseDirsOrExit raise the same exit(1).
       process.env['BASE_DIR'] = '/etc/documents'
+      mocks.resolveCliBaseDirs.mockImplementation(() => {
+        console.error('Refusing to use sensitive system path for --base-dir: /etc/documents')
+        throw new Error('process.exit(1)')
+      })
       const globalConfig = resolveGlobalConfig({})
       const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
       try {
-        expect(() => resolveConfig(globalConfig, {})).toThrow('process.exit(1)')
+        await expect(resolveConfig(globalConfig, {})).rejects.toThrow('process.exit(1)')
         expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('sensitive system path'))
       } finally {
         errorSpy.mockRestore()
       }
     })
 
-    it('should error when MAX_FILE_SIZE env var is zero', () => {
+    it('should error when MAX_FILE_SIZE env var is zero', async () => {
       process.env['MAX_FILE_SIZE'] = '0'
       const globalConfig = resolveGlobalConfig({})
       const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
       try {
-        expect(() => resolveConfig(globalConfig, {})).toThrow('process.exit(1)')
+        await expect(resolveConfig(globalConfig, {})).rejects.toThrow('process.exit(1)')
         expect(errorSpy).toHaveBeenCalledWith(
           expect.stringContaining('must be between 1 and 524288000')
         )
@@ -1052,12 +1106,12 @@ describe('CLI ingest', () => {
       }
     })
 
-    it('should error when MAX_FILE_SIZE env var is negative', () => {
+    it('should error when MAX_FILE_SIZE env var is negative', async () => {
       process.env['MAX_FILE_SIZE'] = '-100'
       const globalConfig = resolveGlobalConfig({})
       const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
       try {
-        expect(() => resolveConfig(globalConfig, {})).toThrow('process.exit(1)')
+        await expect(resolveConfig(globalConfig, {})).rejects.toThrow('process.exit(1)')
         expect(errorSpy).toHaveBeenCalledWith(
           expect.stringContaining('must be between 1 and 524288000')
         )
@@ -1066,12 +1120,12 @@ describe('CLI ingest', () => {
       }
     })
 
-    it('should error when MAX_FILE_SIZE env var exceeds 500MB', () => {
+    it('should error when MAX_FILE_SIZE env var exceeds 500MB', async () => {
       process.env['MAX_FILE_SIZE'] = '999999999'
       const globalConfig = resolveGlobalConfig({})
       const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
       try {
-        expect(() => resolveConfig(globalConfig, {})).toThrow('process.exit(1)')
+        await expect(resolveConfig(globalConfig, {})).rejects.toThrow('process.exit(1)')
         expect(errorSpy).toHaveBeenCalledWith(
           expect.stringContaining('must be between 1 and 524288000')
         )
@@ -1080,11 +1134,11 @@ describe('CLI ingest', () => {
       }
     })
 
-    it('should error when --base-dir CLI option points to sensitive path', () => {
+    it('should error when --base-dir CLI option points to sensitive path', async () => {
       const globalConfig = resolveGlobalConfig({})
       const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
       try {
-        expect(() => resolveConfig(globalConfig, { baseDir: '/proc/self' })).toThrow(
+        await expect(resolveConfig(globalConfig, { baseDirs: ['/proc/self'] })).rejects.toThrow(
           'process.exit(1)'
         )
         expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('sensitive system path'))
@@ -1093,11 +1147,13 @@ describe('CLI ingest', () => {
       }
     })
 
-    it('should error when --max-file-size CLI option is zero', () => {
+    it('should error when --max-file-size CLI option is zero', async () => {
       const globalConfig = resolveGlobalConfig({})
       const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
       try {
-        expect(() => resolveConfig(globalConfig, { maxFileSize: 0 })).toThrow('process.exit(1)')
+        await expect(resolveConfig(globalConfig, { maxFileSize: 0 })).rejects.toThrow(
+          'process.exit(1)'
+        )
         expect(errorSpy).toHaveBeenCalledWith(
           expect.stringContaining('must be between 1 and 524288000')
         )
@@ -1106,37 +1162,39 @@ describe('CLI ingest', () => {
       }
     })
 
-    it('should resolve chunkMinLength from CLI option', () => {
+    it('should resolve chunkMinLength from CLI option', async () => {
       const globalConfig = resolveGlobalConfig({})
-      const result = resolveConfig(globalConfig, { chunkMinLength: 200 })
+      const result = await resolveConfig(globalConfig, { chunkMinLength: 200 })
       expect(result.chunkMinLength).toBe(200)
     })
 
-    it('should resolve chunkMinLength from CHUNK_MIN_LENGTH env var', () => {
+    it('should resolve chunkMinLength from CHUNK_MIN_LENGTH env var', async () => {
       process.env['CHUNK_MIN_LENGTH'] = '300'
       const globalConfig = resolveGlobalConfig({})
-      const result = resolveConfig(globalConfig)
+      const result = await resolveConfig(globalConfig)
       expect(result.chunkMinLength).toBe(300)
     })
 
-    it('should prefer CLI chunkMinLength over env var', () => {
+    it('should prefer CLI chunkMinLength over env var', async () => {
       process.env['CHUNK_MIN_LENGTH'] = '300'
       const globalConfig = resolveGlobalConfig({})
-      const result = resolveConfig(globalConfig, { chunkMinLength: 100 })
+      const result = await resolveConfig(globalConfig, { chunkMinLength: 100 })
       expect(result.chunkMinLength).toBe(100)
     })
 
-    it('should leave chunkMinLength undefined when not specified', () => {
+    it('should leave chunkMinLength undefined when not specified', async () => {
       const globalConfig = resolveGlobalConfig({})
-      const result = resolveConfig(globalConfig)
+      const result = await resolveConfig(globalConfig)
       expect(result.chunkMinLength).toBeUndefined()
     })
 
-    it('should error when --chunk-min-length CLI option is zero', () => {
+    it('should error when --chunk-min-length CLI option is zero', async () => {
       const globalConfig = resolveGlobalConfig({})
       const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
       try {
-        expect(() => resolveConfig(globalConfig, { chunkMinLength: 0 })).toThrow('process.exit(1)')
+        await expect(resolveConfig(globalConfig, { chunkMinLength: 0 })).rejects.toThrow(
+          'process.exit(1)'
+        )
         expect(errorSpy).toHaveBeenCalledWith(
           expect.stringContaining('must be between 1 and 10000')
         )
@@ -1145,11 +1203,11 @@ describe('CLI ingest', () => {
       }
     })
 
-    it('should error when --chunk-min-length CLI option exceeds 10000', () => {
+    it('should error when --chunk-min-length CLI option exceeds 10000', async () => {
       const globalConfig = resolveGlobalConfig({})
       const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
       try {
-        expect(() => resolveConfig(globalConfig, { chunkMinLength: 10001 })).toThrow(
+        await expect(resolveConfig(globalConfig, { chunkMinLength: 10001 })).rejects.toThrow(
           'process.exit(1)'
         )
         expect(errorSpy).toHaveBeenCalledWith(

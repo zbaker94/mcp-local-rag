@@ -78,6 +78,39 @@ export function validateChunkMinLength(value: number): string | undefined {
 }
 
 // ============================================
+// Repeatable --base-dir parsing
+// ============================================
+
+/**
+ * Consume the value that follows a `--base-dir` flag and append it to
+ * `collected`. Designed to be called from each subcommand's argv loop so
+ * `--base-dir <path>` can be provided one or more times, with the order
+ * preserved.
+ *
+ * `argv` is the full argv slice the loop is iterating; `flagIndex` is the
+ * index of the `--base-dir` token itself. On success returns the index of
+ * the value (so the caller can advance past it). On failure prints
+ * `Missing value for --base-dir` to stderr and calls `process.exit(1)` —
+ * matching the existing single-value error path so callers don't have to
+ * special-case the new shape.
+ *
+ * Why a shared helper: both `ingest` and `list` parse `--base-dir` in
+ * identical fashion, so centralizing the accumulate-and-validate step keeps
+ * the two argv loops in lockstep when the contract evolves (e.g. P2-T2
+ * adding per-path validation).
+ */
+export function consumeBaseDirArg(argv: string[], flagIndex: number, collected: string[]): number {
+  const valueIndex = flagIndex + 1
+  const value = argv[valueIndex]
+  if (value === undefined || value.startsWith('-')) {
+    console.error('Missing value for --base-dir')
+    process.exit(1)
+  }
+  collected.push(value)
+  return valueIndex
+}
+
+// ============================================
 // Types
 // ============================================
 
