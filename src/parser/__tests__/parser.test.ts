@@ -184,6 +184,107 @@ describe('DocumentParser', () => {
     })
   })
 
+  describe('validateFilePath (multi-root)', () => {
+    const rootA = join(process.cwd(), 'tmp', 'test-parser-multi-a')
+    const rootB = join(process.cwd(), 'tmp', 'test-parser-multi-b')
+    const outsideDir = join(process.cwd(), 'tmp', 'test-parser-multi-outside')
+
+    beforeEach(async () => {
+      await mkdir(rootA, { recursive: true })
+      await mkdir(rootB, { recursive: true })
+    })
+
+    afterEach(async () => {
+      await rm(rootA, { recursive: true, force: true })
+      await rm(rootB, { recursive: true, force: true })
+      await rm(outsideDir, { recursive: true, force: true })
+    })
+
+    it('should accept files under either of two configured roots', async () => {
+      const multi = new DocumentParser({ baseDirs: [rootA, rootB], maxFileSize })
+      const fileInA = join(rootA, 'a.txt')
+      const fileInB = join(rootB, 'b.txt')
+      await writeFile(fileInA, 'a')
+      await writeFile(fileInB, 'b')
+
+      await expect(multi.validateFilePath(fileInA)).resolves.toBeUndefined()
+      await expect(multi.validateFilePath(fileInB)).resolves.toBeUndefined()
+    })
+
+    it('should reject files outside all configured roots', async () => {
+      const multi = new DocumentParser({ baseDirs: [rootA, rootB], maxFileSize })
+      await expect(multi.validateFilePath('/etc/passwd')).rejects.toThrow(
+        expect.objectContaining({
+          name: 'ValidationError',
+          message: expect.stringMatching(/BASE_DIR/),
+        })
+      )
+    })
+
+    it('should reject symlink under root A whose realpath resolves outside both roots', async () => {
+      if (process.platform === 'win32') return
+      await mkdir(outsideDir, { recursive: true })
+      const outsideFile = join(outsideDir, 'secret.txt')
+      await writeFile(outsideFile, 'secret')
+
+      const linkPath = join(rootA, 'escape.txt')
+      await symlink(outsideFile, linkPath)
+
+      const multi = new DocumentParser({ baseDirs: [rootA, rootB], maxFileSize })
+      await expect(multi.validateFilePath(linkPath)).rejects.toThrow(
+        expect.objectContaining({
+          name: 'ValidationError',
+          message: expect.stringMatching(/BASE_DIR/),
+        })
+      )
+    })
+
+    it('should accept symlink under root A whose realpath resolves into root B', async () => {
+      if (process.platform === 'win32') return
+      const targetInB = join(rootB, 'shared.txt')
+      await writeFile(targetInB, 'shared content')
+
+      const linkInA = join(rootA, 'shared-link.txt')
+      await symlink(targetInB, linkInA)
+
+      const multi = new DocumentParser({ baseDirs: [rootA, rootB], maxFileSize })
+      await expect(multi.validateFilePath(linkInA)).resolves.toBeUndefined()
+    })
+
+    it('should reject sibling-prefix path (e.g., /tmp/foo/bar vs /tmp/foo/barista)', async () => {
+      const siblingDir = `${rootA}ista`
+      await mkdir(siblingDir, { recursive: true })
+      try {
+        const filePath = join(siblingDir, 'x.txt')
+        await writeFile(filePath, 'sibling content')
+
+        const multi = new DocumentParser({ baseDirs: [rootA], maxFileSize })
+        await expect(multi.validateFilePath(filePath)).rejects.toThrow(
+          expect.objectContaining({
+            name: 'ValidationError',
+            message: expect.stringMatching(/BASE_DIR/),
+          })
+        )
+      } finally {
+        await rm(siblingDir, { recursive: true, force: true })
+      }
+    })
+
+    it('should produce identical behavior for { baseDir } and { baseDirs: [baseDir] } shapes', async () => {
+      const legacy = new DocumentParser({ baseDir: rootA, maxFileSize })
+      const modern = new DocumentParser({ baseDirs: [rootA], maxFileSize })
+
+      const inside = join(rootA, 'inside.txt')
+      await writeFile(inside, 'x')
+
+      await expect(legacy.validateFilePath(inside)).resolves.toBeUndefined()
+      await expect(modern.validateFilePath(inside)).resolves.toBeUndefined()
+
+      await expect(legacy.validateFilePath('/etc/passwd')).rejects.toThrow(ValidationError)
+      await expect(modern.validateFilePath('/etc/passwd')).rejects.toThrow(ValidationError)
+    })
+  })
+
   describe('validateFileSize', () => {
     it('should accept file within size limit', async () => {
       const filePath = join(testDir, 'small.txt')

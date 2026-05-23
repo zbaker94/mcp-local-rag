@@ -2,10 +2,11 @@
 
 import { statSync } from 'node:fs'
 import { lstat, readFile, realpath } from 'node:fs/promises'
-import { basename, extname, isAbsolute, resolve, sep } from 'node:path'
+import { basename, extname, isAbsolute, resolve } from 'node:path'
 import mammoth from 'mammoth'
 import type { Document as MupdfDocument } from 'mupdf'
 import { SemanticChunker } from '../chunker/index.js'
+import { withTrailingSeparator } from '../utils/base-dirs.js'
 import { type EmbedderInterface, filterPageBoundarySentences, type PageData } from './pdf-filter.js'
 import {
   extractDocxTitle,
@@ -39,14 +40,35 @@ export interface ParseResult {
 }
 
 /**
- * DocumentParser configuration
+ * DocumentParser configuration.
+ *
+ * Accepts either a single `baseDir` (legacy single-root shape — preserved for
+ * backward compatibility with downstream callers that have not yet migrated
+ * to the multi-root model) or a `baseDirs` array (multi-root shape produced
+ * by `resolveBaseDirs`). Exactly one of the two MUST be supplied; supplying
+ * both is rejected by the constructor so misconfiguration cannot silently
+ * pick one source over the other.
+ *
+ * Behavior under a single allowed root (`{ baseDir }` or
+ * `{ baseDirs: [oneRoot] }`) is byte-identical to the previous single-root
+ * implementation — see `validateFilePath` for the iteration contract under
+ * multiple roots.
  */
-interface ParserConfig {
-  /** Security: allowed base directory */
-  baseDir: string
-  /** Maximum file size (100MB) */
-  maxFileSize: number
-}
+export type ParserConfig =
+  | {
+      /** Security: single allowed base directory (legacy shape). */
+      baseDir: string
+      baseDirs?: undefined
+      /** Maximum file size (100MB). */
+      maxFileSize: number
+    }
+  | {
+      /** Security: one or more allowed base directories (multi-root shape). */
+      baseDirs: string[]
+      baseDir?: undefined
+      /** Maximum file size (100MB). */
+      maxFileSize: number
+    }
 
 /**
  * Validation error (equivalent to 400)
@@ -88,18 +110,51 @@ export class FileOperationError extends Error {
  */
 export class DocumentParser {
   private readonly config: ParserConfig
-  /** Lazily cached realpath of baseDir. Assumes baseDir is stable for the process lifetime. */
-  private resolvedBaseDir: string | null = null
+  /** Raw allowed roots in input order (pre-realpath). Always non-empty. */
+  private readonly rawBaseDirs: readonly string[]
+  /**
+   * Lazily cached realpath-normalized allowed roots, each with a trailing
+   * path separator so the `startsWith` check is sibling-prefix safe (e.g.
+   * `/foo/bar/` must not match `/foo/barista/x.txt`). Order is preserved
+   * from `rawBaseDirs` so the legacy single-root rejection message keeps
+   * referencing the user-configured first root. Assumes the allowed roots
+   * are stable for the process lifetime.
+   */
+  private resolvedBaseDirs: string[] | null = null
 
   constructor(config: ParserConfig) {
     this.config = config
+    // Normalize the two accepted shapes into one internal raw-root list.
+    // The type system already rejects supplying both fields simultaneously,
+    // but defensively pick `baseDirs` first so a future relaxation does not
+    // accidentally fall back to the legacy single-root field.
+    if (config.baseDirs !== undefined) {
+      if (config.baseDirs.length === 0) {
+        throw new ValidationError(
+          'DocumentParser requires at least one base directory (baseDirs was empty).'
+        )
+      }
+      this.rawBaseDirs = config.baseDirs
+    } else {
+      this.rawBaseDirs = [config.baseDir]
+    }
   }
 
   /**
-   * File path validation (Absolute path requirement + Path traversal prevention)
+   * File path validation (Absolute path requirement + Path traversal prevention).
+   *
+   * Multi-root semantics: a file is accepted iff its realpath (or, for a
+   * non-symlink path that does not yet exist, its `resolve()`-normalized
+   * absolute path) is under ANY realpath-normalized allowed root using a
+   * trailing-separator prefix check. Broken symlinks are still rejected
+   * outright — the lstat-based detection mirrors the previous single-root
+   * behavior.
+   *
+   * Under a single allowed root the behavior is identical to the previous
+   * single-root implementation.
    *
    * @param filePath - File path to validate (must be absolute)
-   * @throws ValidationError - When path is not absolute or outside BASE_DIR
+   * @throws ValidationError - When path is not absolute or outside all allowed roots
    */
   async validateFilePath(filePath: string): Promise<void> {
     // Check if path is absolute (fast-fail without syscall)
@@ -109,11 +164,16 @@ export class DocumentParser {
       )
     }
 
-    // Lazily resolve and cache the real baseDir path (follows symlinks)
-    if (!this.resolvedBaseDir) {
-      const resolved = await realpath(resolve(this.config.baseDir))
-      // Ensure trailing separator for safe prefix comparison
-      this.resolvedBaseDir = resolved.endsWith(sep) ? resolved : resolved + sep
+    // Lazily resolve and cache the real path of each allowed root (follows
+    // symlinks). Each entry gets a trailing separator so subsequent
+    // `startsWith` checks are sibling-prefix safe.
+    if (!this.resolvedBaseDirs) {
+      const resolvedList: string[] = []
+      for (const raw of this.rawBaseDirs) {
+        const resolved = await realpath(resolve(raw))
+        resolvedList.push(withTrailingSeparator(resolved))
+      }
+      this.resolvedBaseDirs = resolvedList
     }
 
     // Resolve the real path of the file (follows symlinks)
@@ -142,10 +202,15 @@ export class DocumentParser {
       resolvedPath = resolve(filePath)
     }
 
-    // Check if resolved path is within BASE_DIR
-    if (!resolvedPath.startsWith(this.resolvedBaseDir)) {
+    // Check if resolved path is within any allowed root.
+    const allowed = this.resolvedBaseDirs.some((root) => resolvedPath.startsWith(root))
+    if (!allowed) {
+      const rootsDisplay =
+        this.resolvedBaseDirs.length === 1
+          ? this.resolvedBaseDirs[0]
+          : this.resolvedBaseDirs.join(', ')
       throw new ValidationError(
-        `File path must be within BASE_DIR (${this.resolvedBaseDir}). Received path outside BASE_DIR: ${filePath}`
+        `File path must be within BASE_DIR (${rootsDisplay}). Received path outside BASE_DIR: ${filePath}`
       )
     }
   }
