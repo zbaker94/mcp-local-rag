@@ -133,8 +133,11 @@ const MOCKED_PATHS = ['@huggingface/transformers'] as const
 // ============================================
 
 let createCaptioner: typeof import('../captioner').createCaptioner
-let VLM_DTYPE: typeof import('../captioner').VLM_DTYPE
 let VlmError: typeof import('../types').VlmError
+
+// The `fast` profile pins ONNX quantization to `q4` (see `captioners/fast.ts`).
+// Asserted as an independent literal so an accidental dtype change is loud.
+const VLM_DTYPE = 'q4'
 
 const PNG_BYTES = new Uint8Array([0x89, 0x50, 0x4e, 0x47])
 
@@ -149,7 +152,7 @@ describe('createCaptioner — fast profile dispatch (CaptionerConfig flow + AC-0
   beforeAll(async () => {
     vi.resetModules()
     vi.doMock('@huggingface/transformers', transformersFactory)
-    ;({ createCaptioner, VLM_DTYPE } = await import('../captioner'))
+    ;({ createCaptioner } = await import('../captioner'))
     ;({ VlmError } = await import('../types'))
   })
 

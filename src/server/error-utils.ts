@@ -48,7 +48,7 @@ const CONFIG_ERROR_ANNOTATIONS: Annotations = {
  * for the "warning shape changes touch many handlers" risk (P3-T3). Every
  * handler must use this helper — do not inline the content shape.
  */
-export function buildConfigWarningBlocks(warnings: readonly string[]): RagContentBlock[] {
+function buildConfigWarningBlocks(warnings: readonly string[]): RagContentBlock[] {
   if (warnings.length === 0) return []
   return [
     {

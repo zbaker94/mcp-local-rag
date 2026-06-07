@@ -171,16 +171,6 @@ export class RAGServer {
   }
 
   /**
-   * Expose the base-dirs resolution error (if any) for the warning/error
-   * attachment layer added in P3-T3. Returns `null` when configuration
-   * resolved cleanly. Kept as a method so the field stays `private readonly`
-   * — only the handler layer that wires error responses needs read access.
-   */
-  getConfigError(): BaseDirsConfigError | null {
-    return this.configError
-  }
-
-  /**
    * Fail-fast guard for root-dependent tools. When a {@link BaseDirsConfigError}
    * is stored on the instance the server is in degraded mode (invalid
    * `BASE_DIRS` — see `resolveBaseDirs`) and every root-dependent tool MUST
