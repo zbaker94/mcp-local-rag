@@ -73,18 +73,18 @@
     "turndown": "7.2.4"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.4.15",
+    "@biomejs/biome": "^2.4.16",
     "@types/jsdom": "^28.0.3",
-    "@types/node": "^25.9.1",
+    "@types/node": "^25.9.2",
     "@types/turndown": "5.0.6",
     "dpdm": "^4.2.0",
     "husky": "^9.1.7",
     "knip": "^6.14.2",
-    "lint-staged": "^17.0.5",
+    "lint-staged": "^17.0.7",
     "tsc-alias": "^1.8.17",
-    "tsx": "^4.22.3",
+    "tsx": "^4.22.4",
     "typescript": "^6.0.3",
-    "vitest": "^4.1.7"
+    "vitest": "^4.1.8"
   },
   "engines": {
     "node": ">=22"
