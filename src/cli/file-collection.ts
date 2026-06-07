@@ -29,6 +29,11 @@ export async function collectFiles(
       )
       return []
     }
+    // Path-canonicalization invariant: realpath only in the validation/security domain;
+    // resolve() everywhere user-facing. The collected path becomes the DB key
+    // (what `list`/`delete`/`read_chunk_neighbors` look up), so it MUST be the
+    // resolve()'d path — NOT the realpath — so storage and lookups agree even
+    // under a symlinked base-dir prefix (e.g. macOS /tmp → /private/tmp).
     return [resolved]
   }
 
@@ -50,6 +55,11 @@ export async function collectFiles(
       process.exit(1)
     }
 
+    // Path-canonicalization invariant: realpath only in the validation/security domain;
+    // resolve() everywhere user-facing. `realResolved` above is used ONLY for
+    // the in-root containment CHECK (a security decision). The actual walk —
+    // and therefore the stored DB keys — uses the resolve()'d `resolved` so the
+    // collected paths match what `list`/`delete`/`read_chunk_neighbors` use.
     const {
       files: collected,
       unreadableDirs,

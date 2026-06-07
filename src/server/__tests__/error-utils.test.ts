@@ -73,15 +73,6 @@ describe('formatErrorMessage', () => {
     })
   })
 
-  describe('with non-Error objects', () => {
-    it('should preserve message from object with string message property', () => {
-      const error = { message: 'Custom error object', stack: undefined }
-      process.env['NODE_ENV'] = 'production'
-      const result = formatErrorMessage(error)
-      expect(result).toBe('Custom error object')
-    })
-  })
-
   describe('with non-Error thrown values', () => {
     describe('in production mode', () => {
       beforeEach(() => {

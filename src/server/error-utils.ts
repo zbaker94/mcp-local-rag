@@ -44,9 +44,8 @@ const CONFIG_ERROR_ANNOTATIONS: Annotations = {
  * — the per-warning structured form lives in the configuration layer
  * (`BaseDirsConfigWarning`); here we render a single user-facing string.
  *
- * Centralizing this in one helper is the design-doc-mandated countermeasure
- * for the "warning shape changes touch many handlers" risk (P3-T3). Every
- * handler must use this helper — do not inline the content shape.
+ * Centralizing this in one helper keeps the warning content shape consistent
+ * across handlers. Every handler must use this helper.
  */
 function buildConfigWarningBlocks(warnings: readonly string[]): RagContentBlock[] {
   if (warnings.length === 0) return []

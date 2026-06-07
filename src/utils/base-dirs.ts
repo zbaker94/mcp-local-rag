@@ -5,12 +5,9 @@
 // (`server-main.ts`), plus the pure helpers needed to derive it from raw
 // configuration inputs (env vars, CLI flags).
 //
-// Scope: this file ships only pure helpers and the types. Wiring into
-// `DocumentParser`, `RAGServer`, and CLI subcommands is performed by later
-// tasks (P1-T2 / P1-T3 / P2-T1 / P3-T1). Keeping the wiring out of this
-// module lets every consumer adopt the same realpath/prefix-safety semantics
-// without duplicating the trailing-separator pattern that `DocumentParser`
-// currently inlines.
+// Scope: this file ships only pure helpers and the types so every consumer
+// can adopt the same realpath/prefix-safety semantics without duplicating
+// the trailing-separator pattern.
 
 import { realpath, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
@@ -23,14 +20,29 @@ import { resolve, sep } from 'node:path'
 /**
  * Internal representation of the effective document roots.
  *
+ * Path-canonicalization policy: realpath lives ONLY in the
+ * validation/security domain. Two parallel, index-aligned root lists are
+ * exposed so each consumer picks the correct path space:
+ *
  * `baseDirs` is the post-normalization, post-deduplication, post-nested-prune
- * list of realpath-resolved directories used as the security boundary for
- * file access. Order is preserved from the original configuration input so
+ * list of REALPATH-resolved directories — the SECURITY BOUNDARY passed to
+ * `DocumentParser`. Order is preserved from the original configuration input so
  * the first element is meaningful as the legacy single-root accessor (see
  * {@link legacyBaseDir}).
+ *
+ * `rawBaseDirs` is the SAME surviving roots in the SAME order, but
+ * resolve()-normalized only (NOT realpath'd). This is the NORMAL path space
+ * that everything user-facing uses: `list` / `list_files` scan and display
+ * these so the scanned file paths match the resolve()-stored DB keys (what
+ * `query` / `delete` / `read_chunk_neighbors` use). Without this, a symlinked
+ * base-dir prefix (e.g. macOS /tmp → /private/tmp) would make ingested files
+ * wrongly show as not-ingested. Dedup/nested-prune decisions are still made on
+ * the realpath'd `baseDirs` (security semantics); `rawBaseDirs` mirrors those
+ * decisions index-for-index.
  */
 export interface BaseDirsConfig {
   baseDirs: string[]
+  rawBaseDirs: string[]
 }
 
 /**
@@ -204,6 +216,13 @@ export function withTrailingSeparator(path: string): string {
  * Resolve a directory to its realpath form and append a trailing separator
  * so the result can be used directly as a prefix in security checks.
  *
+ * Path-canonicalization policy: realpath = the SECURITY boundary. The
+ * realpath here is what makes dedup/nested-prune and `DocumentParser`'s
+ * containment check robust against symlinked roots. It is deliberately NOT the
+ * value user-facing surfaces store or scan — those use the resolve()-only
+ * `rawBaseDirs` (see {@link resolveBaseDirs}). Invariant: realpath only in the
+ * validation/security domain; resolve() everywhere user-facing.
+ *
  * Throws {@link BaseDirsConfigError} when the directory does not exist or
  * is not a directory — root configuration must point at real directories
  * the process is allowed to read.
@@ -273,7 +292,7 @@ export interface DedupAndPruneResult {
  * nested check safe against sibling-prefix paths like `/foo/barista`.
  */
 export function dedupAndPruneRoots(inputs: string[]): DedupAndPruneResult {
-  // Phase 1: exact dedup, preserving order.
+  // Pass 1: exact dedup, preserving order.
   const deduped: string[] = []
   const seen = new Set<string>()
   for (const root of inputs) {
@@ -283,7 +302,7 @@ export function dedupAndPruneRoots(inputs: string[]): DedupAndPruneResult {
     }
   }
 
-  // Phase 2: nested-root pruning.
+  // Pass 2: nested-root pruning.
   //
   // A root `child` is pruned when some other root `parent` (parent !== child)
   // is a strict prefix of `child`. Because every input ends with `sep`, the
@@ -437,24 +456,43 @@ export async function resolveBaseDirs(input: ResolveBaseDirsInput): Promise<Reso
 
   // Realpath-normalize each selected root. Failures (missing directory,
   // permission denied, ...) are surfaced as a structured config error.
+  //
+  // Path-canonicalization: realpath is the SECURITY domain. We compute the realpath'd form for
+  // dedup/nested-prune and the parser boundary, but ALSO keep each root's
+  // resolve()-only (non-realpath) form so the resolver can return the NORMAL
+  // path space that `list`/`list_files` scan and display. The two forms are
+  // paired by realpath key so the raw output mirrors the dedup/prune decisions
+  // made on the realpath'd set.
   const normalized: string[] = []
+  const realToRaw = new Map<string, string>()
   for (const root of selection.roots) {
+    let real: string
     try {
-      normalized.push(await normalizeRealpath(root))
+      real = await normalizeRealpath(root)
     } catch (error) {
       if (error instanceof BaseDirsConfigError) {
         return { ok: false, error }
       }
       throw error
     }
+    normalized.push(real)
+    // First-occurrence-wins so the surviving raw root matches the first
+    // configured spelling of a root that realpaths to the same directory.
+    if (!realToRaw.has(real)) {
+      realToRaw.set(real, withTrailingSeparator(resolve(root)))
+    }
   }
 
   const { roots, warnings: pruningWarnings } = dedupAndPruneRoots(normalized)
   warnings.push(...pruningWarnings)
 
+  // Project the surviving realpath'd roots back to their resolve()-only forms,
+  // preserving order so `rawBaseDirs[i]` and `baseDirs[i]` are the same root.
+  const rawRoots = roots.map((real) => realToRaw.get(real) ?? real)
+
   return {
     ok: true,
-    config: { baseDirs: roots },
+    config: { baseDirs: roots, rawBaseDirs: rawRoots },
     warnings,
   }
 }

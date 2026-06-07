@@ -99,10 +99,9 @@ export interface SearchResult {
 
 /**
  * Row returned by VectorStore.getChunksByRange.
- * Distinct from SearchResult (see Design Doc §Contract Definitions):
- * no score (not a ranked result) and no metadata (not needed for
- * index-adjacent retrieval). Consumed by handleReadChunkNeighbors
- * and runReadNeighbors (Task 1.2).
+ * Distinct from SearchResult: no score (not a ranked result) and no metadata
+ * (not needed for index-adjacent retrieval). Consumed by
+ * handleReadChunkNeighbors and runReadNeighbors.
  */
 export interface ChunkRow {
   /** File path (absolute) */
@@ -227,9 +226,8 @@ export function toVectorChunk(raw: unknown): VectorChunk {
 
 /**
  * Convert LanceDB raw row to ChunkRow with type validation.
- * Mirrors toSearchResult but returns the minimal shape defined in
- * Design Doc §Contract Definitions: no score (not ranked) and no
- * metadata (not needed for index-adjacent retrieval).
+ * Mirrors toSearchResult but returns the minimal range-read shape: no score
+ * (not ranked) and no metadata (not needed for index-adjacent retrieval).
  *
  * Uses a narrower shape check than isLanceDBRawResult: only
  * filePath/chunkIndex/text are required because getChunksByRange

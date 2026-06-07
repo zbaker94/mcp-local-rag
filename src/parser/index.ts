@@ -146,6 +146,16 @@ export class DocumentParser {
   /**
    * File path validation (Absolute path requirement + Path traversal prevention).
    *
+   * Path-canonicalization policy: this is THE place realpath is allowed.
+   * realpath is confined to the validation/security domain — here (the
+   * containment check) and the base-dir resolver. Following symlinks on both
+   * the file and the allowed roots is what makes the prefix containment check
+   * unforgeable (a symlink under an allowed root cannot escape it, and a
+   * symlinked root still matches its real target). This is intentionally
+   * INDEPENDENT of what is stored/scanned/looked up elsewhere, which all use
+   * the resolve() path. Invariant: realpath only in the validation/security
+   * domain; resolve() everywhere user-facing.
+   *
    * Multi-root semantics: a file is accepted iff its realpath (or, for a
    * non-symlink path that does not yet exist, its `resolve()`-normalized
    * absolute path) is under ANY realpath-normalized allowed root using a
@@ -351,8 +361,7 @@ export class DocumentParser {
       throw new FileOperationError(`Failed to parse PDF: ${filePath}`, error as Error)
     } finally {
       // Release the native WASM handle exactly once per invocation, on both
-      // success and error paths (AC-013). Pre-existing leak fix bundled into
-      // Phase 2 per DD § Adopted Trade-offs.
+      // success and error paths.
       doc?.destroy()
     }
   }
@@ -363,7 +372,7 @@ export class DocumentParser {
    * Opens a mupdf `Document`, delegates per-page extraction to the shared
    * `extractPdfPages` helper with the `'preserve-whitespace,preserve-images'`
    * stext option string so mupdf emits `block.type === 'image'` blocks for
-   * the downstream visual-candidate detector (Phase 1 probe finding).
+   * the downstream visual-candidate detector.
    *
    * Returns the open `Document` handle alongside the per-page records and
    * title-resolution materials so the caller can:
@@ -379,8 +388,6 @@ export class DocumentParser {
    *     internally before the exception propagates (so the caller never
    *     receives a handle it would not know to clean up). Callers MUST NOT
    *     call `doc.destroy()` on an error from this method.
-   * See DD § `parser.parsePdfPages` contract.
-   *
    * This method does NOT compute the final title and does NOT decide visual
    * candidates — those are the dispatch site's and `pdf-visual/detector`'s
    * responsibilities, respectively.
@@ -411,7 +418,7 @@ export class DocumentParser {
     this.validateFileSize(filePath)
 
     // Open the doc and run per-page extraction. Success-path disposal of
-    // `doc` stays with the caller (AC-013, DD § caller-owned-disposal).
+    // `doc` stays with the caller.
     // For the error-path window between `openDocument` and the return below,
     // destroy `doc` here before re-throwing so a failure in `extractPdfPages`
     // (or any future pre-return step) does not leak the mupdf WASM handle.
@@ -425,7 +432,7 @@ export class DocumentParser {
       const { pages: helperPages, metadataTitle, page1FontHint } = extracted
 
       // Adapt the helper's top-level `page1FontHint` onto `pages[0]` per the
-      // public contract (DD § Component `parser.parsePdfPages`).
+      // public contract.
       const pages = helperPages.map((p, idx) =>
         idx === 0 && page1FontHint !== undefined
           ? {
