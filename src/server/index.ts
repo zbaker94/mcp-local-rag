@@ -1,6 +1,5 @@
 // RAGServer implementation with MCP tools
 
-import { randomUUID } from 'node:crypto'
 import { readdir, readFile, unlink } from 'node:fs/promises'
 import { extname, join, resolve, sep } from 'node:path'
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
@@ -416,33 +415,15 @@ export class RAGServer {
         )
       }
 
-      // Create backup (if existing data exists)
-      try {
-        const existingFiles = await this.vectorStore.listFiles()
-        const existingFile = existingFiles.find((file) => file.filePath === args.filePath)
-        if (existingFile && existingFile.chunkCount > 0) {
-          // Backup existing data (retrieve via search)
-          const queryVector = embeddings[0] || []
-          if (queryVector.length > 0) {
-            const allChunks = await this.vectorStore.search(queryVector, undefined, 20) // Retrieve max 20 items
-            backup = allChunks
-              .filter((chunk) => chunk.filePath === args.filePath)
-              .map((chunk) => ({
-                id: randomUUID(),
-                filePath: chunk.filePath,
-                chunkIndex: chunk.chunkIndex,
-                text: chunk.text,
-                vector: queryVector, // Use dummy vector since actual vector cannot be retrieved
-                metadata: chunk.metadata,
-                fileTitle: chunk.fileTitle ?? null,
-                timestamp: new Date().toISOString(),
-              }))
-          }
-          console.error(`Backup created: ${backup?.length || 0} chunks for ${args.filePath}`)
-        }
-      } catch (error) {
-        // Backup creation failure is warning only (for new files)
-        console.warn('Failed to create backup (new file?):', error)
+      // Back up existing chunks BEFORE the destructive delete, with their real
+      // stored vectors and the full chunk set, so a failed re-ingest can be
+      // rolled back without data loss or vector corruption (TD-7). Read this
+      // before deleting; if the read fails it propagates here — leaving the
+      // existing data untouched — rather than proceeding into the delete with
+      // an empty/partial backup.
+      backup = await this.vectorStore.getChunksByFilePath(args.filePath)
+      if (backup.length > 0) {
+        console.error(`Backup created: ${backup.length} chunks for ${args.filePath}`)
       }
 
       // Delete existing data

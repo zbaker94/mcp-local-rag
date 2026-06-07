@@ -111,6 +111,51 @@ describe('Ingest Rollback', () => {
     insertSpy.mockRestore()
   })
 
+  it('restores the full original chunk set with real vectors on rollback (TD-7/BR-4)', async () => {
+    // Arrange: ingest real content, capture the stored chunks (real vectors).
+    const testFile = resolve(testDataDir, 'rollback-real-vectors.txt')
+    writeFileSync(testFile, 'Alpha beta gamma delta epsilon. '.repeat(80))
+    await ragServer.handleIngestFile({ filePath: testFile })
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const vectorStore = (ragServer as any).vectorStore
+    const original = await vectorStore.getChunksByFilePath(testFile)
+    expect(original.length).toBeGreaterThan(0)
+
+    // Fail the new-data insert, then let the rollback restore run for REAL
+    // (not mocked) so we can verify what actually lands back in the DB.
+    const origInsert = vectorStore.insertChunks.bind(vectorStore)
+    const insertSpy = vi
+      .spyOn(vectorStore, 'insertChunks')
+      .mockRejectedValueOnce(new Error('Simulated insertion failure'))
+      .mockImplementationOnce((chunks: unknown) => origInsert(chunks))
+    const optimizeSpy = vi.spyOn(vectorStore, 'optimize')
+
+    // Act: re-ingest with different content (different embeddings) — the old
+    // broken backup would have restored a dummy vector taken from THIS content.
+    writeFileSync(testFile, 'Completely unrelated zebra yak xylophone. '.repeat(20))
+    await expect(ragServer.handleIngestFile({ filePath: testFile })).rejects.toThrow(
+      'Simulated insertion failure'
+    )
+
+    // Assert: the full original set is restored with its real stored vectors.
+    const restored = await vectorStore.getChunksByFilePath(testFile)
+    const byIndex = <T extends { chunkIndex: number }>(cs: T[]): T[] =>
+      [...cs].sort((a, b) => a.chunkIndex - b.chunkIndex)
+    const o = byIndex(original)
+    const r = byIndex(restored)
+    expect(r.length).toBe(o.length)
+    expect(r.map((c: { text: string }) => c.text)).toEqual(o.map((c: { text: string }) => c.text))
+    // Real vectors, not a single dummy: every restored vector matches the
+    // original stored vector for that chunk.
+    expect(r.map((c: { vector: number[] }) => c.vector)).toEqual(
+      o.map((c: { vector: number[] }) => c.vector)
+    )
+
+    insertSpy.mockRestore()
+    optimizeSpy.mockRestore()
+  })
+
   it('does not attempt rollback for new file ingestion (no backup exists)', async () => {
     // Arrange: New file (no prior ingestion)
     const testFile = resolve(testDataDir, 'rollback-new-file.txt')

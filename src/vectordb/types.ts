@@ -179,6 +179,46 @@ export function toSearchResult(raw: unknown): SearchResult {
 }
 
 /**
+ * Map a raw LanceDB row to a full {@link VectorChunk}, including the stored
+ * embedding vector and metadata. Used for backup/restore (ingest rollback),
+ * where the row must round-trip back through `insertChunks` intact — unlike
+ * {@link toChunkRow} / {@link toSearchResult}, which drop the vector. The
+ * embedding is normalized to `number[]` (LanceDB returns a typed array).
+ */
+export function toVectorChunk(raw: unknown): VectorChunk {
+  if (typeof raw !== 'object' || raw === null) {
+    throw new DatabaseError('Invalid chunk row shape from LanceDB')
+  }
+  const obj = raw as Record<string, unknown>
+  const { id, filePath, chunkIndex, text, vector, metadata, fileTitle, timestamp } = obj
+  if (
+    typeof id !== 'string' ||
+    typeof filePath !== 'string' ||
+    typeof chunkIndex !== 'number' ||
+    typeof text !== 'string' ||
+    typeof timestamp !== 'string'
+  ) {
+    throw new DatabaseError('Invalid chunk row shape from LanceDB (scalar fields)')
+  }
+  if (!isDocumentMetadata(metadata)) {
+    throw new DatabaseError('Invalid chunk row shape from LanceDB (metadata)')
+  }
+  if (vector == null || typeof (vector as { length?: unknown }).length !== 'number') {
+    throw new DatabaseError('Invalid chunk row shape from LanceDB (vector)')
+  }
+  return {
+    id,
+    filePath,
+    chunkIndex,
+    text,
+    vector: Array.from(vector as ArrayLike<number>),
+    metadata,
+    fileTitle: typeof fileTitle === 'string' && fileTitle.length > 0 ? fileTitle : null,
+    timestamp,
+  }
+}
+
+/**
  * Convert LanceDB raw row to ChunkRow with type validation.
  * Mirrors toSearchResult but returns the minimal shape defined in
  * Design Doc §Contract Definitions: no score (not ranked) and no

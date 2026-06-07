@@ -12,6 +12,7 @@ import {
   type SearchResult,
   toChunkRow,
   toSearchResult,
+  toVectorChunk,
   type VectorChunk,
   type VectorStoreConfig,
 } from './types.js'
@@ -158,6 +159,31 @@ export class VectorStore {
       return rows
     } catch (error) {
       throw new DatabaseError('Failed to read chunks by range', error as Error)
+    }
+  }
+
+  /**
+   * Return every stored chunk for a file as a full {@link VectorChunk},
+   * including the real embedding vector — suitable for re-insertion via
+   * {@link insertChunks}. Used by the ingest handler to back up existing data
+   * before a destructive re-ingest so a failure can be rolled back without
+   * data loss or vector corruption.
+   *
+   * Lazy-table null returns `[]`. LanceDB errors are wrapped as DatabaseError.
+   *
+   * @param filePath - File path (absolute)
+   */
+  async getChunksByFilePath(filePath: string): Promise<VectorChunk[]> {
+    if (!this.table) {
+      return []
+    }
+    try {
+      // Escape single quotes to prevent SQL injection (mirrors deleteChunks)
+      const escapedFilePath = filePath.replace(/'/g, "''")
+      const raw = await this.table.query().where(`\`filePath\` = '${escapedFilePath}'`).toArray()
+      return raw.map((row) => toVectorChunk(row))
+    } catch (error) {
+      throw new DatabaseError(`Failed to read chunks for file: ${filePath}`, error as Error)
     }
   }
 

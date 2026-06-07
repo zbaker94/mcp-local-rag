@@ -56,10 +56,12 @@ const mocks = vi.hoisted(() => {
 
     // ---------------- VectorStore ----------------
     // Real VectorStore methods: initialize, deleteChunks, getChunksByRange,
-    // insertChunks, optimize, search, listFiles, getStatus. All present.
+    // getChunksByFilePath, insertChunks, optimize, search, listFiles,
+    // getStatus. All present.
     initialize: vi.fn().mockResolvedValue(undefined),
     listFiles: vi.fn(),
     search: vi.fn(),
+    getChunksByFilePath: vi.fn().mockResolvedValue([]),
     deleteChunks: vi.fn().mockResolvedValue(undefined),
     insertChunks: vi.fn(),
     optimize: vi.fn().mockResolvedValue(undefined),
@@ -121,6 +123,7 @@ const vectordbFactory = async (
       this.close = vi.fn()
       this.listFiles = mocks.listFiles
       this.search = mocks.search
+      this.getChunksByFilePath = mocks.getChunksByFilePath
       this.deleteChunks = mocks.deleteChunks
       this.deleteFiles = vi.fn()
       this.insertChunks = mocks.insertChunks
@@ -201,6 +204,7 @@ describe('handleIngestFile - Phase 0 Wrapper Side Effects (AC-008a)', () => {
     mocks.parseFile.mockResolvedValue({ content: FIXTURE_TEXT, title: FIXTURE_TITLE })
     mocks.listFiles.mockResolvedValue([])
     mocks.search.mockResolvedValue([])
+    mocks.getChunksByFilePath.mockResolvedValue([])
     mocks.getChunksByRange.mockResolvedValue([])
     mocks.getStatus.mockResolvedValue({
       documentCount: 0,
@@ -239,9 +243,9 @@ describe('handleIngestFile - Phase 0 Wrapper Side Effects (AC-008a)', () => {
     expect(mocks.optimize).toHaveBeenCalledTimes(0)
   })
 
-  // AC-008a (b): "handleIngestFile lists existing chunks (via vectorStore.listFiles
-  //              + vectorStore.search) before delete and re-inserts them on
-  //              failure (backup/rollback)."
+  // AC-008a (b): "handleIngestFile backs up existing chunks (via
+  //              vectorStore.getChunksByFilePath) before delete and re-inserts
+  //              them on failure (backup/rollback)."
   it('AC-008a (b): handleIngestFile restores previously-indexed chunks when insertChunks fails', async () => {
     // Arrange: 2-chunk fixture
     mocks.chunkText.mockResolvedValue([
@@ -250,29 +254,24 @@ describe('handleIngestFile - Phase 0 Wrapper Side Effects (AC-008a)', () => {
     ])
     mocks.embedBatch.mockResolvedValue(FIXTURE_EMBEDDINGS)
 
-    // Arrange: pre-existing data — listFiles reports the file, search returns
-    // the pre-existing rows.
-    mocks.listFiles.mockResolvedValue([
-      {
-        filePath: FIXTURE_FILE_PATH,
-        chunkCount: 1,
-        timestamp: '2025-01-01T00:00:00.000Z',
+    // Arrange: pre-existing data — getChunksByFilePath returns the full prior
+    // chunk (with its real stored vector) that the backup re-inserts verbatim
+    // on rollback.
+    const priorChunk = {
+      id: 'prior-id-0',
+      filePath: FIXTURE_FILE_PATH,
+      chunkIndex: 0,
+      text: 'previously-indexed chunk',
+      vector: [0.11, 0.22],
+      fileTitle: 'previous title',
+      timestamp: '2025-01-01T00:00:00.000Z',
+      metadata: {
+        fileName: 'handleingestfile-side-effects.md',
+        fileSize: 10,
+        fileType: 'md',
       },
-    ])
-    mocks.search.mockResolvedValue([
-      {
-        filePath: FIXTURE_FILE_PATH,
-        chunkIndex: 0,
-        text: 'previously-indexed chunk',
-        score: 0.99,
-        fileTitle: 'previous title',
-        metadata: {
-          fileName: 'handleingestfile-side-effects.md',
-          fileSize: 10,
-          fileType: 'md',
-        },
-      },
-    ])
+    }
+    mocks.getChunksByFilePath.mockResolvedValue([priorChunk])
 
     // Arrange: induce insert failure on the FIRST insertChunks call only.
     // The second call (rollback re-insert) must succeed.
@@ -293,11 +292,10 @@ describe('handleIngestFile - Phase 0 Wrapper Side Effects (AC-008a)', () => {
 
     // Assert: backup capture happened BEFORE delete.
     // mock.invocationCallOrder is a monotonically increasing global counter.
-    const listFilesOrder = mocks.listFiles.mock.invocationCallOrder[0]!
-    const searchOrder = mocks.search.mock.invocationCallOrder[0]!
+    const backupOrder = mocks.getChunksByFilePath.mock.invocationCallOrder[0]!
     const deleteOrder = mocks.deleteChunks.mock.invocationCallOrder[0]!
-    expect(listFilesOrder).toBeLessThan(deleteOrder)
-    expect(searchOrder).toBeLessThan(deleteOrder)
+    expect(mocks.getChunksByFilePath).toHaveBeenCalledWith(FIXTURE_FILE_PATH)
+    expect(backupOrder).toBeLessThan(deleteOrder)
 
     // Assert: deleteChunks called with the target filePath
     expect(mocks.deleteChunks).toHaveBeenCalledTimes(1)
@@ -306,16 +304,16 @@ describe('handleIngestFile - Phase 0 Wrapper Side Effects (AC-008a)', () => {
     // Assert: insertChunks called exactly twice — first failed, second is rollback
     expect(mocks.insertChunks).toHaveBeenCalledTimes(2)
 
-    // Assert: the rollback re-insert (second call) restored the pre-existing chunk text.
+    // Assert: the rollback re-insert (second call) restored the exact pre-existing
+    // chunk, including its real stored vector (not a dummy).
     const rollbackArg = mocks.insertChunks.mock.calls[1]?.[0] as Array<{
       filePath: string
       chunkIndex: number
       text: string
+      vector: number[]
     }>
     expect(rollbackArg).toHaveLength(1)
-    expect(rollbackArg[0]?.filePath).toBe(FIXTURE_FILE_PATH)
-    expect(rollbackArg[0]?.chunkIndex).toBe(0)
-    expect(rollbackArg[0]?.text).toBe('previously-indexed chunk')
+    expect(rollbackArg[0]).toEqual(priorChunk)
 
     // Assert: optimize was called once during the rollback path (after the
     // successful rollback re-insert), but NOT on the success branch — verified
