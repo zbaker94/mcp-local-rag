@@ -1,18 +1,17 @@
 // CLI ingest subcommand — bulk file ingestion with single optimize() at end
 
-import { randomUUID } from 'node:crypto'
 import { opendir, realpath, stat } from 'node:fs/promises'
-import { basename, extname, join, resolve, sep } from 'node:path'
+import { extname, join, resolve, sep } from 'node:path'
 
 import { SemanticChunker } from '../chunker/index.js'
 import type { Embedder } from '../embedder/index.js'
-import { buildChunksAndEmbeddings } from '../ingest/compute.js'
+import { buildChunksAndEmbeddings, buildVectorChunks } from '../ingest/compute.js'
 import { prepareVisualPdfChunks } from '../ingest/visual.js'
 import { DocumentParser, SUPPORTED_EXTENSIONS } from '../parser/index.js'
 import type { QualityProfile } from '../pdf-visual/types.js'
 import type { BaseDirsConfig, BaseDirsConfigWarning } from '../utils/base-dirs.js'
 import { DEFAULT_MAX_FILE_SIZE, MAX_SCAN_DEPTH } from '../utils/limits.js'
-import type { VectorChunk, VectorStore } from '../vectordb/index.js'
+import type { VectorStore } from '../vectordb/index.js'
 import { createEmbedder, createVectorStore, resolveCliBaseDirsOrExit } from './common.js'
 import type { GlobalOptions, ResolvedGlobalConfig } from './options.js'
 import {
@@ -473,26 +472,12 @@ export async function ingestSingleFile(
     // pre-existing `metadata.fileSize` semantics (post-enrichment,
     // pre-chunking text length).
     await vectorStore.deleteChunks(filePath)
-    const timestamp = new Date().toISOString()
-    const vectorChunks: VectorChunk[] = chunks.map((chunk, index) => {
-      const embedding = embeddings[index]
-      if (!embedding) {
-        throw new Error(`Missing embedding for chunk ${index}`)
-      }
-      return {
-        id: randomUUID(),
-        filePath,
-        chunkIndex: chunk.index,
-        text: chunk.text,
-        vector: embedding,
-        metadata: {
-          fileName: basename(filePath),
-          fileSize: visualResult.text.length,
-          fileType: extname(filePath).slice(1),
-        },
-        fileTitle: title,
-        timestamp,
-      }
+    const vectorChunks = buildVectorChunks({
+      filePath,
+      chunks,
+      embeddings,
+      fileSize: visualResult.text.length,
+      fileTitle: title,
     })
     await vectorStore.insertChunks(vectorChunks)
     return vectorChunks.length
@@ -517,26 +502,12 @@ export async function ingestSingleFile(
   await vectorStore.deleteChunks(filePath)
 
   // Build vector chunks
-  const timestamp = new Date().toISOString()
-  const vectorChunks: VectorChunk[] = chunks.map((chunk, index) => {
-    const embedding = embeddings[index]
-    if (!embedding) {
-      throw new Error(`Missing embedding for chunk ${index}`)
-    }
-    return {
-      id: randomUUID(),
-      filePath,
-      chunkIndex: chunk.index,
-      text: chunk.text,
-      vector: embedding,
-      metadata: {
-        fileName: basename(filePath),
-        fileSize: text.length,
-        fileType: extname(filePath).slice(1),
-      },
-      fileTitle: title,
-      timestamp,
-    }
+  const vectorChunks = buildVectorChunks({
+    filePath,
+    chunks,
+    embeddings,
+    fileSize: text.length,
+    fileTitle: title,
   })
 
   // Insert chunks

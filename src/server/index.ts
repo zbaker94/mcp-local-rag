@@ -2,7 +2,7 @@
 
 import { randomUUID } from 'node:crypto'
 import { readdir, readFile, unlink } from 'node:fs/promises'
-import { basename, extname, join, resolve, sep } from 'node:path'
+import { extname, join, resolve, sep } from 'node:path'
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import {
@@ -13,7 +13,7 @@ import {
 } from '@modelcontextprotocol/sdk/types.js'
 import { DEFAULT_MIN_CHUNK_LENGTH, SemanticChunker } from '../chunker/index.js'
 import { Embedder } from '../embedder/index.js'
-import { buildChunksAndEmbeddings } from '../ingest/compute.js'
+import { buildChunksAndEmbeddings, buildVectorChunks } from '../ingest/compute.js'
 import { prepareVisualPdfChunks } from '../ingest/visual.js'
 import { parseHtml } from '../parser/html-parser.js'
 import { DocumentParser, SUPPORTED_EXTENSIONS } from '../parser/index.js'
@@ -451,26 +451,12 @@ export class RAGServer {
       console.error(`Deleted existing chunks for: ${args.filePath}`)
 
       // Create vector chunks
-      const timestamp = new Date().toISOString()
-      const vectorChunks: VectorChunk[] = chunks.map((chunk, index) => {
-        const embedding = embeddings[index]
-        if (!embedding) {
-          throw new Error(`Missing embedding for chunk ${index}`)
-        }
-        return {
-          id: randomUUID(),
-          filePath: args.filePath,
-          chunkIndex: chunk.index,
-          text: chunk.text,
-          vector: embedding,
-          metadata: {
-            fileName: basename(args.filePath),
-            fileSize: text.length,
-            fileType: extname(args.filePath).slice(1),
-          },
-          fileTitle: title || null,
-          timestamp,
-        }
+      const vectorChunks = buildVectorChunks({
+        filePath: args.filePath,
+        chunks,
+        embeddings,
+        fileSize: text.length,
+        fileTitle: title || null,
       })
 
       // Insert vectors (transaction processing)
@@ -505,7 +491,7 @@ export class RAGServer {
       const result: IngestResult = {
         filePath: args.filePath,
         chunkCount: chunks.length,
-        timestamp,
+        timestamp: new Date().toISOString(),
         fileTitle: title || null,
       }
 
