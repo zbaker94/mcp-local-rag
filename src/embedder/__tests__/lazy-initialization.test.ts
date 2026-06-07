@@ -51,7 +51,13 @@ describe('Embedder - Lazy Initialization', () => {
   it('should initialize only once for concurrent embed() calls', async () => {
     const embedder = new Embedder(testConfig)
 
-    // Spy on the initialize method to count how many times it's called
+    // Verifies the lazy-init-once contract under concurrency. The private
+    // `initialize` is spied deliberately: there is no public init-count
+    // surface, and replacing the real-model integration with a mocked
+    // @huggingface/transformers pipeline would risk cross-file mock leakage
+    // (transformers is imported widely and vitest runs with isolate:false) and
+    // would lose real-model coverage. So the private spy is the deliberate,
+    // lower-risk choice here.
     const initializeSpy = vi.spyOn(embedder as any, 'initialize')
 
     // Make 5 concurrent embed() calls
@@ -119,7 +125,13 @@ describe('Embedder - Lazy Initialization', () => {
     // First call triggers lazy initialization
     await embedder.embed('first call')
 
-    // Spy on initialize after first call
+    // Verifies the lazy-init-once contract: after init, embed() must not
+    // re-initialize. The private `initialize` is spied deliberately: there is
+    // no public init-count surface, and replacing the real-model integration
+    // with a mocked @huggingface/transformers pipeline would risk cross-file
+    // mock leakage (transformers is imported widely and vitest runs with
+    // isolate:false) and would lose real-model coverage. So the private spy is
+    // the deliberate, lower-risk choice here.
     const initializeSpy = vi.spyOn(embedder as any, 'initialize')
 
     // Second and third calls should not trigger initialization

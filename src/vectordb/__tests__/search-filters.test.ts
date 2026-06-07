@@ -211,6 +211,27 @@ describe('applyKeywordBoost', () => {
     expect(boosted[1]!.score).toBeCloseTo(0.8)
   })
 
+  it('should skip null/undefined FTS entries without throwing and still return vector results', () => {
+    const results = [mockResult('/a.txt', 0, 0.5), mockResult('/b.txt', 0, 0.8)]
+    // FTS results array with a null and an undefined hole interspersed with a
+    // real match. The `if (!result) continue` guards in applyKeywordBoost must
+    // skip these defensively (LanceDB raw rows are loosely typed) rather than
+    // dereferencing them.
+    const ftsResults = [
+      { filePath: '/a.txt', chunkIndex: 0, _score: 10.0 },
+      null,
+      undefined,
+    ] as unknown as Record<string, unknown>[]
+
+    const boosted = applyKeywordBoost(results, ftsResults, 0.6)
+
+    // Both vector results are still returned; the matching one is boosted.
+    expect(boosted).toHaveLength(2)
+    expect(boosted[0]!.filePath).toBe('/a.txt')
+    expect(boosted[0]!.score).toBeCloseTo(0.3125)
+    expect(boosted[1]!.score).toBeCloseTo(0.8)
+  })
+
   it('should re-sort results by boosted score', () => {
     const results = [mockResult('/a.txt', 0, 0.5), mockResult('/b.txt', 0, 0.3)]
     // /b.txt has better vector score, but /a.txt gets keyword boost
