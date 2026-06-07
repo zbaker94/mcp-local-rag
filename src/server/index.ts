@@ -19,6 +19,7 @@ import { parseHtml } from '../parser/html-parser.js'
 import { DocumentParser, SUPPORTED_EXTENSIONS } from '../parser/index.js'
 import { extractMarkdownTitle, extractTxtTitle } from '../parser/title-extractor.js'
 import { type BaseDirsConfigError, displayPath } from '../utils/base-dirs.js'
+import { MAX_SCAN_DEPTH } from '../utils/limits.js'
 import {
   type ContentFormat,
   extractSourceFromPath,
@@ -625,7 +626,7 @@ export class RAGServer {
    * absolute paths plus a list of non-fatal warnings (Finding #10).
    *
    * Behavior contract:
-   *  - Depth is bounded by {@link RAGServer.LIST_MAX_DEPTH}, mirroring the
+   *  - Depth is bounded by {@link MAX_SCAN_DEPTH}, mirroring the
    *    CLI ingest walker so the same "how deep do we look under a root"
    *    boundary applies to every list/ingest surface.
    *  - A `readdir` failure under one directory is captured as a warning
@@ -645,7 +646,7 @@ export class RAGServer {
     while (queue.length > 0) {
       const { dirPath, depth } = queue.shift()!
 
-      if (depth >= RAGServer.LIST_MAX_DEPTH) {
+      if (depth >= MAX_SCAN_DEPTH) {
         depthLimited = true
         continue
       }
@@ -682,20 +683,13 @@ export class RAGServer {
 
     if (depthLimited) {
       warnings.push(
-        `some directories under ${displayPath(baseDir)} were skipped because they exceed the maximum depth (${RAGServer.LIST_MAX_DEPTH})`
+        `some directories under ${displayPath(baseDir)} were skipped because they exceed the maximum depth (${MAX_SCAN_DEPTH})`
       )
     }
 
     files.sort()
     return { files, warnings }
   }
-
-  /**
-   * Maximum directory recursion depth for `list_files` scans. Mirrors the
-   * CLI ingest walker's `MAX_DEPTH` so the same boundary applies across
-   * every list/ingest surface.
-   */
-  private static readonly LIST_MAX_DEPTH = 10
 
   /**
    * list_files tool handler

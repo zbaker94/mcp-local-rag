@@ -53,6 +53,12 @@ const MODEL_NAME = 'onnx-community/Qwen2.5-VL-3B-Instruct-ONNX'
 const DTYPE = 'q4'
 
 /**
+ * Fixed input resolution (px) for the Qwen2.5-VL reference resize. Matches the
+ * onnx-community Qwen2-VL example's stable-behavior fixed resize.
+ */
+const QWEN_INPUT_SIZE = 448
+
+/**
  * Static prompt — tuned for retrieval search indexing. Asks the VLM to scan
  * the whole image before composing output so coverage spans every region,
  * then produces a two-part response (Summary + Keywords) suitable for
@@ -127,7 +133,10 @@ export function createQualityCaptioner(resolvedDevice: string): Captioner {
         // example. Qwen2.5-VL supports dynamic resolution natively, but the
         // reference example uses a fixed resize for stable behavior; revisit
         // if empirical results show small in-figure text being lost.
-        const rawImage = await (await RawImage.fromBlob(blob)).resize(448, 448)
+        const rawImage = await (await RawImage.fromBlob(blob)).resize(
+          QWEN_INPUT_SIZE,
+          QWEN_INPUT_SIZE
+        )
 
         // Build chat-style input. The Qwen2.5-VL conversation shape mirrors
         // the onnx-community Qwen2-VL reference: a single user turn with an

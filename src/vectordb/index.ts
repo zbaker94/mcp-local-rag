@@ -5,6 +5,7 @@ import { applyFileFilter, applyGrouping, applyKeywordBoost } from './search-filt
 import {
   type ChunkRow,
   DatabaseError,
+  DEFAULT_HYBRID_WEIGHT,
   FTS_CLEANUP_THRESHOLD_MS,
   FTS_INDEX_NAME,
   HYBRID_SEARCH_CANDIDATE_MULTIPLIER,
@@ -339,7 +340,7 @@ export class VectorStore {
       }
 
       // Step 3: Apply keyword boost if enabled
-      const hybridWeight = this.config.hybridWeight ?? 0.6
+      const hybridWeight = this.config.hybridWeight ?? DEFAULT_HYBRID_WEIGHT
       if (this.ftsEnabled && queryText && queryText.trim().length > 0 && hybridWeight > 0) {
         try {
           // Get unique filePaths from vector results to filter FTS search
@@ -470,7 +471,9 @@ export class VectorStore {
         uptime,
         ftsIndexEnabled: this.ftsEnabled,
         searchMode:
-          this.ftsEnabled && (this.config.hybridWeight ?? 0.6) > 0 ? 'hybrid' : 'vector-only',
+          this.ftsEnabled && (this.config.hybridWeight ?? DEFAULT_HYBRID_WEIGHT) > 0
+            ? 'hybrid'
+            : 'vector-only',
       }
     } catch (error) {
       throw new DatabaseError('Failed to get status', error as Error)

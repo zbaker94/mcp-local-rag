@@ -1,5 +1,6 @@
 // Shared CLI global options — parsed before subcommand routing
 
+import { MAX_FILE_SIZE_LIMIT } from '../utils/limits.js'
 import { checkSensitivePath } from '../utils/sensitive-path.js'
 
 // ============================================
@@ -37,8 +38,8 @@ export function validateModelName(value: string): string | undefined {
  * Returns an error message if invalid, or undefined if valid.
  */
 export function validateMaxFileSize(value: number): string | undefined {
-  if (!Number.isFinite(value) || value < 1 || value > 524288000) {
-    return '--max-file-size must be between 1 and 524288000 (500MB)'
+  if (!Number.isFinite(value) || value < 1 || value > MAX_FILE_SIZE_LIMIT) {
+    return `--max-file-size must be between 1 and ${MAX_FILE_SIZE_LIMIT} (500MB)`
   }
   return undefined
 }

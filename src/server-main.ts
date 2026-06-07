@@ -2,6 +2,7 @@
 import { resolveDevice } from './cli/options.js'
 import { RAGServer } from './server/index.js'
 import { BaseDirsConfigError, parseBaseDirsEnv, resolveBaseDirs } from './utils/base-dirs.js'
+import { DEFAULT_MAX_FILE_SIZE } from './utils/limits.js'
 import { checkSensitivePath } from './utils/sensitive-path.js'
 import type { GroupingMode } from './vectordb/index.js'
 
@@ -181,7 +182,10 @@ export async function startServer(): Promise<void> {
       modelName: process.env['MODEL_NAME'] || 'Xenova/all-MiniLM-L6-v2',
       cacheDir: process.env['CACHE_DIR'] || './models/',
       baseDirs: baseDirsForServer,
-      maxFileSize: Number.parseInt(process.env['MAX_FILE_SIZE'] || '104857600', 10), // 100MB
+      maxFileSize: Number.parseInt(
+        process.env['MAX_FILE_SIZE'] || String(DEFAULT_MAX_FILE_SIZE),
+        10
+      ),
       device,
     }
 

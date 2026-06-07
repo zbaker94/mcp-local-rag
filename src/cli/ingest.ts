@@ -11,6 +11,7 @@ import { prepareVisualPdfChunks } from '../ingest/visual.js'
 import { DocumentParser, SUPPORTED_EXTENSIONS } from '../parser/index.js'
 import type { QualityProfile } from '../pdf-visual/types.js'
 import type { BaseDirsConfig, BaseDirsConfigWarning } from '../utils/base-dirs.js'
+import { DEFAULT_MAX_FILE_SIZE, MAX_SCAN_DEPTH } from '../utils/limits.js'
 import type { VectorChunk, VectorStore } from '../vectordb/index.js'
 import { createEmbedder, createVectorStore, resolveCliBaseDirsOrExit } from './common.js'
 import type { GlobalOptions, ResolvedGlobalConfig } from './options.js'
@@ -22,12 +23,6 @@ import {
   validateMaxFileSize,
   validatePath,
 } from './options.js'
-
-// ============================================
-// Constants
-// ============================================
-
-const MAX_DEPTH = 10
 
 // ============================================
 // Types
@@ -78,7 +73,7 @@ interface ParsedArgs {
 // ============================================
 
 const INGEST_DEFAULTS = {
-  maxFileSize: 104857600,
+  maxFileSize: DEFAULT_MAX_FILE_SIZE,
 } as const
 
 // ============================================
@@ -294,7 +289,7 @@ export async function resolveConfig(
 // ============================================
 
 /**
- * BFS-walk a single directory up to {@link MAX_DEPTH} levels, returning every
+ * BFS-walk a single directory up to {@link MAX_SCAN_DEPTH} levels, returning every
  * supported file path under it. Skips symlinks, permission errors, and excluded
  * directories. Reports a single shared `depthLimited` flag via an out-param so
  * the caller can emit one combined warning across multiple roots instead of
@@ -312,7 +307,7 @@ async function walkDirectory(
   while (queue.length > 0) {
     const { dirPath, depth } = queue.shift()!
 
-    if (depth >= MAX_DEPTH) {
+    if (depth >= MAX_SCAN_DEPTH) {
       state.depthLimited = true
       continue
     }
@@ -388,7 +383,7 @@ async function collectFiles(
 
     if (state.depthLimited) {
       console.error(
-        `Warning: some directories were skipped because they exceed the maximum depth (${MAX_DEPTH})`
+        `Warning: some directories were skipped because they exceed the maximum depth (${MAX_SCAN_DEPTH})`
       )
     }
 

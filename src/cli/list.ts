@@ -5,21 +5,11 @@ import { extname, join, resolve, sep } from 'node:path'
 
 import { SUPPORTED_EXTENSIONS } from '../parser/index.js'
 import { displayPath, legacyBaseDir } from '../utils/base-dirs.js'
+import { MAX_SCAN_DEPTH } from '../utils/limits.js'
 import { extractSourceFromPath, looksLikeRawDataPath } from '../utils/raw-data-utils.js'
 import { createVectorStore, resolveCliBaseDirsOrExit } from './common.js'
 import type { GlobalOptions } from './options.js'
 import { consumeBaseDirArg, resolveGlobalConfig, validatePath } from './options.js'
-
-// ============================================
-// Constants
-// ============================================
-
-/**
- * Maximum directory recursion depth for `list` scans. Mirrors the
- * `MAX_DEPTH` used by `ingest`'s `walkDirectory` so the two CLI subcommands
- * apply the same boundary to "how deep do we look under a root".
- */
-const MAX_DEPTH = 10
 
 // ============================================
 // Helpers
@@ -37,7 +27,7 @@ interface ScanRootResult {
 }
 
 /**
- * Bounded BFS scan of a single root, up to {@link MAX_DEPTH} levels deep.
+ * Bounded BFS scan of a single root, up to {@link MAX_SCAN_DEPTH} levels deep.
  * Symlinks are skipped (mirrors `walkDirectory` in `cli/ingest.ts`) and
  * paths under `excludePaths` are filtered out. Per-directory `readdir`
  * errors are captured into the returned `warnings` and do not abort the
@@ -54,7 +44,7 @@ async function scanRoot(root: string, excludePaths: string[]): Promise<ScanRootR
   while (queue.length > 0) {
     const { dirPath, depth } = queue.shift()!
 
-    if (depth >= MAX_DEPTH) {
+    if (depth >= MAX_SCAN_DEPTH) {
       depthLimited = true
       continue
     }
@@ -96,7 +86,7 @@ async function scanRoot(root: string, excludePaths: string[]): Promise<ScanRootR
 
   if (depthLimited) {
     warnings.push(
-      `some directories under ${displayPath(root)} were skipped because they exceed the maximum depth (${MAX_DEPTH})`
+      `some directories under ${displayPath(root)} were skipped because they exceed the maximum depth (${MAX_SCAN_DEPTH})`
     )
   }
 

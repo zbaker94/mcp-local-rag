@@ -6,6 +6,9 @@
 // profiles run the captioner output through the same pipeline so caption
 // chunk shape is independent of profile.
 
+/** Maximum caption length in characters; longer captions are truncated with an ellipsis. */
+const MAX_CAPTION_LENGTH = 1000
+
 /**
  * Strip C0 (U+0000–U+001F) and C1 (U+007F–U+009F) control characters from the
  * input, except `\n` (U+000A) and `\t` (U+0009) which are kept verbatim.
@@ -32,6 +35,6 @@ export function stripControlChars(input: string): string {
 export function postProcess(decoded: string): string | null {
   const stripped = stripControlChars(decoded).trim()
   if (stripped.length === 0) return null
-  if (stripped.length > 1000) return `${stripped.slice(0, 1000)}…`
+  if (stripped.length > MAX_CAPTION_LENGTH) return `${stripped.slice(0, MAX_CAPTION_LENGTH)}…`
   return stripped
 }

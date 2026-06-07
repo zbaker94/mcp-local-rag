@@ -13,6 +13,9 @@ export const FTS_INDEX_NAME = 'fts_index_v2'
 /** Threshold for cleaning up old index versions (1 minute) */
 export const FTS_CLEANUP_THRESHOLD_MS = 60 * 1000
 
+/** Default hybrid-search weight (vector vs FTS blend) when not configured */
+export const DEFAULT_HYBRID_WEIGHT = 0.6
+
 // ============================================
 // Type Definitions
 // ============================================
