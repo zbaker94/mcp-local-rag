@@ -30,13 +30,31 @@ interface RAGServerConfigBase {
   maxFiles?: number
   /** Minimum chunk length in characters (optional, default: 50) */
   chunkMinLength?: number
+  /**
+   * NORMAL (resolve(), non-realpath) effective roots, index-aligned with the
+   * realpath'd `baseDirs`/`baseDir` security boundary. Produced by
+   * `resolveBaseDirs` (`BaseDirsConfig.rawBaseDirs`).
+   *
+   * Path-canonicalization policy: realpath lives ONLY in the
+   * validation/security domain. `list_files` is user-facing, so it scans and
+   * displays THESE roots so the scanned file paths match the resolve()-stored
+   * DB keys (what `query`/`delete`/`read_chunk_neighbors` use). Without this, a
+   * symlinked base-dir prefix (e.g. macOS /tmp → /private/tmp) would make
+   * ingested files wrongly show as not-ingested.
+   *
+   * Optional for backward compatibility: legacy `{ baseDir }` callers and tests
+   * that do not supply it fall back to the realpath'd roots for scanning (no
+   * behavior change when no symlinked prefix is involved).
+   */
+  rawBaseDirs?: readonly string[]
   /** Configuration validation warnings to surface to users via MCP annotations */
   configWarnings?: string[]
   /**
    * Structured base-dirs resolution error. When present, the server is in
    * degraded mode: `status` remains callable so the user can diagnose the
-   * problem via MCP, while root-dependent tools surface the error (handled
-   * in P3-T3). See `resolveBaseDirs` for the error semantics.
+   * problem via MCP, while root-dependent tools surface the error before
+   * doing DB or filesystem work. See `resolveBaseDirs` for the error
+   * semantics.
    */
   configError?: BaseDirsConfigError
 }
@@ -82,9 +100,9 @@ export interface IngestFileInput {
   /**
    * When true and `filePath` is a PDF, the visual enrichment path runs
    * (VLM captioning of figure-heavy pages). For non-PDF files this flag is
-   * silently coerced to the default text-only path (AC-006). The runtime
-   * check at the handler boundary stays in place because MCP arguments
-   * arrive as `unknown` from the SDK (AC-012).
+   * silently coerced to the default text-only path. The runtime check at the
+   * handler boundary stays in place because MCP arguments arrive as `unknown`
+   * from the SDK.
    */
   visual?: boolean
   /**
@@ -149,7 +167,7 @@ export interface IngestResult {
  * `baseDir` identifies the producing root (one of `ListFilesResult.baseDirs`).
  * Always present, including in single-root configurations — the field is
  * additive over the legacy shape, so existing clients that ignore it continue
- * to work. (P3-T2, AC-008)
+ * to work.
  */
 export type FileEntry =
   | {
@@ -172,7 +190,7 @@ export type SourceEntry =
 /**
  * list_files tool output.
  *
- * Multi-root contract (P3-T2, AC-008):
+ * Multi-root contract:
  * - `baseDirs`: all effective roots (post realpath normalization and
  *   nested-root pruning).
  * - `baseDir`: the first effective root (`baseDirs[0]`). Preserved as a
@@ -219,19 +237,19 @@ export interface ReadChunkNeighborsInput {
   filePath?: string
   /** Source identifier (for data ingested via ingest_data). */
   source?: string
-  /** Target chunk index (zero-based, required, non-negative integer) (AC-010). */
+  /** Target chunk index (zero-based, required, non-negative integer). */
   chunkIndex: number
-  /** Number of chunks before the target to include (default 2, non-negative integer) (AC-009). */
+  /** Number of chunks before the target to include (default 2, non-negative integer). */
   before?: number
-  /** Number of chunks after the target to include (default 2, non-negative integer) (AC-009). */
+  /** Number of chunks after the target to include (default 2, non-negative integer). */
   after?: number
 }
 
 /**
  * read_chunk_neighbors tool output item.
- * Core fields {filePath, chunkIndex, text} per AC-002.
- * isTarget per AC-019 (exactly one true when target exists; else all false).
- * source per AC-020 (present on raw-data rows only).
+ * Core fields are {filePath, chunkIndex, text}. `isTarget` is true only for
+ * the requested target when it exists, and `source` is present only on
+ * raw-data rows.
  * fileTitle mirrors QueryResult for drop-in consistency with query_documents results.
  */
 export interface ReadChunkNeighborsResultItem {
@@ -241,9 +259,9 @@ export interface ReadChunkNeighborsResultItem {
   chunkIndex: number
   /** Text */
   text: string
-  /** True iff this chunk's chunkIndex matches the requested target (AC-019) */
+  /** True iff this chunk's chunkIndex matches the requested target. */
   isTarget: boolean
-  /** Original source (only for raw-data files, e.g., URLs ingested via ingest_data) (AC-020) */
+  /** Original source (only for raw-data files, e.g., URLs ingested via ingest_data). */
   source?: string
   /** Document title extracted from file content (display-only, not used for scoring) */
   fileTitle: string | null

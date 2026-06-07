@@ -170,7 +170,7 @@ export async function runReadNeighbors(
   }
 
   try {
-    // Validation order: chunkIndex → before → after → XOR (matches handler per Design Doc).
+    // Validation order matches the MCP handler: chunkIndex → before → after → XOR.
     if (parsed.chunkIndex === undefined) {
       throw new Error('--chunk-index is required and must be a non-negative integer')
     }
@@ -204,7 +204,12 @@ export async function runReadNeighbors(
       // Generate raw-data path from source identifier.
       targetPath = generateRawDataPath(globalConfig.dbPath, parsed.source, 'markdown')
     } else {
-      // Resolve to absolute path and validate (mirrors runDelete).
+      // resolve() to absolute, then validate (mirrors runDelete).
+      // Path-canonicalization invariant: realpath only in the validation/
+      // security domain; resolve() everywhere user-facing. The DB key is the
+      // resolve()'d ingest path, so
+      // this lookup MUST use resolve() (never realpath) to match what was
+      // stored — validateFilePath below still applies the realpath boundary.
       targetPath = resolve(parsed.filePath!)
       const pathError = validatePath(targetPath, '--file-path')
       if (pathError) {

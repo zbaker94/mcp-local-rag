@@ -311,12 +311,10 @@ export type IngestSingleFileOptions =
  * visual-enrichment path: `parsePdfPages` + VLM captioning (`pdf-visual`
  * orchestrator) + joined-text chunking. `pdf-visual` is loaded via dynamic
  * `await import('../pdf-visual/index.js')` so the default (non-visual) path
- * never pulls the VLM module into the bundle (NFR-1 dynamic-import discipline,
- * verified by AC-001 Proxy sentinel in T4.6).
+ * never pulls the VLM module into the bundle.
  *
- * Non-visual, non-PDF, and `visual: true` + non-PDF (silently falls through
- * to the default branch — AC-006) paths are byte-identical to the post-T0.3
- * state and never load `pdf-visual`.
+ * Non-visual, non-PDF, and `visual: true` + non-PDF paths all use the default
+ * text-only branch and never load `pdf-visual`.
  */
 export async function ingestSingleFile(
   filePath: string,
@@ -377,7 +375,7 @@ export async function ingestSingleFile(
     title = result.title || null
   }
 
-  // Chunk text + generate embeddings via the shared computation layer (Phase 0).
+  // Chunk text + generate embeddings via the shared computation layer.
   const { chunks, embeddings } = await buildChunksAndEmbeddings(text, title, chunker, embedder)
   if (chunks.length === 0) {
     console.error(`  Warning: 0 chunks generated (file may be empty or too short)`)
@@ -445,15 +443,14 @@ export async function runIngest(args: string[], globalOptions: GlobalOptions = {
   const excludePaths = [`${resolve(config.dbPath)}${sep}`, `${resolve(config.cacheDir)}${sep}`]
 
   // Surface resolver warnings (precedence, nested-root pruning) on stderr
-  // before scan output starts. Scan-loop multi-root behavior is P2-T2; this
-  // task only wires the resolver so the warnings are visible today.
+  // before scan output starts.
   for (const warning of config.baseDirsWarnings) {
     console.error(warning.message)
   }
 
   // Collect files: when `targetPath` is a directory, the scan iterates every
-  // effective root in `config.baseDirs.baseDirs` (P2-T2) — the positional
-  // directory only triggers directory mode and is no longer the scan target.
+  // effective root in `config.baseDirs.baseDirs`; the positional directory
+  // only triggers directory mode and is no longer the scan target.
   // Single-file mode is unchanged. See `collectFiles` for the full rationale.
   const files = await collectFiles(targetPath, config.baseDirs.baseDirs, excludePaths)
   if (files.length === 0) {
@@ -466,9 +463,7 @@ export async function runIngest(args: string[], globalOptions: GlobalOptions = {
   // Initialize components (single instances reused across all files).
   // The parser receives the full multi-root config. The directory-scan loop
   // (`collectFiles`) iterates every effective root in `config.baseDirs.baseDirs`
-  // (P2-T2). Under a single configured root this is byte-identical to the
-  // pre-P2-T2 single-root scan; under multiple roots it walks each one and
-  // dedupes overlap.
+  // and dedupes overlap.
   const parser = new DocumentParser({
     baseDirs: config.baseDirs.baseDirs,
     maxFileSize: config.maxFileSize,

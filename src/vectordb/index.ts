@@ -114,20 +114,14 @@ export class VectorStore {
    * Return chunk rows for a single file whose chunkIndex is within the
    * inclusive [minIdx, maxIdx] range, sorted ascending by chunkIndex.
    *
-   * This is a feature-agnostic primitive (ADR-0001 D5): it knows nothing
+   * This is a feature-agnostic primitive: it knows nothing
    * about before/after/isTarget semantics — those live in the handler.
    * Ascending sort by chunkIndex is a contract, not incidental storage
-   * order (AC-018).
+   * order.
    *
    * Lazy-table null returns [] (mirrors search, listFiles, deleteChunks).
    * LanceDB errors are wrapped as DatabaseError with the original error
    * preserved as cause.
-   *
-   * Note: LanceDB numeric predicates (>=, <=) on chunkIndex are not
-   * exercised elsewhere in the repo today. Task 1.3 unit tests act as
-   * the probe for this SQL shape; see Design Doc §Main Components →
-   * VectorStore Limitation note for the fetch-all + in-memory-filter
-   * fallback plan if the probe fails.
    *
    * @param filePath - File path (absolute)
    * @param minIdx - Minimum chunk index (inclusive)
@@ -154,7 +148,7 @@ export class VectorStore {
 
       const raw = await this.table.query().where(predicate).toArray()
       const rows = raw.map((row) => toChunkRow(row))
-      // Contractual ascending sort (AC-018); do not rely on storage order
+      // Contractual ascending sort; do not rely on storage order.
       rows.sort((a, b) => a.chunkIndex - b.chunkIndex)
       return rows
     } catch (error) {

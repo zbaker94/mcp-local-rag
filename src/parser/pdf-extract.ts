@@ -3,11 +3,10 @@
 // Lifts the per-page `toStructuredText` + header/footer-filtering loop out of
 // `DocumentParser` so both `parsePdf` and `parsePdfPages` consume one helper.
 // The two callers differ ONLY in the `stextOptions` they pass:
-//   - `parsePdf` passes `'preserve-whitespace'` (default-mode invariance —
-//     AC-001 / NFR-1);
+//   - `parsePdf` passes `'preserve-whitespace'`;
 //   - `parsePdfPages` passes `'preserve-whitespace,preserve-images'` so mupdf
 //     emits `block.type === 'image'` entries for the downstream
-//     visual-candidate detector (probe-verified — see DD §Probe Results).
+//     visual-candidate detector.
 
 import type { Document as MupdfDocument } from 'mupdf'
 import { type EmbedderInterface, filterPageBoundarySentences, type PageData } from './pdf-filter.js'
@@ -69,13 +68,13 @@ interface ExtractedPdf {
  *   - derives `page1FontHint` from page 1's largest-font lines.
  *
  * The two callers differ ONLY in `stextOptions`: `parsePdf` passes
- * `'preserve-whitespace'` (default-mode invariance — AC-001 / NFR-1);
+ * `'preserve-whitespace'`;
  * `parsePdfPages` passes `'preserve-whitespace,preserve-images'` so mupdf
  * emits `block.type === 'image'` entries for the downstream visual-candidate
- * detector (probe-verified — see DD §Probe Results).
+ * detector.
  *
  * Lifecycle: this helper does NOT call `doc.destroy()` — disposal stays
- * with the caller (T2.3 will add a `try/finally` in `parsePdf`).
+ * with the caller.
  */
 export async function extractPdfPages(
   doc: MupdfDocument,

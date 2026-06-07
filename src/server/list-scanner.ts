@@ -13,16 +13,15 @@ import type { RAGServerConfig } from './types.js'
 /**
  * Bounded BFS scan of a single base directory for supported files,
  * excluding system-managed paths (dbPath, cacheDir). Returns sorted
- * absolute paths plus a list of non-fatal warnings (Finding #10).
+ * absolute paths plus a list of non-fatal warnings.
  *
  * Behavior contract:
  *  - Depth is bounded by {@link MAX_SCAN_DEPTH}, mirroring the
  *    CLI ingest walker so the same "how deep do we look under a root"
  *    boundary applies to every list/ingest surface.
  *  - A `readdir` failure under one directory is captured as a warning
- *    rather than aborting the whole list call. Pre-Finding-#10 behavior
- *    propagated the error, which meant one unreadable root could hide
- *    files under the other roots — the multi-root contract makes this
+ *    rather than aborting the whole list call. One unreadable root must not
+ *    hide files under the other roots, so the multi-root contract makes this
  *    asymmetry user-visible, so the policy is now best-effort per root.
  *  - Symlinks are skipped (mirrors the CLI ingest walker).
  */

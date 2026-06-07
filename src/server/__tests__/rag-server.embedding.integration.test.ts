@@ -1,6 +1,8 @@
 // RAG MCP Server Integration Test - Embedding Generation
 // Split from: rag-server.integration.test.ts (AC-003)
 
+import { existsSync, readdirSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
 describe('AC-003: Vector Embedding Generation', () => {
@@ -25,26 +27,24 @@ describe('AC-003: Vector Embedding Generation', () => {
     expect(embedding.every((value: number) => typeof value === 'number')).toBe(true)
   })
 
-  // AC interpretation: [Technical requirement] all-MiniLM-L6-v2 model is automatically downloaded on first startup
-  // Validation: all-MiniLM-L6-v2 model is downloaded from Hugging Face on first startup
+  // AC interpretation: [Technical requirement] all-MiniLM-L6-v2 model is automatically downloaded on first startup and cached on disk
+  // Validation: After initialize(), the configured cache directory is populated with model files (observable side effect of the download/cache)
   it('all-MiniLM-L6-v2 model automatically downloaded on first startup and cached in models/ directory', async () => {
+    const cacheDir = './tmp/models'
     const { Embedder } = await import('../../embedder/index.js')
     const embedder = new Embedder({
       modelPath: 'Xenova/all-MiniLM-L6-v2',
       batchSize: 8,
-      cacheDir: './tmp/models',
+      cacheDir,
     })
 
     // Model initialization (automatic download on first run)
     await embedder.initialize()
 
-    // Verify initialization succeeded
-    const testText = 'Test model initialization.'
-    const embedding = await embedder.embed(testText)
-
-    expect(embedding).toBeDefined()
-    expect(Array.isArray(embedding)).toBe(true)
-    expect(embedding.length).toBe(384)
+    // Observable side effect of the download: the cache directory is populated.
+    const resolvedCacheDir = resolve(cacheDir)
+    expect(existsSync(resolvedCacheDir)).toBe(true)
+    expect(readdirSync(resolvedCacheDir).length).toBeGreaterThan(0)
   })
 
   // AC interpretation: [Technical requirement] Embedding generation executed with batch size 8

@@ -65,19 +65,26 @@ export class RAGServer {
   private readonly parser: DocumentParser
   private readonly dbPath: string
   /**
-   * One or more allowed document base directories. The single source of
-   * truth for both the security boundary (passed to `DocumentParser`) and
-   * for scan iteration in `list_files` (P3-T2). Normalized from either the
-   * legacy `{ baseDir }` config shape or the new `{ baseDirs }` shape so
-   * downstream readers do not need to branch on shape.
+   * One or more allowed document base directories — REALPATH-normalized
+   * (the validation/security domain). Passed to `DocumentParser` as the
+   * security boundary. NOT used for `list_files` scanning/display; that uses
+   * the NORMAL-path `rawBaseDirs` below. Normalized from either the legacy
+   * `{ baseDir }` config shape or the new `{ baseDirs }` shape so downstream
+   * readers do not need to branch on shape.
    */
   private readonly baseDirs: readonly string[]
   /**
-   * Legacy single-root accessor. Derived from `baseDirs[0]`. Preserved so
-   * the legacy `ListFilesResult.baseDir` field and any direct readers of
-   * `this.baseDir` continue to work; multi-root iteration uses `baseDirs`.
+   * NORMAL (resolve(), non-realpath) effective roots, index-aligned with
+   * `baseDirs`. Path-canonicalization: `list_files` is user-facing, so it scans and displays
+   * THESE so scanned file paths match the resolve()-stored DB keys (what
+   * `query`/`delete`/`read_chunk_neighbors` use). Falls back to the realpath'd
+   * `baseDirs` when the config omits `rawBaseDirs` (legacy `{ baseDir }`
+   * callers / tests with no symlinked prefix). The realpath SECURITY boundary
+   * stays in `baseDirs` (the parser), never here.
    */
-  private readonly baseDir: string
+  private readonly rawBaseDirs: readonly string[]
+  /** Legacy single-root accessor for `rawBaseDirs`. Derived from `rawBaseDirs[0]`. */
+  private readonly rawBaseDir: string
   private readonly cacheDir: string
   // Used by handleListFiles filter to exclude system-managed directories
   private readonly excludePaths: string[]
@@ -86,7 +93,8 @@ export class RAGServer {
    * Structured base-dirs resolution error. When non-null, the server is in
    * degraded mode: `status` remains callable so the user can diagnose the
    * problem via MCP, while root-dependent tools should surface this error
-   * (wired in P3-T3). See `resolveBaseDirs` for the error semantics.
+   * before doing DB or filesystem work. See `resolveBaseDirs` for the error
+   * semantics.
    */
   private readonly configError: BaseDirsConfigError | null
   private readonly minChunkLength: number
@@ -99,7 +107,14 @@ export class RAGServer {
     // mode and misuse semantics.
     const { baseDirs, baseDir } = normalizeBaseDirs(config)
     this.baseDirs = baseDirs
-    this.baseDir = baseDir
+    // Path-canonicalization: NORMAL-path roots for user-facing scanning. Fall back to the
+    // realpath'd security roots when the config omits `rawBaseDirs` so legacy
+    // `{ baseDir }` callers keep working unchanged. `baseDir` (the realpath'd
+    // first root from `normalizeBaseDirs`) is used only as the degraded-mode
+    // fallback for the legacy single-root accessor.
+    const rawBaseDirs = config.rawBaseDirs !== undefined ? [...config.rawBaseDirs] : [...baseDirs]
+    this.rawBaseDirs = rawBaseDirs
+    this.rawBaseDir = rawBaseDirs[0] ?? baseDir
     this.cacheDir = config.cacheDir
     this.configWarnings = config.configWarnings ?? []
     this.configError = config.configError ?? null
@@ -161,7 +176,7 @@ export class RAGServer {
    * reject BEFORE any DB / embedder / parser access so the user sees the
    * configuration problem unambiguously. Surfaces the error as an
    * `McpError(InvalidParams)` so MCP clients render it as a structured tool
-   * error (per AC-009).
+   * error.
    *
    * `status` deliberately does NOT call this helper; it remains callable in
    * degraded mode and exposes the error via a diagnostic content block so
@@ -276,9 +291,8 @@ export class RAGServer {
         },
       ]
 
-      // Append config warnings on every call. AC-009 requires visibility on
-      // every tool response because MCP clients may hide stderr and may not
-      // retain context across calls.
+      // Append config warnings on every call because MCP clients may hide
+      // stderr and may not retain context across calls.
       return { content: this.withWarnings(content) }
     } catch (error) {
       console.error('Failed to query documents:', error)
@@ -295,10 +309,16 @@ export class RAGServer {
     if (!(await isPathInRawDataDir(args.filePath, this.dbPath))) {
       this.assertConfigOk()
     }
-    // Runtime validation (AC-012): the MCP JSON Schema declares `visual` as a
+    // Path-canonicalization invariant: realpath only in the validation/security domain;
+    // resolve() everywhere user-facing. `args.filePath` is the DB key for
+    // backup / delete / insert / result and is stored verbatim (never
+    // realpath-normalized), so the value `list`/`delete`/`read_chunk_neighbors`
+    // look up matches what ingestion wrote. The realpath boundary is enforced
+    // separately by `parser.validateFilePath`.
+    // Runtime validation: the MCP JSON Schema declares `visual` as a
     // boolean and `IngestFileInput.visual` types it as `boolean | undefined`,
     // but tool arguments arrive as `unknown` at the SDK boundary so the
-    // structural type is not enforced by the compiler. Validation MUST fire
+    // structural type is not enforced by the compiler. Validation fires
     // BEFORE any parser/chunker/embedder/vectorStore access.
     const visualArg: unknown = args.visual
     if (visualArg !== undefined && typeof visualArg !== 'boolean') {
@@ -346,12 +366,10 @@ export class RAGServer {
           this.embedder
         ))
       } else if (visualArg === true && isPdf) {
-        // Visual dispatch — delegates to the shared `prepareVisualPdfChunks`
-        // helper (NFR-1: the `pdf-visual` dynamic import lives inside that
-        // helper, not here, so the default path's Proxy sentinel — AC-001 —
-        // still observes `pdf-visual` untouched). This handler keeps its
-        // backup/rollback/optimize/response-shaping persistence semantics
-        // (preserved below).
+        // Visual dispatch delegates to `prepareVisualPdfChunks`, which owns
+        // the dynamic `pdf-visual` import so the default path does not load
+        // visual dependencies. This handler keeps its backup/rollback/
+        // optimize/response-shaping persistence semantics.
         const visualResult = await prepareVisualPdfChunks(
           args.filePath,
           this.parser,
@@ -572,12 +590,19 @@ export class RAGServer {
   /**
    * list_files tool handler
    *
-   * Scans every effective base directory (`this.baseDirs`) for supported
-   * files and cross-references with ingested documents. Multi-root contract
-   * (P3-T2, AC-008):
-   * - Returns top-level `baseDirs` (all effective roots, already realpath-
-   *   normalized and nested-root-pruned by `resolveBaseDirs`).
-   * - Preserves legacy top-level `baseDir = baseDirs[0]` for clients written
+   * Path-canonicalization invariant: realpath only in the validation/security domain; resolve()
+   * everywhere user-facing. `list_files` is user-facing, so it scans and
+   * displays the NORMAL-path roots (`this.rawBaseDirs`) — NOT the realpath'd
+   * security roots (`this.baseDirs`, which are the parser boundary). Scanning in
+   * normal-path space makes the scanned file paths match the resolve()-stored DB
+   * keys, so the `ingested` cross-reference is correct even under a symlinked
+   * base-dir prefix (e.g. macOS /tmp → /private/tmp).
+   *
+   * Scans every effective base directory (`this.rawBaseDirs`) for supported
+   * files and cross-references with ingested documents. Multi-root contract:
+   * - Returns top-level `baseDirs` (all effective roots in normal-path space,
+   *   nested-root-pruned by `resolveBaseDirs`).
+   * - Preserves legacy top-level `baseDir = rawBaseDirs[0]` for clients written
    *   against the single-root shape.
    * - Annotates each file entry with the producing `baseDir`.
    * - De-duplicates exact duplicate file paths across roots (first occurrence
@@ -596,14 +621,14 @@ export class RAGServer {
 
       // Iterate every effective root and collect entries with their producing
       // root. Deduplicate exact duplicate file paths across roots; the first
-      // occurrence wins so iteration order in `this.baseDirs` determines the
+      // occurrence wins so iteration order in `this.rawBaseDirs` determines the
       // recorded producing root for files reachable from multiple roots.
-      // Per-root scan warnings (Finding #10) are aggregated and surfaced
+      // Per-root scan warnings are aggregated and surfaced
       // alongside the primary content block via `withWarnings` below.
       const files: FileEntry[] = []
       const seenPaths = new Set<string>()
       const scanWarnings: string[] = []
-      for (const baseDir of this.baseDirs) {
+      for (const baseDir of this.rawBaseDirs) {
         const { files: scanned, warnings: rootWarnings } = await scanBaseDir(
           baseDir,
           this.excludePaths
@@ -644,13 +669,13 @@ export class RAGServer {
         })
 
       const result: ListFilesResult = {
-        baseDir: this.baseDir,
-        baseDirs: [...this.baseDirs],
+        baseDir: this.rawBaseDir,
+        baseDirs: [...this.rawBaseDirs],
         files,
         sources,
       }
       // Build the response with the primary JSON block first, then any
-      // per-root scan warnings (Finding #10) as additional text blocks so
+      // per-root scan warnings as additional text blocks so
       // clients see the warnings alongside the file list without needing
       // to inspect stderr. Config-level warnings (`configWarnings`) are
       // still appended via `withWarnings`.
@@ -666,7 +691,7 @@ export class RAGServer {
   }
 
   /**
-   * status tool handler (Phase 1: basic implementation)
+   * status tool handler
    */
   async handleStatus(): Promise<{ content: RagContentBlock[] }> {
     // `status` remains callable in degraded mode (configError set) so the
@@ -718,6 +743,11 @@ export class RAGServer {
         // invalid. Placed AFTER the `source` branch so source-mode requests
         // continue to work in degraded mode.
         this.assertConfigOk()
+        // Path-canonicalization invariant: realpath only in the validation/security domain;
+        // resolve() everywhere user-facing. The DB key is the verbatim path
+        // ingestion stored (never realpath-normalized), so delete looks up by
+        // `args.filePath` as-is. The realpath boundary is enforced separately
+        // by `parser.validateFilePath` below.
         targetPath = args.filePath
       } else {
         throw new Error('Either filePath or source must be provided')
@@ -789,10 +819,8 @@ export class RAGServer {
     args: ReadChunkNeighborsInput
   ): Promise<{ content: RagContentBlock[] }> {
     try {
-      // Validation (all before DB access, per Design Doc §Main Components → Handler).
-      // Intentional: use McpError(InvalidParams) (upgrade from handleDeleteFile's plain Error).
-      // See Design Doc §Main Components → Handler and §Risks — this asymmetry is documented;
-      // do not "fix" it.
+      // Validate everything before DB access. This handler intentionally uses
+      // structured InvalidParams errors for input validation.
       if (!Number.isInteger(args.chunkIndex) || args.chunkIndex < 0) {
         throw new McpError(ErrorCode.InvalidParams, 'chunkIndex must be a non-negative integer')
       }
@@ -839,6 +867,11 @@ export class RAGServer {
       } else {
         // XOR + hasSource === false guarantees filePath is a non-empty string here.
         this.assertConfigOk()
+        // Path-canonicalization invariant: realpath only in the validation/security domain;
+        // resolve() everywhere user-facing. The DB key is the verbatim path
+        // ingestion stored (never realpath-normalized), so read_chunk_neighbors
+        // looks up by `args.filePath` as-is. The realpath boundary is enforced
+        // separately by `parser.validateFilePath` below.
         targetPath = args.filePath as string
       }
       if (!skipValidation) {

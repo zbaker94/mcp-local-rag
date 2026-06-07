@@ -74,8 +74,7 @@ export function validateChunkMinLength(value: number): string | undefined {
  *
  * Why a shared helper: both `ingest` and `list` parse `--base-dir` in
  * identical fashion, so centralizing the accumulate-and-validate step keeps
- * the two argv loops in lockstep when the contract evolves (e.g. P2-T2
- * adding per-path validation).
+ * the two argv loops in lockstep when the contract evolves.
  */
 export function consumeBaseDirArg(argv: string[], flagIndex: number, collected: string[]): number {
   const valueIndex = flagIndex + 1

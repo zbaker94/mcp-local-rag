@@ -2,7 +2,7 @@
 
 import { resolve, sep } from 'node:path'
 
-import { displayPath, legacyBaseDir } from '../utils/base-dirs.js'
+import { displayPath } from '../utils/base-dirs.js'
 import { MAX_SCAN_DEPTH } from '../utils/limits.js'
 import { extractSourceFromPath, looksLikeRawDataPath } from '../utils/raw-data-utils.js'
 import { bfsCollectSupportedFiles } from '../utils/scan.js'
@@ -17,8 +17,8 @@ import { consumeBaseDirArg, resolveGlobalConfig, validatePath } from './options.
 /**
  * Result of scanning a single root: the supported file paths found plus a
  * non-fatal warning when applicable (depth limit hit, readdir error, ...).
- * Per-root errors no longer abort the entire `list` call (Finding #10): one
- * unreadable root must not hide files under the other roots.
+ * Per-root errors do not abort the entire `list` call: one unreadable root
+ * must not hide files under the other roots.
  */
 interface ScanRootResult {
   files: string[]
@@ -28,9 +28,8 @@ interface ScanRootResult {
 /**
  * Bounded BFS scan of a single root, up to `MAX_SCAN_DEPTH` levels deep.
  * Delegates the traversal to {@link bfsCollectSupportedFiles} and renders the
- * `list`-specific warnings: per-directory read failures (Finding #10 — one
- * unreadable subtree must not hide files under another root) and the depth-
- * limit warning, both annotated with `displayPath`.
+ * `list`-specific warnings: per-directory read failures and the depth-limit
+ * warning, both annotated with `displayPath`.
  */
 async function scanRoot(root: string, excludePaths: string[]): Promise<ScanRootResult> {
   const { files, unreadableDirs, depthLimited } = await bfsCollectSupportedFiles(root, excludePaths)
@@ -71,7 +70,7 @@ interface FileEntry {
   /**
    * Producing root for this file (one of `ListResult.baseDirs`). Mirrors the
    * MCP `list_files` response shape so a single client schema works for
-   * both surfaces. Added in Finding #5 (post-launch review).
+   * both surfaces.
    */
   baseDir: string
   ingested: boolean
@@ -218,11 +217,23 @@ export async function runList(args: string[], globalOptions: GlobalOptions = {})
     console.error(warning.message)
   }
 
-  // Scan every effective root (P2-T2). `legacyBaseDir` still surfaces the
-  // first effective root as the JSON `baseDir` field for response back-compat;
-  // the `list_files` MCP response evolves to add `baseDirs` and per-file
-  // annotations in P3-T2, which is intentionally out of scope here.
-  const baseDir = legacyBaseDir(baseDirsConfig)
+  // Path-canonicalization invariant: realpath only in the validation/security domain; resolve()
+  // everywhere user-facing. `list` is user-facing, so it scans and displays the
+  // NORMAL (resolve(), non-realpath) root space (`rawBaseDirs`). This is what
+  // makes the scanned file paths match the resolve()-stored DB keys so the
+  // `ingested` cross-reference is correct even under a symlinked base-dir prefix
+  // (e.g. macOS /tmp → /private/tmp). The realpath'd `baseDirs` are the security
+  // boundary and are NOT used here. `rawBaseDirs[0]` is the first effective root,
+  // surfaced as the JSON `baseDir` field for response back-compat.
+  const rawBaseDirs = baseDirsConfig.rawBaseDirs
+  const firstRawBaseDir = rawBaseDirs[0]
+  if (firstRawBaseDir === undefined) {
+    // Cannot happen in non-degraded mode: the resolver always returns at least
+    // one effective root. Surface as a programming error rather than emitting
+    // an empty `baseDir` field.
+    throw new Error('internal: resolver returned no effective base directories')
+  }
+  const baseDir = firstRawBaseDir
 
   try {
     // Initialize VectorStore only (no Embedder needed for list)
@@ -232,7 +243,7 @@ export async function runList(args: string[], globalOptions: GlobalOptions = {})
     // Build exclude paths (resolved to absolute, platform-aware trailing
     // separator). Applied uniformly to every root so dbPath/cacheDir remain
     // excluded under each root even when they happen to live below one of
-    // them (AC-011).
+    // them.
     const excludePaths = [
       `${resolve(globalConfig.dbPath)}${sep}`,
       `${resolve(globalConfig.cacheDir)}${sep}`,
@@ -246,11 +257,11 @@ export async function runList(args: string[], globalOptions: GlobalOptions = {})
     // file path. Disjoint roots can still surface the same file through
     // symlinks or bind mounts; the first-occurrence-wins dedup preserves
     // root iteration order, mirroring the MCP `list_files` contract.
-    // Per-root errors are non-fatal (Finding #10): we collect them as stderr
-    // warnings and continue with the remaining roots so one unreadable
+    // Per-root errors are non-fatal: collect them as stderr warnings and
+    // continue with the remaining roots so one unreadable
     // root does not hide the others.
     const fileToRoot = new Map<string, string>()
-    for (const root of baseDirsConfig.baseDirs) {
+    for (const root of rawBaseDirs) {
       const { files: perRoot, warnings: rootWarnings } = await scanRoot(root, excludePaths)
       for (const warning of rootWarnings) {
         console.error(`Warning [${root}]: ${warning}`)
@@ -301,7 +312,7 @@ export async function runList(args: string[], globalOptions: GlobalOptions = {})
       })
 
     const result: ListResult = {
-      baseDirs: [...baseDirsConfig.baseDirs],
+      baseDirs: [...rawBaseDirs],
       baseDir,
       files,
       sources,

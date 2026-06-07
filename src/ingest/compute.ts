@@ -1,17 +1,14 @@
 // Shared chunk + embed computation for the ingest pipeline.
 //
-// Phase 0 of the VLM PDF enrichment work lifts the duplicated
-// `chunker.chunkText -> embedder.embedBatch` sequence out of
-// `handleIngestFile` (src/server/index.ts) and `ingestSingleFile`
-// (src/cli/ingest.ts) into this single shared function. Persistence
-// (delete + insert + rollback + optimize) stays in each caller because
-// the rollback semantics differ between the MCP path and the CLI path.
+// Lifts the duplicated `chunker.chunkText -> embedder.embedBatch` sequence
+// out of `handleIngestFile` and `ingestSingleFile` into this single shared
+// function. Persistence (delete + insert + rollback + optimize) stays in each
+// caller because the rollback semantics differ between the MCP path and the
+// CLI path.
 //
 // The function is dispatch-agnostic: it takes already-extracted `text`
 // and `title` and does not touch `vectorStore`. It is the single
-// chunker call site for any ingest path (default or, in later phases,
-// visual). See docs/design/vlm-pdf-enrichment-design.md §Main Components
-// -> `buildChunksAndEmbeddings`.
+// chunker call site for any ingest path.
 
 import { randomUUID } from 'node:crypto'
 import { basename, extname } from 'node:path'
