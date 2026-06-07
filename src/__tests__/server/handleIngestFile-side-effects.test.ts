@@ -164,7 +164,7 @@ const FIXTURE_EMBEDDINGS = [
   [0.7, 0.8],
 ]
 
-function buildServer(): RAGServer {
+function buildServer(): InstanceType<RAGServerCtor> {
   return new RAGServer({
     dbPath: '/tmp/test/side-effects-db',
     modelName: 'mock-model',

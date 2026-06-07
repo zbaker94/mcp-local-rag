@@ -37,7 +37,7 @@ describe('AC-006: Additional Format Support (Phase 2)', () => {
   // AC interpretation: [Functional requirement] DOCX files ingested via ingest_file tool and text extracted
   // Validation: Call ingest_file with DOCX file path, text extraction and chunk storage succeed
   it('DOCX file ingested via ingest_file tool, text properly extracted and saved to LanceDB', async () => {
-    const { DocumentParser } = await import('../../parser/index')
+    const { DocumentParser } = await import('../../parser/index.js')
     const parser = new DocumentParser({
       baseDir: localTestDataDir,
       maxFileSize: 100 * 1024 * 1024,
@@ -64,7 +64,7 @@ describe('AC-006: Additional Format Support (Phase 2)', () => {
   // AC interpretation: [Functional requirement] All formats (PDF/DOCX/TXT/MD) ingested successfully
   // Validation: All 4 formats (PDF, DOCX, TXT, MD) ingested successfully
   it('Sample files for all formats (PDF, DOCX, TXT, MD) ingested successfully', async () => {
-    const { DocumentParser } = await import('../../parser/index')
+    const { DocumentParser } = await import('../../parser/index.js')
     const parser = new DocumentParser({
       baseDir: localTestDataDir,
       maxFileSize: 100 * 1024 * 1024,

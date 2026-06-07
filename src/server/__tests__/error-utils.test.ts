@@ -51,7 +51,11 @@ describe('formatErrorMessage', () => {
 
     it('should return the error message when stack is not available', () => {
       const error = new Error('No stack error')
-      error.stack = undefined
+      // Simulate an Error whose `stack` is unavailable. Under
+      // exactOptionalPropertyTypes, deleting the optional property (rather than
+      // assigning `undefined`) is the type-correct way to model its absence;
+      // reading `error.stack` afterwards still yields `undefined` at runtime.
+      delete error.stack
       const result = formatErrorMessage(error)
       expect(result).toBe('No stack error')
     })

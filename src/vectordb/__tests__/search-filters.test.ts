@@ -18,6 +18,7 @@ function mockResult(
     text,
     score,
     metadata: { fileName: basename(filePath), fileSize: 100, fileType: '.txt' },
+    fileTitle: null,
   }
 }
 

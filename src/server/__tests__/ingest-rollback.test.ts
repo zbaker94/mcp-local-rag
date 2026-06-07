@@ -5,6 +5,7 @@
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
+import type { VectorChunk } from '../../vectordb/index.js'
 import { RAGServer } from '../index.js'
 
 describe('Ingest Rollback', () => {
@@ -119,7 +120,7 @@ describe('Ingest Rollback', () => {
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const vectorStore = (ragServer as any).vectorStore
-    const original = await vectorStore.getChunksByFilePath(testFile)
+    const original: VectorChunk[] = await vectorStore.getChunksByFilePath(testFile)
     expect(original.length).toBeGreaterThan(0)
 
     // Fail the new-data insert, then let the rollback restore run for REAL
@@ -139,18 +140,16 @@ describe('Ingest Rollback', () => {
     )
 
     // Assert: the full original set is restored with its real stored vectors.
-    const restored = await vectorStore.getChunksByFilePath(testFile)
-    const byIndex = <T extends { chunkIndex: number }>(cs: T[]): T[] =>
+    const restored: VectorChunk[] = await vectorStore.getChunksByFilePath(testFile)
+    const byIndex = (cs: VectorChunk[]): VectorChunk[] =>
       [...cs].sort((a, b) => a.chunkIndex - b.chunkIndex)
     const o = byIndex(original)
     const r = byIndex(restored)
     expect(r.length).toBe(o.length)
-    expect(r.map((c: { text: string }) => c.text)).toEqual(o.map((c: { text: string }) => c.text))
+    expect(r.map((c) => c.text)).toEqual(o.map((c) => c.text))
     // Real vectors, not a single dummy: every restored vector matches the
     // original stored vector for that chunk.
-    expect(r.map((c: { vector: number[] }) => c.vector)).toEqual(
-      o.map((c: { vector: number[] }) => c.vector)
-    )
+    expect(r.map((c) => c.vector)).toEqual(o.map((c) => c.vector))
 
     insertSpy.mockRestore()
     optimizeSpy.mockRestore()

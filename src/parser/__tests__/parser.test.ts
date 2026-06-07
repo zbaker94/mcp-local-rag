@@ -3,6 +3,7 @@
 import { mkdir, rm, symlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import type { EmbedderInterface } from '../pdf-filter.js'
 
 // ============================================
 // Mocks
@@ -470,7 +471,7 @@ describe('DocumentParser', () => {
   // parsePdf
   // --------------------------------------------
   describe('parsePdf', () => {
-    const mockEmbedder = { embed: vi.fn() }
+    const mockEmbedder: EmbedderInterface = { embedBatch: vi.fn() }
 
     /**
      * Helper to build a mupdf mock document with configurable pages.

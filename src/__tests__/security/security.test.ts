@@ -6,7 +6,7 @@
 
 import { mkdir, rm, symlink, writeFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DocumentParser, ValidationError } from '../../parser/index.js'
 import { RAGServer } from '../../server/index.js'
 

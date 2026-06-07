@@ -221,11 +221,11 @@ describe('VLM PDF Enrichment - Phase 0 Equivalence (AC-008)', () => {
     // receives.
     serverInsertSpy = vi.spyOn(getServerVectorStore(server), 'insertChunks')
     cliInsertSpy = vi.spyOn(cliVectorStore, 'insertChunks')
-    serverInsertSpy.mockImplementation(async (chunks) => {
-      serverInsertCalls.push((chunks as VectorChunk[]).map((c) => ({ ...c })))
+    serverInsertSpy.mockImplementation(async (chunks: VectorChunk[]) => {
+      serverInsertCalls.push(chunks.map((c) => ({ ...c })))
     })
-    cliInsertSpy.mockImplementation(async (chunks) => {
-      cliInsertCalls.push((chunks as VectorChunk[]).map((c) => ({ ...c })))
+    cliInsertSpy.mockImplementation(async (chunks: VectorChunk[]) => {
+      cliInsertCalls.push(chunks.map((c) => ({ ...c })))
     })
 
     // Clear any incidental chunker invocations done during construction.
