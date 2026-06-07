@@ -141,6 +141,12 @@ function splitItemsIntoSentencesWithY(items: TextItemWithPosition[]): SentenceWi
   for (const sentence of sentences) {
     // Find where this sentence starts in fullText
     const sentenceStart = fullText.indexOf(sentence.trim(), searchStart)
+    // Benign skip (not error masking): this builds the Y-coordinate map used
+    // only for header/footer boundary detection. A miss means this sentence
+    // is omitted from boundary detection — it does NOT drop the sentence from
+    // the document body (that text comes from `fullText`). Misses are expected
+    // when `splitIntoSentences` normalizes whitespace differently than the
+    // reconstructed `fullText`, so logging here would be noise, not signal.
     if (sentenceStart === -1) continue
 
     // Find the item that contains this position

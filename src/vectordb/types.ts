@@ -168,6 +168,13 @@ export function toSearchResult(raw: unknown): SearchResult {
   if (!isLanceDBRawResult(raw)) {
     throw new DatabaseError('Invalid search result format from LanceDB')
   }
+  // Score source: vector search rows carry `_distance` (dot distance, the
+  // normal path). `_score` is a defensive fallback for any FTS-shaped row that
+  // reaches here (the live FTS path consumes `_score` directly in
+  // applyKeywordBoost, not via this mapper). The final `?? 0` is an
+  // effectively-unreachable guard: vectorSearch always returns `_distance`. It
+  // is kept defensive rather than throwing, since a missing score is not worth
+  // failing a whole search over.
   return {
     filePath: raw.filePath,
     chunkIndex: raw.chunkIndex,
