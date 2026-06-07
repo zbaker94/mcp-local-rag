@@ -7,7 +7,7 @@ import {
   generateRawDataPath,
   isPathInRawDataDirLexical,
 } from '../utils/raw-data-utils.js'
-import { createVectorStore } from './common.js'
+import { createVectorStore, toErrorMessage } from './common.js'
 import type { GlobalOptions } from './options.js'
 import { resolveGlobalConfig, validatePath } from './options.js'
 
@@ -188,7 +188,7 @@ export async function runDelete(args: string[], globalOptions: GlobalOptions = {
     }
     process.stdout.write(JSON.stringify(result))
   } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error)
+    const reason = toErrorMessage(error)
     console.error(`Error: ${reason}`)
     process.exit(1)
   }

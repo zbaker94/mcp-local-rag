@@ -1,7 +1,7 @@
 // CLI query subcommand — search ingested documents
 
 import { extractSourceFromPath, looksLikeRawDataPath } from '../utils/raw-data-utils.js'
-import { createEmbedder, createVectorStore } from './common.js'
+import { createEmbedder, createVectorStore, toErrorMessage } from './common.js'
 import type { GlobalOptions } from './options.js'
 import { resolveGlobalConfig } from './options.js'
 
@@ -199,7 +199,7 @@ export async function runQuery(args: string[], globalOptions: GlobalOptions = {}
     // Output JSON to stdout
     process.stdout.write(JSON.stringify(results, null, 2))
   } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error)
+    const reason = toErrorMessage(error)
     console.error(`Error: ${reason}`)
     process.exit(1)
   } finally {

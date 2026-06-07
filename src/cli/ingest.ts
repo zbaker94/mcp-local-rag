@@ -13,7 +13,12 @@ import type { BaseDirsConfig, BaseDirsConfigWarning } from '../utils/base-dirs.j
 import { DEFAULT_MAX_FILE_SIZE, MAX_SCAN_DEPTH } from '../utils/limits.js'
 import { bfsCollectSupportedFiles } from '../utils/scan.js'
 import type { VectorStore } from '../vectordb/index.js'
-import { createEmbedder, createVectorStore, resolveCliBaseDirsOrExit } from './common.js'
+import {
+  createEmbedder,
+  createVectorStore,
+  resolveCliBaseDirsOrExit,
+  toErrorMessage,
+} from './common.js'
 import type { GlobalOptions, ResolvedGlobalConfig } from './options.js'
 import {
   consumeBaseDirArg,
@@ -595,7 +600,7 @@ export async function runIngest(args: string[], globalOptions: GlobalOptions = {
           summary.totalChunks += chunkCount
         }
       } catch (error) {
-        const reason = error instanceof Error ? error.message : String(error)
+        const reason = toErrorMessage(error)
         console.error(`${label} ${filePath} ... FAILED: ${reason}`)
         summary.failed++
       }

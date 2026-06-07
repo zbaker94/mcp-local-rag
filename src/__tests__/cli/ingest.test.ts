@@ -103,6 +103,9 @@ const cliCommonFactory = () => ({
   resolveCliBaseDirsOrExit: vi
     .fn()
     .mockImplementation((cliRoots: string[]) => mocks.resolveCliBaseDirs(cliRoots)),
+  // Pure helper used by the catch block; real implementation preserves the
+  // per-file `... FAILED: <message>` stderr behavior the tests assert.
+  toErrorMessage: (error: unknown) => (error instanceof Error ? error.message : String(error)),
 })
 
 const MOCKED_PATHS = [
