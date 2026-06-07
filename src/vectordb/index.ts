@@ -379,8 +379,11 @@ export class VectorStore {
 
           results = applyKeywordBoost(results, ftsResults, hybridWeight)
         } catch (ftsError) {
+          // Per-request degrade only: fall back to vector-only results for THIS
+          // query without disabling FTS on the instance. A transient FTS error
+          // (e.g. a momentary index issue) must not permanently drop the server
+          // to vector-only until restart — the next query retries hybrid search.
           console.error('VectorStore: FTS search failed, using vector-only results:', ftsError)
-          this.ftsEnabled = false
         }
       }
 

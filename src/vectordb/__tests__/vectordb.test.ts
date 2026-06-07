@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { type VectorChunk, VectorStore } from '../index.js'
 import { type ChunkRow, DatabaseError, isLanceDBRawResult, toSearchResult } from '../types.js'
 
@@ -100,6 +100,43 @@ describe('VectorStore', () => {
       await store.deleteChunks(tricky)
 
       expect((await store.listFiles()).map((f) => f.filePath)).toEqual(['/docs/other.txt'])
+    })
+  })
+
+  describe('FTS per-request degrade', () => {
+    it('falls back to vector-only for a failed FTS query without disabling FTS', async () => {
+      const store = new VectorStore({ dbPath: testDbPath, tableName: 'chunks' })
+      await store.initialize()
+      await store.insertChunks([
+        createTestChunk(
+          'alpha document about typescript',
+          '/d/a.txt',
+          0,
+          createNormalizedVector(1)
+        ),
+        createTestChunk('beta document about rust', '/d/b.txt', 0, createNormalizedVector(2)),
+      ])
+      expect((await store.getStatus()).ftsIndexEnabled).toBe(true)
+
+      // Force only the FTS path (table.search) to throw; the vector path
+      // (table.vectorSearch) is a separate method and stays intact.
+      const table = (store as unknown as { table: { search: (...args: unknown[]) => unknown } })
+        .table
+      const ftsSpy = vi.spyOn(table, 'search').mockImplementationOnce(() => {
+        throw new Error('transient FTS failure')
+      })
+
+      // The query still resolves with vector-only results (no throw).
+      const results = await store.search(createNormalizedVector(1), 'typescript', 5)
+      expect(results.length).toBeGreaterThan(0)
+
+      // FTS is NOT permanently disabled by a single failed query.
+      expect((await store.getStatus()).ftsIndexEnabled).toBe(true)
+
+      // And the next query retries hybrid search successfully.
+      ftsSpy.mockRestore()
+      const retry = await store.search(createNormalizedVector(1), 'typescript', 5)
+      expect(retry.length).toBeGreaterThan(0)
     })
   })
 
