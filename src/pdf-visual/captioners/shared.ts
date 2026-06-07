@@ -17,13 +17,10 @@ import { type DeviceType, RawImage } from '@huggingface/transformers'
  * ONNX quantization variant shared by both captioner profiles. Pinned to the
  * smallest viable variant; production has no user-facing knob.
  */
-export const VLM_DTYPE = 'q4'
+const VLM_DTYPE = 'q4'
 
 /** Lazy-load lifecycle state for a captioner's processor + model. */
-export type CaptionerLoadState =
-  | { kind: 'pending' }
-  | { kind: 'ok' }
-  | { kind: 'failed'; cause: Error }
+type CaptionerLoadState = { kind: 'pending' } | { kind: 'ok' } | { kind: 'failed'; cause: Error }
 
 /**
  * Build the `from_pretrained` option objects (processor + model) with the
@@ -103,7 +100,7 @@ const MAX_CAPTION_LENGTH = 1000
  * Strip C0 (U+0000–U+001F) and C1 (U+007F–U+009F) control characters from the
  * input, except `\n` (U+000A) and `\t` (U+0009) which are kept verbatim.
  */
-export function stripControlChars(input: string): string {
+function stripControlChars(input: string): string {
   let out = ''
   for (let i = 0; i < input.length; i++) {
     const code = input.charCodeAt(i)

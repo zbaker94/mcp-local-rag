@@ -136,7 +136,7 @@ export interface LanceDBRawResult {
 /**
  * Type guard for DocumentMetadata
  */
-export function isDocumentMetadata(value: unknown): value is DocumentMetadata {
+function isDocumentMetadata(value: unknown): value is DocumentMetadata {
   if (typeof value !== 'object' || value === null) return false
   const obj = value as Record<string, unknown>
   return (
