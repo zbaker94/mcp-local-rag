@@ -430,13 +430,13 @@ export class DocumentParser {
           ? {
               pageNum: p.pageNum,
               text: p.text,
-              stextJson: p.stextJson as unknown,
+              stextJson: p.stextJson,
               page1FontHint,
             }
           : {
               pageNum: p.pageNum,
               text: p.text,
-              stextJson: p.stextJson as unknown,
+              stextJson: p.stextJson,
             }
       )
 
