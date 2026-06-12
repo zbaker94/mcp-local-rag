@@ -8,13 +8,13 @@
     "url": "https://github.com/shinpr/mcp-local-rag",
     "source": "github"
   },
-  "version": "0.15.0",
+  "version": "0.15.1",
   "packages": [
     {
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "mcp-local-rag",
-      "version": "0.15.0",
+      "version": "0.15.1",
       "transport": {
         "type": "stdio"
       },
@@ -92,6 +92,13 @@
         {
           "name": "RAG_DEVICE",
           "description": "Execution device for the embedder (defaults to cpu). Passed straight to ONNX Runtime; see the Transformers.js device source for the supported backend names. If the requested device fails to initialize, the server throws an error.",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false
+        },
+        {
+          "name": "RAG_DTYPE",
+          "description": "Embedding quantization dtype for the embedder (defaults to fp32). Opt-in and pass-through; accepts any dtype the chosen model provides (fp32, fp16, q8, int8, ...). If the model has no variant for the requested dtype, the server throws an error. Changing this changes the embedding space — re-ingest existing data.",
           "isRequired": false,
           "format": "string",
           "isSecret": false

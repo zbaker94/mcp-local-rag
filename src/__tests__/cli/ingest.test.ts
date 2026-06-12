@@ -103,9 +103,9 @@ const cliCommonFactory = () => ({
   resolveCliBaseDirsOrExit: vi
     .fn()
     .mockImplementation((cliRoots: string[]) => mocks.resolveCliBaseDirs(cliRoots)),
-  // Pure helper used by the catch block; real implementation preserves the
-  // per-file `... FAILED: <message>` stderr behavior the tests assert.
-  toErrorMessage: (error: unknown) => (error instanceof Error ? error.message : String(error)),
+  // Catch-block renderer; faithful shim preserves the per-file
+  // `... FAILED: <message>` stderr behavior the tests assert.
+  formatCliError: formatCliErrorShim,
 })
 
 const MOCKED_PATHS = [
@@ -124,6 +124,7 @@ const MOCKED_PATHS = [
 // (e.g., ../../cli/common.js) can win the module-registry race and bind
 // runIngest's closures to that file's factories instead of this file's.
 import { resolve } from 'node:path'
+import { formatCliErrorShim } from './cli-error-shim.js'
 
 let runIngest: typeof import('../../cli/ingest.js').runIngest
 let parseArgs: typeof import('../../cli/ingest.js').parseArgs
@@ -709,7 +710,10 @@ describe('CLI ingest', () => {
     expect(process.exitCode).toBe(1)
 
     const joined = output.join('\n')
-    expect(joined).toContain('FAILED: Parse error: corrupted file')
+    // formatCliError now renders the failing file's diagnostic (message + stack)
+    // on the per-file FAILED line; the original message is still present.
+    expect(joined).toContain('FAILED:')
+    expect(joined).toContain('Parse error: corrupted file')
     expect(joined).toContain('Succeeded: 2')
     expect(joined).toContain('Failed:    1')
   })

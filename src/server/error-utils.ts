@@ -1,4 +1,6 @@
 import type { Annotations } from '@modelcontextprotocol/sdk/types.js'
+import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js'
+import { getCauseChain, isAppError } from '../utils/errors.js'
 
 /**
  * Shape of a single MCP content block used by RAG server handlers. Mirrors
@@ -86,23 +88,98 @@ export function buildConfigErrorBlock(message: string): RagContentBlock {
 }
 
 /**
- * Format error message based on environment.
- * Shows stack trace in development mode for debugging.
- * Shows only error message in production for security (secure by default).
+ * Coerce an arbitrary thrown value into an `Error`. Preserves a real `Error`
+ * unchanged (so its `name`/`cause`/`stack` survive); reconstructs from a
+ * `{ message: string }` shape; otherwise stringifies. Centralized so every
+ * boundary function shares one normalization rule.
  */
-export function formatErrorMessage(error: unknown): string {
-  let err: Error
+function toError(error: unknown): Error {
   if (error instanceof Error) {
-    err = error
-  } else if (
+    return error
+  }
+  if (
     error !== null &&
     typeof error === 'object' &&
     'message' in error &&
     typeof (error as { message: unknown }).message === 'string'
   ) {
-    err = new Error((error as { message: string }).message)
-  } else {
-    err = new Error(String(error))
+    return new Error((error as { message: string }).message)
   }
-  return process.env['NODE_ENV'] === 'development' ? err.stack || err.message : err.message
+  return new Error(String(error))
+}
+
+/**
+ * Context supplied by each handler to {@link toMcpError}, encoding that
+ * handler's client-message policy. `prefix` is the operation prefix applied to
+ * the generic/native fallback message (e.g. `'Failed to ingest file'`).
+ * Prefix-less handlers (`query_documents`/`list_files`/`status`) omit it.
+ */
+export type ToMcpErrorContext = {
+  prefix?: string
+}
+
+/**
+ * Build the controlled, type-appropriate message sent to the MCP client.
+ *
+ * Returns only the error's `.message`, regardless of `NODE_ENV`: the client
+ * boundary never receives a stack trace or the raw `.cause` chain, so internal
+ * details cannot leak to the client even in development. Full diagnostics
+ * (stack + cause chain) belong in {@link formatErrorForLog} (stderr only).
+ */
+export function formatErrorForClient(error: unknown): string {
+  return toError(error).message
+}
+
+/**
+ * Build the full diagnostic string for stderr logging: every link of the
+ * `.cause` chain (via {@link getCauseChain}) followed by its stack. Never sent
+ * to the client — this is the log-side counterpart of
+ * {@link formatErrorForClient}.
+ */
+export function formatErrorForLog(error: unknown): string {
+  const err = toError(error)
+  return getCauseChain(err)
+    .map((link, index) => {
+      const header = index === 0 ? '' : 'Caused by: '
+      return `${header}${link.stack || `${link.name}: ${link.message}`}`
+    })
+    .join('\n')
+}
+
+/**
+ * Log an error to stderr with its operation context and full cause chain.
+ * The only side-effecting boundary function — the formatters are pure so they
+ * can be composed without emitting logs.
+ */
+export function logError(context: string, error: unknown): void {
+  console.error(`[${context}] ${formatErrorForLog(error)}`)
+}
+
+/**
+ * Map an arbitrary handler error to an `McpError` for the client boundary.
+ *
+ * - An existing `McpError` passes through unchanged (preserves hand-built
+ *   input-validation codes).
+ * - A recognized `AppError` maps by its `kind`: `validation`/`config` →
+ *   `InvalidParams`, everything else → `InternalError`. Its own message is used
+ *   raw — **no** operation prefix is applied, even when `context.prefix` is set
+ *   (e.g. `DatabaseError` stays prefix-less).
+ * - Any other value (native `Error` or non-`Error`) maps to `InternalError`,
+ *   and `context.prefix`, when present, is prepended to the controlled
+ *   client message. The raw cause chain is never included.
+ */
+export function toMcpError(error: unknown, context: ToMcpErrorContext): McpError {
+  if (error instanceof McpError) {
+    return error
+  }
+  if (isAppError(error)) {
+    const code =
+      error.kind === 'validation' || error.kind === 'config'
+        ? ErrorCode.InvalidParams
+        : ErrorCode.InternalError
+    return new McpError(code, formatErrorForClient(error))
+  }
+  const message = formatErrorForClient(error)
+  const clientMessage = context.prefix !== undefined ? `${context.prefix}: ${message}` : message
+  return new McpError(ErrorCode.InternalError, clientMessage)
 }

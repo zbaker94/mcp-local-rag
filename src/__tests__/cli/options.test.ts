@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   parseGlobalOptions,
   ROOT_HELP_TEXT,
+  resolveDtype,
   resolveGlobalConfig,
   validateMaxFileSize,
   validateModelName,
@@ -426,5 +427,42 @@ describe('CLI global options', () => {
         errorSpy.mockRestore()
       }
     })
+  })
+})
+
+// ============================================
+// resolveDtype
+// ============================================
+// Unlike resolveDevice (which defaults unset/whitespace to 'cpu'), resolveDtype
+// returns `undefined` for unset/whitespace. This divergence is load-bearing: it
+// is the only signal that distinguishes "RAG_DTYPE unset" from an explicit
+// RAG_DTYPE=fp32, which gates the Phase 2 enrichment.
+describe('resolveDtype', () => {
+  it('returns undefined when value is undefined', () => {
+    expect(resolveDtype(undefined)).toBeUndefined()
+  })
+
+  it('returns undefined for an empty string', () => {
+    expect(resolveDtype('')).toBeUndefined()
+  })
+
+  it('returns undefined for a whitespace-only string', () => {
+    expect(resolveDtype('   ')).toBeUndefined()
+  })
+
+  it('passes an explicit fp32 through unchanged (not coerced to a default)', () => {
+    expect(resolveDtype('fp32')).toBe('fp32')
+  })
+
+  it('passes fp16 through unchanged', () => {
+    expect(resolveDtype('fp16')).toBe('fp16')
+  })
+
+  it('passes q8 through unchanged', () => {
+    expect(resolveDtype('q8')).toBe('q8')
+  })
+
+  it('trims surrounding whitespace from a value', () => {
+    expect(resolveDtype('  q8  ')).toBe('q8')
   })
 })

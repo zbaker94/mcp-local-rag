@@ -268,3 +268,17 @@ export function resolveDevice(value: string | undefined): string {
   if (!value || value.trim() === '') return 'cpu'
   return value.trim()
 }
+
+/**
+ * Resolve RAG_DTYPE. Like resolveDevice, the value is passed through to
+ * transformers.js with no allowlist. Unlike resolveDevice, unset/whitespace-only
+ * resolves to `undefined` (NOT a default dtype): the fp32 default literal lives
+ * solely in Embedder.initialize(), and `undefined` is the only signal that
+ * distinguishes "RAG_DTYPE unset" from an explicit "RAG_DTYPE=fp32". That
+ * distinction gates failure-path error enrichment, so it must not be collapsed
+ * into a default here.
+ */
+export function resolveDtype(value: string | undefined): string | undefined {
+  if (!value || value.trim() === '') return undefined
+  return value.trim()
+}

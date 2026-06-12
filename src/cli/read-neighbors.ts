@@ -6,7 +6,7 @@ import {
   generateRawDataPath,
   looksLikeRawDataPath,
 } from '../utils/raw-data-utils.js'
-import { createVectorStore, toErrorMessage } from './common.js'
+import { createVectorStore, formatCliError } from './common.js'
 import type { GlobalOptions } from './options.js'
 import { resolveGlobalConfig, validatePath } from './options.js'
 
@@ -157,7 +157,7 @@ export async function runReadNeighbors(
   try {
     parsed = parseArgs(args)
   } catch (error) {
-    const reason = toErrorMessage(error)
+    const reason = formatCliError(error)
     console.error(`Error: ${reason}`)
     process.exit(1)
   }
@@ -250,7 +250,7 @@ export async function runReadNeighbors(
     // Output JSON to stdout (2-space indent per query.ts convention).
     process.stdout.write(`${JSON.stringify(items, null, 2)}\n`)
   } catch (error) {
-    const reason = toErrorMessage(error)
+    const reason = formatCliError(error)
     console.error(`Error: ${reason}`)
     process.exit(1)
   }
