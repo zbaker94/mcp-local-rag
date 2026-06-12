@@ -383,6 +383,7 @@ The MCP server is configured by environment variables only — pass them through
 | `MAX_FILE_SIZE` | `--max-file-size` | `104857600` (100MB) | Maximum file size in bytes |
 | `CHUNK_MIN_LENGTH` | `--chunk-min-length` | `50` | Minimum chunk length in characters (1–10000) |
 | `RAG_DEVICE` | — | `cpu` | Execution device. Passed straight to ONNX Runtime. See the [Transformers.js device source code](https://github.com/huggingface/transformers.js/blob/main/packages/transformers/src/utils/devices.js) for the live list of supported backend names. If initialization fails, the server throws an error. |
+| `RAG_DTYPE` | — | `fp32` | Embedding quantization dtype. Opt-in and passed straight through; accepts any dtype the chosen model provides (`fp32`, `fp16`, `q8`, `int8`, …). If the model has no variant for the requested dtype, the server throws an error. Changing `RAG_DEVICE`/`RAG_DTYPE` changes the embedding space — re-ingest existing data. |
 
 **Model choice tips:**
 - Multilingual docs → e.g., `onnx-community/embeddinggemma-300m-ONNX` (100+ languages)
@@ -606,6 +607,9 @@ Yes, but you must delete your database and re-ingest all documents. Different mo
 
 **GPU acceleration?**
 Opt-in via `RAG_DEVICE`. Devices are passed straight to ONNX Runtime. GPU support is highly dependent on your system, Node.js version, and the underlying ONNX backend. See the [Transformers.js device source code](https://github.com/huggingface/transformers.js/blob/main/packages/transformers/src/utils/devices.js) for the live list of supported backend names. If the requested device fails to initialize, the server throws an error — set `RAG_DEVICE=cpu` to revert.
+
+**Can I change the embedding precision (dtype)?**
+Opt-in via `RAG_DTYPE` (default `fp32`). It is passed straight through and accepts any dtype the chosen model provides (`fp32`, `fp16`, `q8`, `int8`, …); if the model has no variant for the requested dtype, the server throws an error — set it to an available dtype or leave it unset for the `fp32` default. Changing `RAG_DEVICE`/`RAG_DTYPE` changes the embedding space, so delete `DB_PATH` and re-ingest after changing either.
 
 **Multi-user support?**
 No. Designed for single-user, local access. Multi-user would require authentication/access control.
