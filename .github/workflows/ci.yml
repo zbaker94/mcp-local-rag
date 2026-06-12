@@ -91,7 +91,6 @@ jobs:
         key: ${{ steps.hf-cache-restore.outputs.cache-primary-key }}
 
   webgpu-main-path:
-    needs: test
     strategy:
       fail-fast: false
       matrix:
