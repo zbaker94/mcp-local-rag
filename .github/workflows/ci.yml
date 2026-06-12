@@ -6,6 +6,11 @@ on:
   pull_request:
     branches: [ main, develop ]
 
+env:
+  # Pinned revision of Xenova/all-MiniLM-L6-v2. Bump together with any model
+  # change; the model cache key includes it, so bumping invalidates the cache.
+  HF_MODEL_REVISION: 751bff37182d3f1213fa05d7196b954e230abad9
+
 jobs:
   static-checks:
     strategy:
@@ -42,7 +47,48 @@ jobs:
     - name: Check production dependencies
       run: npx report-missing-dependencies
 
+  # Single owner of the external (HuggingFace) dependency. Downloads the model
+  # files once and publishes them via the GitHub Actions cache, so the test
+  # jobs below never touch the network — keeping flakiness to this one job.
+  # The model files are OS-independent, so one cross-OS cache serves all runners.
+  prepare-models:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+    - name: Setup Node.js
+      uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      with:
+        node-version-file: '.nvmrc'
+
+    - name: Restore model cache
+      id: cache
+      uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      with:
+        path: tmp/models
+        key: hf-model-allMiniLM-${{ env.HF_MODEL_REVISION }}
+        enableCrossOsArchive: true
+
+    # Pure file download (node: builtins + global fetch), so no pnpm install is
+    # needed. fp32 (model.onnx) serves the CPU tests; fp16 (model_fp16.onnx)
+    # serves the WebGPU tests. We never create an inference session here.
+    - name: Download model files (fp32 + fp16)
+      if: steps.cache.outputs.cache-hit != 'true'
+      run: |
+        node scripts/prewarm-embedder-cache.mjs fp32
+        node scripts/prewarm-embedder-cache.mjs fp16
+
+    - name: Save model cache
+      if: steps.cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      with:
+        path: tmp/models
+        key: hf-model-allMiniLM-${{ env.HF_MODEL_REVISION }}
+        enableCrossOsArchive: true
+
   test:
+    needs: prepare-models
     strategy:
       fail-fast: false
       matrix:
@@ -71,32 +117,19 @@ jobs:
     - name: Install dependencies
       run: pnpm install
 
-    # The integration tests use Xenova/all-MiniLM-L6-v2 via @huggingface/transformers,
-    # which is downloaded on first use (~90MB).
-    - name: Restore HuggingFace model cache
-      id: hf-cache-restore
+    # Populated by prepare-models; restore-only, so tests never hit the network.
+    - name: Restore model cache
       uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
       with:
         path: tmp/models
-        key: hf-model-${{ runner.os }}-Xenova-all-MiniLM-L6-v2-cpu-fp32
-        restore-keys: |
-          hf-model-${{ runner.os }}-Xenova-all-MiniLM-L6-v2-
-          hf-model-${{ runner.os }}-Xenova-all-MiniLM-L6-v2
-
-    - name: Prewarm HuggingFace model cache
-      run: node scripts/prewarm-embedder-cache.mjs cpu fp32
+        key: hf-model-allMiniLM-${{ env.HF_MODEL_REVISION }}
+        enableCrossOsArchive: true
 
     - name: Run tests
       run: pnpm test
 
-    - name: Save HuggingFace model cache
-      if: steps.hf-cache-restore.outputs.cache-hit != 'true'
-      uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-      with:
-        path: tmp/models
-        key: ${{ steps.hf-cache-restore.outputs.cache-primary-key }}
-
   webgpu-main-path:
+    needs: prepare-models
     strategy:
       fail-fast: false
       matrix:
@@ -139,25 +172,13 @@ jobs:
     - name: Verify Vulkan
       run: vulkaninfo --summary
 
-    - name: Restore HuggingFace model cache
-      id: hf-cache-restore-webgpu
+    # Populated by prepare-models; restore-only, so tests never hit the network.
+    - name: Restore model cache
       uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
       with:
         path: tmp/models
-        key: hf-model-${{ runner.os }}-Xenova-all-MiniLM-L6-v2-webgpu-fp16
-        restore-keys: |
-          hf-model-${{ runner.os }}-Xenova-all-MiniLM-L6-v2-
-          hf-model-${{ runner.os }}-Xenova-all-MiniLM-L6-v2
-
-    - name: Prewarm HuggingFace model cache
-      run: node scripts/prewarm-embedder-cache.mjs cpu fp16
-
-    - name: Save HuggingFace model cache
-      if: steps.hf-cache-restore-webgpu.outputs.cache-hit != 'true'
-      uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-      with:
-        path: tmp/models
-        key: ${{ steps.hf-cache-restore-webgpu.outputs.cache-primary-key }}
+        key: hf-model-allMiniLM-${{ env.HF_MODEL_REVISION }}
+        enableCrossOsArchive: true
 
     - name: Run WebGPU main path tests
       env:
@@ -173,10 +194,10 @@ jobs:
   # Stable aggregate check. The `main` ruleset requires a status named `ci`,
   # so this job keeps that name regardless of the test matrix dimensions.
   ci:
-    needs: [static-checks, test, webgpu-main-path]
+    needs: [static-checks, prepare-models, test, webgpu-main-path]
     if: always()
     runs-on: ubuntu-latest
     steps:
     - name: Verify the test matrix succeeded
-      if: needs.static-checks.result != 'success' || needs.test.result != 'success' || needs.webgpu-main-path.result != 'success'
+      if: needs.static-checks.result != 'success' || needs.prepare-models.result != 'success' || needs.test.result != 'success' || needs.webgpu-main-path.result != 'success'
       run: exit 1
