@@ -609,7 +609,7 @@ Yes, but you must delete your database and re-ingest all documents. Different mo
 Opt-in via `RAG_DEVICE`. Devices are passed straight to ONNX Runtime. GPU support is highly dependent on your system, Node.js version, and the underlying ONNX backend. See the [Transformers.js device source code](https://github.com/huggingface/transformers.js/blob/main/packages/transformers/src/utils/devices.js) for the live list of supported backend names. If the requested device fails to initialize, the server throws an error — set `RAG_DEVICE=cpu` to revert.
 
 **Can I change the embedding precision (dtype)?**
-Opt-in via `RAG_DTYPE` (default `fp32`); see the env-var table above for accepted values. If the model lacks the requested variant, the server throws an error naming the dtypes it does provide — pick one of those, or leave it unset. Changing `RAG_DEVICE`/`RAG_DTYPE` changes the embedding space, so delete `DB_PATH` and re-ingest after changing either.
+Opt-in via `RAG_DTYPE` (default `fp32`); accepted values are in the env-var table above. A recognized dtype the model lacks errors and lists the available ones; an unrecognized value (a typo) silently falls back to `fp32`. Changing `RAG_DEVICE`/`RAG_DTYPE` changes the embedding space — delete `DB_PATH` and re-ingest.
 
 **Multi-user support?**
 No. Designed for single-user, local access. Multi-user would require authentication/access control.

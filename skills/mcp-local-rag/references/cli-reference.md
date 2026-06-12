@@ -172,5 +172,3 @@ When operating against an existing database, the embedding configuration must ma
 | Execution device | `RAG_DEVICE` | `cpu` | A different device can produce minor numeric differences even at the same dtype |
 
 Keep these identical between ingest and query. After changing any of them, re-ingest so stored and query vectors share one space; mixing values silently degrades search quality.
-
-`RAG_DTYPE` is opt-in and pass-through: it accepts any dtype the chosen model provides (`fp32`, `fp16`, `q8`, `int8`, …). When the model has no variant for the requested dtype, embedder initialization fails with an error — set `RAG_DTYPE` to an available dtype, or leave it unset for the `fp32` default.
