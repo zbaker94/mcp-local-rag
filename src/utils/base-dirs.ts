@@ -12,6 +12,7 @@
 import { realpath, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { resolve, sep } from 'node:path'
+import { AppError } from './errors.js'
 
 // ============================================
 // Types
@@ -58,12 +59,9 @@ export type BaseDirsConfigWarning =
  * a dedicated subclass so consumers can distinguish configuration problems
  * from other I/O errors (e.g. `ValidationError` from `DocumentParser`).
  */
-export class BaseDirsConfigError extends Error {
-  constructor(
-    message: string,
-    public override readonly cause?: Error
-  ) {
-    super(message)
+export class BaseDirsConfigError extends AppError {
+  constructor(message: string, cause?: Error) {
+    super(message, 'config', 'config', cause)
     this.name = 'BaseDirsConfigError'
   }
 }
