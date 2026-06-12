@@ -6,7 +6,7 @@ import { displayPath } from '../utils/base-dirs.js'
 import { MAX_SCAN_DEPTH } from '../utils/limits.js'
 import { extractSourceFromPath, looksLikeRawDataPath } from '../utils/raw-data-utils.js'
 import { bfsCollectSupportedFiles, realpathForMatch } from '../utils/scan.js'
-import { createVectorStore, resolveCliBaseDirsOrExit, toErrorMessage } from './common.js'
+import { createVectorStore, formatCliError, resolveCliBaseDirsOrExit } from './common.js'
 import type { GlobalOptions } from './options.js'
 import { consumeBaseDirArg, resolveGlobalConfig, validatePath } from './options.js'
 
@@ -314,7 +314,7 @@ export async function runList(args: string[], globalOptions: GlobalOptions = {})
     // Output JSON to stdout
     process.stdout.write(JSON.stringify(result, null, 2))
   } catch (error) {
-    const message = toErrorMessage(error)
+    const message = formatCliError(error)
     console.error(`Failed to list files: ${message}`)
     process.exit(1)
   }

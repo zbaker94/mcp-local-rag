@@ -29,14 +29,15 @@ const cliCommonFactory = () => ({
     initialize: mocks.initialize,
     getChunksByRange: mocks.getChunksByRange,
   })),
-  // Pure helper used by the catch block; real implementation preserves the
-  // `Error: <message>` stderr behavior the tests assert.
-  toErrorMessage: (error: unknown) => (error instanceof Error ? error.message : String(error)),
+  // Catch-block renderer; faithful shim renders the full cause chain + stack
+  // so the cause-chain-to-stderr assertions exercise real behavior, not a stub.
+  formatCliError: formatCliErrorShim,
 })
 
 const MOCKED_PATHS = ['../../cli/common.js'] as const
 
 import { resolve, sep } from 'node:path'
+import { formatCliErrorShim } from './cli-error-shim.js'
 
 let runReadNeighbors: typeof import('../../cli/read-neighbors.js').runReadNeighbors
 
@@ -223,6 +224,43 @@ describe('CLI read-neighbors', () => {
     expect(error).toBeInstanceOf(Error)
     expect((error as Error).message).toBe('process.exit(1)')
     expect(output.join('\n')).toContain('before must be between 0 and 50')
+    expect(mocks.getChunksByRange).not.toHaveBeenCalled()
+  })
+
+  // --------------------------------------------
+  // Test 7c — Cause chain to stderr + exit preserved (AC-010, Contract-Delta CLI row)
+  // --------------------------------------------
+  it('writes the full cause chain to stderr and preserves exit code 1 on a nested failure', async () => {
+    // Inject a nested-cause failure at the dependency boundary so the main
+    // catch renders via formatCliError.
+    const root = new Error('lancedb segment corrupt')
+    const failure = new Error('getChunksByRange failed', { cause: root })
+    mocks.getChunksByRange.mockRejectedValueOnce(failure)
+
+    const { output, error } = await captureStderr(() =>
+      runReadNeighbors(['--file-path', '/abs/path.md', '--chunk-index', '5'])
+    )
+
+    // Exit code preserved (1).
+    expect(error).toBeInstanceOf(Error)
+    expect((error as Error).message).toBe('process.exit(1)')
+
+    // Both the outer message and the root cause reach stderr (CLI is
+    // operator-facing → cause chain printed, unlike the MCP boundary).
+    const joined = output.join('\n')
+    expect(joined).toContain('getChunksByRange failed')
+    expect(joined).toContain('Caused by: ')
+    expect(joined).toContain('lancedb segment corrupt')
+  })
+
+  // --------------------------------------------
+  // Test 7d — --help still exits 0 (exit-code policy untouched)
+  // --------------------------------------------
+  it('keeps --help on exit 0 after the formatCliError swap', async () => {
+    const { error } = await captureStderr(() => runReadNeighbors(['--help']))
+
+    expect(error).toBeInstanceOf(Error)
+    expect((error as Error).message).toBe('process.exit(0)')
     expect(mocks.getChunksByRange).not.toHaveBeenCalled()
   })
 

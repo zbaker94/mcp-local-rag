@@ -28,9 +28,9 @@ const cliCommonFactory = () => ({
     deleteChunks: mocks.deleteChunks,
     optimize: mocks.optimize,
   })),
-  // Pure helper used by the catch block; real implementation preserves the
-  // `Error: <message>` stderr behavior the tests assert.
-  toErrorMessage: (error: unknown) => (error instanceof Error ? error.message : String(error)),
+  // Catch-block renderer; faithful shim preserves the `Error: <message>`
+  // stderr behavior the tests assert.
+  formatCliError: formatCliErrorShim,
 })
 
 const fsPromisesFactory = async (
@@ -47,6 +47,7 @@ const MOCKED_PATHS = ['../../cli/common.js', 'node:fs/promises'] as const
 
 import { mkdir, rm, writeFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
+import { formatCliErrorShim } from './cli-error-shim.js'
 
 let runDelete: typeof import('../../cli/delete.js').runDelete
 

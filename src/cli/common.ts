@@ -8,17 +8,32 @@ import {
   parseBaseDirsEnv,
   resolveBaseDirs,
 } from '../utils/base-dirs.js'
+import { getCauseChain } from '../utils/errors.js'
 import { checkSensitivePath } from '../utils/sensitive-path.js'
 import { VectorStore } from '../vectordb/index.js'
 import { type ResolvedGlobalConfig, resolveDevice, resolveDtype, validatePath } from './options.js'
 
 /**
- * Extract a human-readable message from an unknown caught value. Returns
- * `error.message` for `Error` instances and `String(error)` otherwise.
- * Single source for the CLI catch-block error-rendering pattern.
+ * Render an unknown caught value for a CLI failure site: every link of the
+ * `.cause` chain (via {@link getCauseChain}) followed by its stack, joined so
+ * the operator sees the full diagnostic. Deeper links are prefixed
+ * `Caused by: `; the outermost link is not.
+ *
+ * The CLI is operator-facing, so — unlike the MCP client boundary, which never
+ * leaks the cause chain — the full chain IS printed (Contract-Delta CLI row:
+ * `message` → `message` + cause chain on stderr). Callers keep their own
+ * operation prefix and exit-code policy; this function only produces the
+ * rendered reason. Single source for the CLI catch-block error-rendering
+ * pattern, replacing the former message-only renderer.
  */
-export function toErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
+export function formatCliError(error: unknown): string {
+  const err = error instanceof Error ? error : new Error(String(error))
+  return getCauseChain(err)
+    .map((link, index) => {
+      const header = index === 0 ? '' : 'Caused by: '
+      return `${header}${link.stack || `${link.name}: ${link.message}`}`
+    })
+    .join('\n')
 }
 
 /**
