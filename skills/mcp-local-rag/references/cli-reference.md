@@ -163,4 +163,4 @@ Out-of-range indices are filtered; only existing chunks within the document are 
 
 ## Config Matching
 
-When operating against an existing database, use the same embedding model it was ingested with — `--model-name` (env `MODEL_NAME`). A different model produces vectors in a different space, silently degrading search quality; if you change it, re-ingest.
+When operating against an existing database, options must match the MCP server config — especially `--model-name`. Using a different embedding model produces vectors in a different space, silently degrading search quality.
