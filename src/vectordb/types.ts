@@ -1,5 +1,7 @@
 // VectorDB type definitions, constants, type guards, and error classes
 
+import { AppError } from '../utils/errors.js'
+
 // ============================================
 // Constants
 // ============================================
@@ -266,12 +268,9 @@ export function toChunkRow(raw: unknown): ChunkRow {
 /**
  * Database error
  */
-export class DatabaseError extends Error {
-  constructor(
-    message: string,
-    public override readonly cause?: Error
-  ) {
-    super(message)
+export class DatabaseError extends AppError {
+  constructor(message: string, cause?: Error) {
+    super(message, 'vectordb', 'internal', cause)
     this.name = 'DatabaseError'
   }
 }

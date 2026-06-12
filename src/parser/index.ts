@@ -7,6 +7,7 @@ import mammoth from 'mammoth'
 import type { Document as MupdfDocument } from 'mupdf'
 import { SemanticChunker } from '../chunker/index.js'
 import { withTrailingSeparator } from '../utils/base-dirs.js'
+import { AppError } from '../utils/errors.js'
 import { extractPdfPages } from './pdf-extract.js'
 import type { EmbedderInterface } from './pdf-filter.js'
 import {
@@ -74,12 +75,9 @@ export type ParserConfig =
 /**
  * Validation error (equivalent to 400)
  */
-export class ValidationError extends Error {
-  constructor(
-    message: string,
-    public override readonly cause?: Error
-  ) {
-    super(message)
+export class ValidationError extends AppError {
+  constructor(message: string, cause?: Error) {
+    super(message, 'parser', 'validation', cause)
     this.name = 'ValidationError'
   }
 }
@@ -87,12 +85,9 @@ export class ValidationError extends Error {
 /**
  * File operation error (equivalent to 500)
  */
-export class FileOperationError extends Error {
-  constructor(
-    message: string,
-    public override readonly cause?: Error
-  ) {
-    super(message)
+export class FileOperationError extends AppError {
+  constructor(message: string, cause?: Error) {
+    super(message, 'parser', 'io', cause)
     this.name = 'FileOperationError'
   }
 }
