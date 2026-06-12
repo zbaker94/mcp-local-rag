@@ -15,8 +15,8 @@ import type { VectorStore } from '../vectordb/index.js'
 import {
   createEmbedder,
   createVectorStore,
+  formatCliError,
   resolveCliBaseDirsOrExit,
-  toErrorMessage,
 } from './common.js'
 import { collectFiles } from './file-collection.js'
 import type { GlobalOptions, ResolvedGlobalConfig } from './options.js'
@@ -521,7 +521,7 @@ export async function runIngest(args: string[], globalOptions: GlobalOptions = {
           summary.totalChunks += chunkCount
         }
       } catch (error) {
-        const reason = toErrorMessage(error)
+        const reason = formatCliError(error)
         console.error(`${label} ${filePath} ... FAILED: ${reason}`)
         summary.failed++
       }

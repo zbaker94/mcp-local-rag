@@ -7,6 +7,7 @@ import mammoth from 'mammoth'
 import type { Document as MupdfDocument } from 'mupdf'
 import { SemanticChunker } from '../chunker/index.js'
 import { withTrailingSeparator } from '../utils/base-dirs.js'
+import { AppError, isAppError } from '../utils/errors.js'
 import { extractPdfPages } from './pdf-extract.js'
 import type { EmbedderInterface } from './pdf-filter.js'
 import {
@@ -74,12 +75,9 @@ export type ParserConfig =
 /**
  * Validation error (equivalent to 400)
  */
-export class ValidationError extends Error {
-  constructor(
-    message: string,
-    public override readonly cause?: Error
-  ) {
-    super(message)
+export class ValidationError extends AppError {
+  constructor(message: string, cause?: Error) {
+    super(message, 'parser', 'validation', cause)
     this.name = 'ValidationError'
   }
 }
@@ -87,12 +85,9 @@ export class ValidationError extends Error {
 /**
  * File operation error (equivalent to 500)
  */
-export class FileOperationError extends Error {
-  constructor(
-    message: string,
-    public override readonly cause?: Error
-  ) {
-    super(message)
+export class FileOperationError extends AppError {
+  constructor(message: string, cause?: Error) {
+    super(message, 'parser', 'io', cause)
     this.name = 'FileOperationError'
   }
 }
@@ -343,6 +338,12 @@ export class DocumentParser {
           }
         }
       } catch (titleError) {
+        // A foreign domain error raised while the embedder runs during page-1
+        // chunking (e.g. `EmbeddingError`) is NOT a title-local failure — let
+        // it propagate so it is not silently masked by the filename fallback.
+        if (isAppError(titleError)) {
+          throw titleError
+        }
         console.error(`Title extraction failed, falling back to filename: ${titleError}`)
       }
 
@@ -357,6 +358,15 @@ export class DocumentParser {
 
       return { content: text, title: titleResult.title }
     } catch (error) {
+      // A foreign domain error (e.g. `EmbeddingError` raised while the parser
+      // uses the embedder) keeps its identity — rethrow it unchanged instead
+      // of relabeling it as a PDF parse failure. The parser's own
+      // `ValidationError`/`FileOperationError` are also `AppError` and so
+      // rethrow as-is, preserving their identity. Only a genuine non-`AppError`
+      // IO/mupdf failure wraps as `FileOperationError` with its `.cause` set.
+      if (isAppError(error)) {
+        throw error
+      }
       throw new FileOperationError(`Failed to parse PDF: ${filePath}`, error as Error)
     } finally {
       // Release the native WASM handle exactly once per invocation, on both
@@ -454,9 +464,16 @@ export class DocumentParser {
       return { doc, metadataTitle, pages }
     } catch (error) {
       // `doc` is undefined when `openDocument` itself threw — nothing to free.
-      // When it is defined, dispose before re-throwing so the caller never
-      // receives the handle and cannot be expected to clean it up.
+      // When it is defined, dispose before re-throwing (on BOTH the foreign and
+      // the genuine error paths) so the caller never receives the handle and
+      // cannot be expected to clean it up.
       doc?.destroy()
+      // A foreign domain error (e.g. `EmbeddingError`) keeps its identity —
+      // rethrow it unchanged. Only a genuine non-`AppError` IO/mupdf failure
+      // wraps as `FileOperationError` with its `.cause` set.
+      if (isAppError(error)) {
+        throw error
+      }
       throw new FileOperationError(`Failed to parse PDF pages: ${filePath}`, error as Error)
     }
   }

@@ -2,26 +2,25 @@
 //
 // `VlmError` is the package-wide named error for the visual ingest path.
 // `renderer.ts`, `captioner.ts`, and the orchestrator (`index.ts`) import it
-// from this single source. Shape mirrors `ValidationError`: a named class
-// extending `Error`, with `name` assignment and a public override `cause`.
+// from this single source. It joins the shared `AppError` taxonomy (taxonomy
+// only — name/message/cause behavior is unchanged) and additionally carries
+// the offending page number.
 //
 // `CaptionerConfig` / `Captioner` are the captioner's public interface,
 // shared across the visual ingest modules.
+
+import { AppError } from '../utils/errors.js'
 
 /**
  * Error raised by any module on the visual ingest path. Carries the offending
  * 1-based page number so callers can correlate it with the page list.
  */
-export class VlmError extends Error {
-  public override readonly cause?: Error
+export class VlmError extends AppError {
   public readonly pageNum: number
 
   constructor(message: string, options: { cause?: Error; pageNum: number }) {
-    super(message)
+    super(message, 'pdf-visual', 'internal', options.cause)
     this.name = 'VlmError'
-    if (options.cause !== undefined) {
-      this.cause = options.cause
-    }
     this.pageNum = options.pageNum
   }
 }

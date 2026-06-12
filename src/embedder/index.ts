@@ -1,6 +1,13 @@
 // Embedder implementation with Transformers.js
 
-import { type DeviceType, env, pipeline } from '@huggingface/transformers'
+import {
+  type DataType,
+  type DeviceType,
+  env,
+  ModelRegistry,
+  pipeline,
+} from '@huggingface/transformers'
+import { AppError } from '../utils/errors.js'
 
 // ============================================
 // Type Definitions
@@ -18,6 +25,13 @@ export interface EmbedderConfig {
   cacheDir: string
   /** Device type */
   device?: string
+  /**
+   * Embedding quantization dtype (fp32, fp16, q8, int8, ...). Passed through to
+   * transformers.js — no allowlist. Undefined means "unset": initialize() then
+   * applies the fp32 default. The unset-vs-explicit-fp32 distinction is
+   * preserved on purpose (it gates failure-path error enrichment).
+   */
+  dtype?: string
 }
 
 // ============================================
@@ -27,12 +41,9 @@ export interface EmbedderConfig {
 /**
  * Embedding generation error
  */
-export class EmbeddingError extends Error {
-  constructor(
-    message: string,
-    public override readonly cause?: Error
-  ) {
-    super(message)
+export class EmbeddingError extends AppError {
+  constructor(message: string, cause?: Error) {
+    super(message, 'embedder', 'internal', cause)
     this.name = 'EmbeddingError'
   }
 }
@@ -95,15 +106,58 @@ export class Embedder {
 
     try {
       this.model = await pipeline('feature-extraction', this.config.modelPath, {
-        dtype: 'fp32',
+        // The sole fp32 default literal: unset dtype loads fp32, unchanged from
+        // before this knob existed. `as DataType` mirrors the `as DeviceType`
+        // cast below — a single typed pipeline boundary, no allowlist.
+        dtype: (this.config.dtype ?? 'fp32') as DataType,
         device: device as DeviceType,
       })
       console.error(`Embedder: Model loaded successfully (device=${device})`)
     } catch (error) {
-      // Don't prepend "device=X" — the prior stderr line already says which
-      // device was attempted, and transformers.js' own errors typically
-      // include the device name. Just re-type the error.
-      throw new EmbeddingError((error as Error).message, error as Error)
+      const nativeError = error as Error
+
+      // Only enrich when RAG_DTYPE was explicitly set (unset is `undefined` per
+      // TD-5). Enrichment never runs on the happy path and never on the unset
+      // path, so normal operation adds zero network. Always re-throw — an
+      // unavailable dtype fails loud, never silently downgrades (TD-2).
+      const message = await this.enrichDtypeFailureMessage(nativeError.message)
+      throw new EmbeddingError(message, nativeError)
+    }
+  }
+
+  /**
+   * Best-effort failure-path enrichment for an explicit `RAG_DTYPE`.
+   *
+   * When the load failed and a dtype was explicitly requested, consult the
+   * model's available dtypes and, if the requested one is absent, return a
+   * message that names what the model provides. The enumeration is a Hub
+   * network call wrapped in its own try/catch: if it fails (e.g. air-gapped
+   * after caching) it degrades to a generic clear, dtype-aware message rather
+   * than surfacing a confusing secondary error (TD-3). This method never throws
+   * and never converts the load failure into a fallback — the caller always
+   * re-throws.
+   *
+   * @param nativeMessage - The underlying load-failure message.
+   * @returns The message to wrap in the thrown `EmbeddingError`.
+   */
+  private async enrichDtypeFailureMessage(nativeMessage: string): Promise<string> {
+    const requestedDtype = this.config.dtype
+    if (requestedDtype === undefined) {
+      return nativeMessage
+    }
+
+    try {
+      const availableDtypes = await ModelRegistry.get_available_dtypes(this.config.modelPath)
+      if (availableDtypes.includes(requestedDtype)) {
+        // The requested dtype exists for this model, so the load failed for some
+        // other reason — keep the native message, don't misattribute it to dtype.
+        return nativeMessage
+      }
+      return `Model "${this.config.modelPath}" provides dtypes [${availableDtypes.join(', ')}]; requested dtype "${requestedDtype}" is unavailable. Set RAG_DTYPE to one of the available dtypes, or leave it unset for the fp32 default.`
+    } catch {
+      // Enumeration unavailable (e.g. offline). Degrade to a generic clear,
+      // dtype-aware message — no secondary error, still re-thrown by the caller.
+      return `Failed to load model "${this.config.modelPath}" with requested dtype "${requestedDtype}". The model may not provide this dtype, and the available-dtype list could not be retrieved. Set RAG_DTYPE to a dtype the model provides, or leave it unset for the fp32 default. (${nativeMessage})`
     }
   }
 

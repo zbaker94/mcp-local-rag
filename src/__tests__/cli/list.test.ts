@@ -45,14 +45,15 @@ const cliCommonFactory = () => ({
   resolveCliBaseDirsOrExit: vi
     .fn()
     .mockImplementation((cliRoots: string[]) => mocks.resolveCliBaseDirs(cliRoots)),
-  // Pure helper used by the catch block; real implementation preserves the
-  // `Error: <message>` stderr behavior the tests assert.
-  toErrorMessage: (error: unknown) => (error instanceof Error ? error.message : String(error)),
+  // Catch-block renderer; faithful shim preserves the
+  // `Failed to list files: <message>` stderr behavior the tests assert.
+  formatCliError: formatCliErrorShim,
 })
 
 const MOCKED_PATHS = ['node:fs/promises', '../../cli/common.js'] as const
 
 import { resolve } from 'node:path'
+import { formatCliErrorShim } from './cli-error-shim.js'
 
 let parseArgs: typeof import('../../cli/list.js').parseArgs
 let runList: typeof import('../../cli/list.js').runList
