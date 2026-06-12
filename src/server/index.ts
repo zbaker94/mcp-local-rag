@@ -147,6 +147,9 @@ export class RAGServer {
     if (config.device !== undefined) {
       embedderConfig.device = config.device
     }
+    if (config.dtype !== undefined) {
+      embedderConfig.dtype = config.dtype
+    }
     this.embedder = new Embedder(embedderConfig)
     this.chunker = new SemanticChunker(
       config.chunkMinLength !== undefined ? { minChunkLength: config.chunkMinLength } : {}

@@ -1,5 +1,5 @@
 // MCP Server entry point
-import { resolveDevice } from './cli/options.js'
+import { resolveDevice, resolveDtype } from './cli/options.js'
 import { RAGServer } from './server/index.js'
 import { BaseDirsConfigError, parseBaseDirsEnv, resolveBaseDirs } from './utils/base-dirs.js'
 import { DEFAULT_MAX_FILE_SIZE } from './utils/limits.js'
@@ -99,6 +99,9 @@ export async function resolveServerConfig(
   cwd: string
 ): Promise<ConstructorParameters<typeof RAGServer>[0]> {
   const device = resolveDevice(env['RAG_DEVICE'])
+  // Undefined when RAG_DTYPE is unset — threaded into config only when defined
+  // (see below), preserving the unset signal for the embedder's fp32 default.
+  const dtype = resolveDtype(env['RAG_DTYPE'])
   const configWarnings: string[] = []
 
   // Sensitive-path pre-check on the RAW user-supplied paths, before the
@@ -188,6 +191,10 @@ export async function resolveServerConfig(
   if (hybridWeight.warning) configWarnings.push(hybridWeight.warning)
   if (chunkMinLength.value !== undefined) config.chunkMinLength = chunkMinLength.value
   if (chunkMinLength.warning) configWarnings.push(chunkMinLength.warning)
+
+  // Set dtype only when defined, so config.dtype === undefined keeps meaning
+  // "RAG_DTYPE unset" (the embedder then applies its fp32 default).
+  if (dtype !== undefined) config.dtype = dtype
 
   if (configWarnings.length > 0) config.configWarnings = configWarnings
   if (configError !== undefined) config.configError = configError

@@ -84,6 +84,7 @@ describe('cli/common', () => {
 
   describe('createEmbedder', () => {
     const originalDevice = process.env['RAG_DEVICE']
+    const originalDtype = process.env['RAG_DTYPE']
 
     afterEach(() => {
       mocks.Embedder.mockReset()
@@ -91,6 +92,11 @@ describe('cli/common', () => {
         delete process.env['RAG_DEVICE']
       } else {
         process.env['RAG_DEVICE'] = originalDevice
+      }
+      if (originalDtype === undefined) {
+        delete process.env['RAG_DTYPE']
+      } else {
+        process.env['RAG_DTYPE'] = originalDtype
       }
     })
 
@@ -114,6 +120,33 @@ describe('cli/common', () => {
       createEmbedder(makeConfig({ modelName: 'custom/model', cacheDir: '/custom/cache' }))
 
       expect(mocks.Embedder).toHaveBeenCalledWith(expect.objectContaining({ device: 'webgpu' }))
+    })
+
+    it('omits dtype from the Embedder config when RAG_DTYPE is unset', () => {
+      delete process.env['RAG_DTYPE']
+
+      createEmbedder(makeConfig({ modelName: 'custom/model', cacheDir: '/custom/cache' }))
+
+      expect(mocks.Embedder).toHaveBeenCalledOnce()
+      const passedConfig = mocks.Embedder.mock.calls[0]?.[0]
+      expect(passedConfig).not.toHaveProperty('dtype')
+    })
+
+    it('passes RAG_DTYPE through to the Embedder when set', () => {
+      process.env['RAG_DTYPE'] = 'q8'
+
+      createEmbedder(makeConfig({ modelName: 'custom/model', cacheDir: '/custom/cache' }))
+
+      expect(mocks.Embedder).toHaveBeenCalledWith(expect.objectContaining({ dtype: 'q8' }))
+    })
+
+    it('omits dtype when RAG_DTYPE is whitespace-only', () => {
+      process.env['RAG_DTYPE'] = '   '
+
+      createEmbedder(makeConfig({ modelName: 'custom/model', cacheDir: '/custom/cache' }))
+
+      const passedConfig = mocks.Embedder.mock.calls[0]?.[0]
+      expect(passedConfig).not.toHaveProperty('dtype')
     })
   })
 })

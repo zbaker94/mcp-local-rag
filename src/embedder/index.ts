@@ -1,6 +1,6 @@
 // Embedder implementation with Transformers.js
 
-import { type DeviceType, env, pipeline } from '@huggingface/transformers'
+import { type DataType, type DeviceType, env, pipeline } from '@huggingface/transformers'
 
 // ============================================
 // Type Definitions
@@ -18,6 +18,13 @@ export interface EmbedderConfig {
   cacheDir: string
   /** Device type */
   device?: string
+  /**
+   * Embedding quantization dtype (fp32, fp16, q8, int8, ...). Passed through to
+   * transformers.js — no allowlist. Undefined means "unset": initialize() then
+   * applies the fp32 default. The unset-vs-explicit-fp32 distinction is
+   * preserved on purpose (it gates failure-path error enrichment).
+   */
+  dtype?: string
 }
 
 // ============================================
@@ -95,7 +102,10 @@ export class Embedder {
 
     try {
       this.model = await pipeline('feature-extraction', this.config.modelPath, {
-        dtype: 'fp32',
+        // The sole fp32 default literal: unset dtype loads fp32, unchanged from
+        // before this knob existed. `as DataType` mirrors the `as DeviceType`
+        // cast below — a single typed pipeline boundary, no allowlist.
+        dtype: (this.config.dtype ?? 'fp32') as DataType,
         device: device as DeviceType,
       })
       console.error(`Embedder: Model loaded successfully (device=${device})`)

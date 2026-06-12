@@ -10,7 +10,7 @@ import {
 } from '../utils/base-dirs.js'
 import { checkSensitivePath } from '../utils/sensitive-path.js'
 import { VectorStore } from '../vectordb/index.js'
-import { type ResolvedGlobalConfig, resolveDevice, validatePath } from './options.js'
+import { type ResolvedGlobalConfig, resolveDevice, resolveDtype, validatePath } from './options.js'
 
 /**
  * Extract a human-readable message from an unknown caught value. Returns
@@ -37,12 +37,20 @@ export function createVectorStore(config: ResolvedGlobalConfig): VectorStore {
  * Callers are responsible for managing the Embedder lifecycle.
  */
 export function createEmbedder(config: ResolvedGlobalConfig): Embedder {
-  return new Embedder({
+  const embedderConfig: ConstructorParameters<typeof Embedder>[0] = {
     modelPath: config.modelName,
     batchSize: 16,
     cacheDir: config.cacheDir,
     device: resolveDevice(process.env['RAG_DEVICE']),
-  })
+  }
+  // Set dtype only when RAG_DTYPE resolves to a defined value, mirroring the
+  // server path — an unset RAG_DTYPE leaves config.dtype undefined so the
+  // embedder applies its fp32 default.
+  const dtype = resolveDtype(process.env['RAG_DTYPE'])
+  if (dtype !== undefined) {
+    embedderConfig.dtype = dtype
+  }
+  return new Embedder(embedderConfig)
 }
 
 /**
