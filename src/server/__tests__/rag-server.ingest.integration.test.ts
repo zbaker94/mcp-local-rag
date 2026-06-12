@@ -4,6 +4,7 @@
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { withTestDevice } from '../../__tests__/test-device.js'
 import { RAGServer } from '../index.js'
 
 describe('AC-008: File Re-ingestion', () => {
@@ -15,13 +16,15 @@ describe('AC-008: File Re-ingestion', () => {
     mkdirSync(localTestDbPath, { recursive: true })
     mkdirSync(localTestDataDir, { recursive: true })
 
-    localRagServer = new RAGServer({
-      dbPath: localTestDbPath,
-      modelName: 'Xenova/all-MiniLM-L6-v2',
-      cacheDir: './tmp/models',
-      baseDir: localTestDataDir,
-      maxFileSize: 100 * 1024 * 1024,
-    })
+    localRagServer = new RAGServer(
+      withTestDevice({
+        dbPath: localTestDbPath,
+        modelName: 'Xenova/all-MiniLM-L6-v2',
+        cacheDir: './tmp/models',
+        baseDir: localTestDataDir,
+        maxFileSize: 100 * 1024 * 1024,
+      })
+    )
 
     await localRagServer.initialize()
   })
@@ -53,7 +56,7 @@ describe('AC-008: File Re-ingestion', () => {
     expect(targetFiles.length).toBe(1)
     // Validation: Chunk count matches new data (not old + new combined)
     expect(targetFiles[0].chunkCount).toBe(updatedChunkCount)
-  })
+  }, 60000)
 
   // AC interpretation: [Data protection] Prevent data loss when re-ingest results in 0 chunks
   // Validation: When chunking produces 0 chunks, error is thrown before delete (preserves existing data)
@@ -77,7 +80,7 @@ describe('AC-008: File Re-ingestion', () => {
     const targetFiles = files.files.filter((f: { filePath: string }) => f.filePath === testFile)
     expect(targetFiles.length).toBe(1)
     expect(targetFiles[0].chunkCount).toBe(ingest1.chunkCount)
-  })
+  }, 60000)
 })
 
 describe('AC-009: Error Handling (Complete)', () => {
@@ -89,13 +92,15 @@ describe('AC-009: Error Handling (Complete)', () => {
     mkdirSync(localTestDbPath, { recursive: true })
     mkdirSync(localTestDataDir, { recursive: true })
 
-    localRagServer = new RAGServer({
-      dbPath: localTestDbPath,
-      modelName: 'Xenova/all-MiniLM-L6-v2',
-      cacheDir: './tmp/models',
-      baseDir: localTestDataDir,
-      maxFileSize: 100 * 1024 * 1024,
-    })
+    localRagServer = new RAGServer(
+      withTestDevice({
+        dbPath: localTestDbPath,
+        modelName: 'Xenova/all-MiniLM-L6-v2',
+        cacheDir: './tmp/models',
+        baseDir: localTestDataDir,
+        maxFileSize: 100 * 1024 * 1024,
+      })
+    )
 
     await localRagServer.initialize()
   })

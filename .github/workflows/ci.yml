@@ -6,6 +6,11 @@ on:
   pull_request:
     branches: [ main, develop ]
 
+env:
+  # Pinned revision of Xenova/all-MiniLM-L6-v2. Bump together with any model
+  # change; the model cache key includes it, so bumping invalidates the cache.
+  HF_MODEL_REVISION: 751bff37182d3f1213fa05d7196b954e230abad9
+
 jobs:
   static-checks:
     strategy:
@@ -42,14 +47,52 @@ jobs:
     - name: Check production dependencies
       run: npx report-missing-dependencies
 
+  # Single owner of the external (HuggingFace) dependency. Downloads the model
+  # files once and publishes them via the GitHub Actions cache, so the test
+  # jobs below never touch the network — keeping flakiness to this one job.
+  # The model files are OS-independent, so one cross-OS cache serves all runners.
+  prepare-models:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+    - name: Setup Node.js
+      uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      with:
+        node-version-file: '.nvmrc'
+
+    - name: Restore model cache
+      id: cache
+      uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      with:
+        path: tmp/models
+        key: hf-model-allMiniLM-${{ env.HF_MODEL_REVISION }}
+        enableCrossOsArchive: true
+
+    # Pure file download (node: builtins + global fetch), so no pnpm install is
+    # needed. fp32 (model.onnx) serves the CPU tests; fp16 (model_fp16.onnx)
+    # serves the WebGPU tests. We never create an inference session here.
+    - name: Download model files (fp32 + fp16)
+      if: steps.cache.outputs.cache-hit != 'true'
+      run: |
+        node scripts/prewarm-embedder-cache.mjs fp32
+        node scripts/prewarm-embedder-cache.mjs fp16
+
+    - name: Save model cache
+      if: steps.cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      with:
+        path: tmp/models
+        key: hf-model-allMiniLM-${{ env.HF_MODEL_REVISION }}
+        enableCrossOsArchive: true
+
   test:
+    needs: prepare-models
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
-        # webgpu cells install a software Vulkan adapter (SwiftShader on
-        # Windows, Lavapipe on Linux) because CI runners have no GPU.
-        device: [cpu, webgpu]
     runs-on: ${{ matrix.os }}
 
     env:
@@ -74,58 +117,87 @@ jobs:
     - name: Install dependencies
       run: pnpm install
 
-    - name: Install Vulkan SDK and Software Rasterizer (webgpu only)
-      if: matrix.device == 'webgpu'
+    # Populated by prepare-models; restore-only, so tests never hit the network.
+    - name: Restore model cache
+      uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      with:
+        path: tmp/models
+        key: hf-model-allMiniLM-${{ env.HF_MODEL_REVISION }}
+        enableCrossOsArchive: true
+
+    - name: Run tests
+      run: pnpm test
+
+  webgpu-main-path:
+    needs: prepare-models
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+
+    env:
+      TZ: Asia/Tokyo
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+    - name: Setup Node.js
+      uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      with:
+        node-version-file: '.nvmrc'
+
+    - name: Install pnpm
+      uses: pnpm/action-setup@02f6c237bd2518259fed6c71566509edfb3f2b74 # v4
+      with:
+        version: 10
+
+    - name: Install dependencies
+      run: pnpm install
+
+    - name: Install Vulkan SDK and Software Rasterizer
       uses: jakoch/install-vulkan-sdk-action@3c53c378c9bfbb2ea122a1cc164a837d4004c871 # v1.5.2
       with:
         install_runtime: true
         install_swiftshader: ${{ runner.os == 'Windows' }}
         install_lavapipe: ${{ runner.os == 'Linux' }}
 
-    - name: Install Vulkan Dependencies (Ubuntu, webgpu only)
-      if: matrix.device == 'webgpu' && runner.os == 'Linux'
+    - name: Install Vulkan Dependencies (Ubuntu)
+      if: runner.os == 'Linux'
       run: |
         sudo apt-get update
         sudo apt-get install -y libvulkan1 vulkan-tools libwayland-client0 mesa-vulkan-drivers
 
-    - name: Verify Vulkan (webgpu only)
-      if: matrix.device == 'webgpu'
+    - name: Verify Vulkan
       run: vulkaninfo --summary
 
-    # The integration tests use Xenova/all-MiniLM-L6-v2 via @huggingface/transformers,
-    # which is downloaded on first use (~90MB). Both device cells per OS share the
-    # same model artefacts, so we restore on every cell but save only from the cpu
-    # cell to avoid two cells racing to reserve/save the same key.
-    - name: Restore HuggingFace model cache
-      id: hf-cache-restore
+    # Populated by prepare-models; restore-only, so tests never hit the network.
+    - name: Restore model cache
       uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
       with:
         path: tmp/models
-        key: hf-model-${{ runner.os }}-Xenova-all-MiniLM-L6-v2
+        key: hf-model-allMiniLM-${{ env.HF_MODEL_REVISION }}
+        enableCrossOsArchive: true
 
-    - name: Run tests
+    - name: Run WebGPU main path tests
       env:
-        RAG_DEVICE: ${{ matrix.device }}
-        # Direct Dawn to use Vulkan (rather than D3D12) on Windows when running webgpu
-        # mode in CI, so SwiftShader/Lavapipe can serve as the adapter.
-        WGPU_BACKEND: ${{ matrix.device == 'webgpu' && 'vulkan' || '' }}
-        VK_ICD_FILENAMES: ${{ matrix.device == 'webgpu' && (runner.os == 'Windows' && 'C:\SwiftShader\vk_swiftshader_icd.json' || '/usr/share/vulkan/icd.d/lvp_icd.json') || '' }}
-      run: pnpm test
-
-    - name: Save HuggingFace model cache
-      if: matrix.device == 'cpu' && steps.hf-cache-restore.outputs.cache-hit != 'true'
-      uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-      with:
-        path: tmp/models
-        key: ${{ steps.hf-cache-restore.outputs.cache-primary-key }}
+        # WebGPU benefits from lower-precision model weights; fp32 is kept as
+        # the default for normal CPU tests.
+        RAG_DTYPE: fp16
+        # Direct Dawn to use Vulkan (rather than D3D12) on Windows, so
+        # SwiftShader/Lavapipe can serve as the adapter.
+        WGPU_BACKEND: vulkan
+        VK_ICD_FILENAMES: ${{ runner.os == 'Windows' && 'C:\SwiftShader\vk_swiftshader_icd.json' || '/usr/share/vulkan/icd.d/lvp_icd.json' }}
+      run: pnpm run test:webgpu:main-path
 
   # Stable aggregate check. The `main` ruleset requires a status named `ci`,
   # so this job keeps that name regardless of the test matrix dimensions.
   ci:
-    needs: [static-checks, test]
+    needs: [static-checks, prepare-models, test, webgpu-main-path]
     if: always()
     runs-on: ubuntu-latest
     steps:
     - name: Verify the test matrix succeeded
-      if: needs.static-checks.result != 'success' || needs.test.result != 'success'
+      if: needs.static-checks.result != 'success' || needs.prepare-models.result != 'success' || needs.test.result != 'success' || needs.webgpu-main-path.result != 'success'
       run: exit 1
