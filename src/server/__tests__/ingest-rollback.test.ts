@@ -6,6 +6,7 @@ import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import type { VectorChunk } from '../../vectordb/index.js'
+import { DatabaseError } from '../../vectordb/types.js'
 import { RAGServer } from '../index.js'
 
 describe('Ingest Rollback', () => {
@@ -38,7 +39,7 @@ describe('Ingest Rollback', () => {
   // Rollback-restores-original is verified observably below ('restores the full
   // original chunk set with real vectors on rollback').
 
-  it('rethrows the original insert error (identity preserved) when rollback also fails', async () => {
+  it('surfaces a distinct DatabaseError (cause = insert error) when rollback also fails', async () => {
     // Arrange: Ingest a file normally first
     const testFile = resolve(testDataDir, 'rollback-double-fail.txt')
     writeFileSync(testFile, 'Content for double failure test. '.repeat(50))
@@ -48,10 +49,9 @@ describe('Ingest Rollback', () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const vectorStore = (ragServer as any).vectorStore
 
-    // Both insert calls fail (new data insert + rollback restore). The handler
-    // logs the rollback failure to stderr but rethrows the ORIGINAL insert
-    // error with its identity intact (no plain-Error conversion / combined
-    // message); the central dispatcher mapper owns the client-facing message.
+    // Both insert calls fail (new data insert + rollback restore): the prior
+    // data is now gone. The handler surfaces a distinct DatabaseError that says
+    // so, preserving the original insert error as `.cause`.
     const insertError = new Error('Insert failed')
     const insertSpy = vi
       .spyOn(vectorStore, 'insertChunks')
@@ -61,10 +61,18 @@ describe('Ingest Rollback', () => {
     vi.spyOn(vectorStore, 'optimize').mockResolvedValue(undefined)
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
 
-    // Act: Re-ingest. The original insert error propagates with identity.
     writeFileSync(testFile, 'Updated content for double failure. '.repeat(30))
 
-    await expect(ragServer.handleIngestFile({ filePath: testFile })).rejects.toBe(insertError)
+    let thrown: unknown
+    try {
+      await ragServer.handleIngestFile({ filePath: testFile })
+    } catch (e) {
+      thrown = e
+    }
+    expect(thrown).toBeInstanceOf(DatabaseError)
+    expect((thrown as Error).message).toContain('rollback failed')
+    expect((thrown as Error).message).toContain('may not have been restored')
+    expect((thrown as { cause?: unknown }).cause).toBe(insertError)
 
     // The rollback failure is still recorded on stderr for diagnostics.
     const logged = errorSpy.mock.calls.map((c) => c.join(' ')).join('\n')
