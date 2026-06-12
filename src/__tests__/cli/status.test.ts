@@ -24,12 +24,14 @@ const cliCommonFactory = () => ({
     initialize: mocks.initialize,
     getStatus: mocks.getStatus,
   })),
-  // Pure helper used by the catch block; real implementation preserves the
-  // `Error: <message>` stderr behavior the tests assert.
-  toErrorMessage: (error: unknown) => (error instanceof Error ? error.message : String(error)),
+  // Catch-block renderer; faithful shim preserves the `Error: <message>`
+  // stderr behavior the tests assert.
+  formatCliError: formatCliErrorShim,
 })
 
 const MOCKED_PATHS = ['../../cli/common.js'] as const
+
+import { formatCliErrorShim } from './cli-error-shim.js'
 
 let runStatus: typeof import('../../cli/status.js').runStatus
 

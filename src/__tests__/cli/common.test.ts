@@ -34,6 +34,7 @@ const MOCKED_PATHS = ['../../vectordb/index.js', '../../embedder/index.js'] as c
 
 let createEmbedder: typeof import('../../cli/common.js').createEmbedder
 let createVectorStore: typeof import('../../cli/common.js').createVectorStore
+let formatCliError: typeof import('../../cli/common.js').formatCliError
 type ResolvedGlobalConfig = import('../../cli/options.js').ResolvedGlobalConfig
 
 // ============================================
@@ -58,7 +59,7 @@ describe('cli/common', () => {
     vi.resetModules()
     vi.doMock('../../vectordb/index.js', vectordbFactory)
     vi.doMock('../../embedder/index.js', embedderFactory)
-    ;({ createEmbedder, createVectorStore } = await import('../../cli/common.js'))
+    ;({ createEmbedder, createVectorStore, formatCliError } = await import('../../cli/common.js'))
   })
 
   afterAll(() => {
@@ -79,6 +80,53 @@ describe('cli/common', () => {
         dbPath: '/data/my-db',
         tableName: 'chunks',
       })
+    })
+  })
+
+  describe('formatCliError', () => {
+    it('renders the full cause chain with stacks for a nested error', () => {
+      // Build a deterministic 3-link chain: outer → mid → root.
+      const root = new Error('root disk failure')
+      const mid = new Error('vector store write failed', { cause: root })
+      const outer = new Error('Failed to ingest file', { cause: mid })
+
+      const rendered = formatCliError(outer)
+
+      // Every link's message appears.
+      expect(rendered).toContain('Failed to ingest file')
+      expect(rendered).toContain('vector store write failed')
+      expect(rendered).toContain('root disk failure')
+      // Deeper links are attributed as causes; the outer link is not.
+      expect(rendered).toContain('Caused by: ')
+      expect(rendered.indexOf('Caused by: ')).toBeGreaterThan(
+        rendered.indexOf('Failed to ingest file')
+      )
+      // The chain is ordered outer → cause → cause.
+      expect(rendered.indexOf('Failed to ingest file')).toBeLessThan(
+        rendered.indexOf('vector store write failed')
+      )
+      expect(rendered.indexOf('vector store write failed')).toBeLessThan(
+        rendered.indexOf('root disk failure')
+      )
+      // Stack frames are included for diagnostics (operator-facing).
+      expect(rendered).toContain('at ')
+    })
+
+    it('renders message and stack for a single Error without a cause', () => {
+      const err = new Error('lonely failure')
+
+      const rendered = formatCliError(err)
+
+      expect(rendered).toContain('lonely failure')
+      expect(rendered).not.toContain('Caused by: ')
+      expect(rendered).toContain('at ')
+    })
+
+    it('stringifies a non-Error thrown value', () => {
+      const rendered = formatCliError('plain string failure')
+
+      expect(rendered).toContain('plain string failure')
+      expect(rendered).not.toContain('Caused by: ')
     })
   })
 

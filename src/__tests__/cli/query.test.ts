@@ -32,9 +32,9 @@ const cliCommonFactory = () => ({
     search: mocks.search,
     close: vi.fn(),
   })),
-  // Pure helper used by the catch block; real implementation preserves the
-  // `Error: <message>` stderr behavior the tests assert.
-  toErrorMessage: (error: unknown) => (error instanceof Error ? error.message : String(error)),
+  // Catch-block renderer; faithful shim preserves the `Error: <message>`
+  // stderr behavior the tests assert.
+  formatCliError: formatCliErrorShim,
 })
 
 // NOTE: the mock factory below mirrors the NEW raw-data-utils contract.
@@ -53,6 +53,8 @@ const rawDataUtilsFactory = () => ({
 })
 
 const MOCKED_PATHS = ['../../cli/common.js', '../../utils/raw-data-utils.js'] as const
+
+import { formatCliErrorShim } from './cli-error-shim.js'
 
 let parseArgs: typeof import('../../cli/query.js').parseArgs
 let runQuery: typeof import('../../cli/query.js').runQuery
