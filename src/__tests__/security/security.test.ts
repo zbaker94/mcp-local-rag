@@ -31,6 +31,28 @@ interface NetworkMonitor {
   restore: () => void
 }
 
+// The stack-trace policy is enforced on the CLIENT-facing message, which the
+// central dispatcher mapper builds via `toMcpError`/`formatErrorForClient`.
+// Handlers themselves rethrow the original error identity, so the policy is
+// observed by invoking the registered dispatcher closure (the MCP boundary)
+// rather than the handler method directly.
+type RegisteredHandler = (
+  request: { method: string; params: { name: string; arguments?: unknown } },
+  extra: { signal: AbortSignal }
+) => Promise<{ content: { type: string; text: string }[] }>
+
+async function dispatchTool(server: RAGServer, name: string, args: unknown): Promise<void> {
+  const inner = server as unknown as {
+    server: { _requestHandlers: Map<string, RegisteredHandler> }
+  }
+  const handler = inner.server._requestHandlers.get('tools/call')
+  if (handler === undefined) throw new Error('tools/call handler not registered')
+  await handler(
+    { method: 'tools/call', params: { name, arguments: args } },
+    { signal: new AbortController().signal }
+  )
+}
+
 function createNetworkMonitor(): NetworkMonitor {
   const requests: string[] = []
   const originalFetch = global.fetch
@@ -366,12 +388,13 @@ The chunker requires sufficient text length to generate meaningful chunks.`
         .mockRejectedValue(new Error(internalErrorMessage))
 
       try {
-        await server.handleIngestFile({ filePath: sampleFile })
+        await dispatchTool(server, 'ingest_file', { filePath: sampleFile })
         expect.fail('Expected error to be thrown')
       } catch (error) {
         const errorMessage = (error as Error).message
 
-        // The internal failure surfaces, but without stack-trace details
+        // The internal failure surfaces (with the ingest_file prefix applied by
+        // the central mapper), but without stack-trace details.
         expect(errorMessage).toContain(internalErrorMessage)
         expect(errorMessage).not.toContain(' at ')
         expect(errorMessage).not.toContain('.ts:')
@@ -394,12 +417,13 @@ The chunker requires sufficient text length to generate meaningful chunks.`
         .mockRejectedValue(new Error(internalErrorMessage))
 
       try {
-        await server.handleIngestFile({ filePath: sampleFile })
+        await dispatchTool(server, 'ingest_file', { filePath: sampleFile })
         expect.fail('Expected error to be thrown')
       } catch (error) {
         const errorMessage = (error as Error).message
 
-        // Verify stack trace IS included in development mode
+        // Verify stack trace IS included in development mode (the client
+        // message is built by the central mapper's formatErrorForClient).
         expect(errorMessage).toContain(' at ')
       } finally {
         parseSpy.mockRestore()

@@ -38,7 +38,7 @@ describe('Ingest Rollback', () => {
   // Rollback-restores-original is verified observably below ('restores the full
   // original chunk set with real vectors on rollback').
 
-  it('throws combined error when both insertChunks and rollback fail', async () => {
+  it('rethrows the original insert error (identity preserved) when rollback also fails', async () => {
     // Arrange: Ingest a file normally first
     const testFile = resolve(testDataDir, 'rollback-double-fail.txt')
     writeFileSync(testFile, 'Content for double failure test. '.repeat(50))
@@ -48,22 +48,30 @@ describe('Ingest Rollback', () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const vectorStore = (ragServer as any).vectorStore
 
-    // Both insert calls fail (new data insert + rollback restore)
+    // Both insert calls fail (new data insert + rollback restore). The handler
+    // logs the rollback failure to stderr but rethrows the ORIGINAL insert
+    // error with its identity intact (no plain-Error conversion / combined
+    // message); the central dispatcher mapper owns the client-facing message.
+    const insertError = new Error('Insert failed')
     const insertSpy = vi
       .spyOn(vectorStore, 'insertChunks')
-      .mockRejectedValueOnce(new Error('Insert failed'))
+      .mockRejectedValueOnce(insertError)
       .mockRejectedValueOnce(new Error('Rollback also failed'))
 
     vi.spyOn(vectorStore, 'optimize').mockResolvedValue(undefined)
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
 
-    // Act: Re-ingest (should fail with combined error)
+    // Act: Re-ingest. The original insert error propagates with identity.
     writeFileSync(testFile, 'Updated content for double failure. '.repeat(30))
 
-    await expect(ragServer.handleIngestFile({ filePath: testFile })).rejects.toThrow(
-      'Failed to ingest file and rollback failed'
-    )
+    await expect(ragServer.handleIngestFile({ filePath: testFile })).rejects.toBe(insertError)
+
+    // The rollback failure is still recorded on stderr for diagnostics.
+    const logged = errorSpy.mock.calls.map((c) => c.join(' ')).join('\n')
+    expect(logged).toContain('Rollback failed')
 
     insertSpy.mockRestore()
+    errorSpy.mockRestore()
   })
 
   it('restores the full original chunk set with real vectors on rollback (TD-7/BR-4)', async () => {

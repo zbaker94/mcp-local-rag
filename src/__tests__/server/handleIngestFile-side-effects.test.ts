@@ -289,15 +289,18 @@ describe('handleIngestFile - Phase 0 Wrapper Side Effects (AC-008a)', () => {
 
     const server = buildServer()
 
-    // Act + Assert: the original insert error is surfaced (wrapped per handler contract)
+    // Act + Assert: the handler is gutted of error mapping, so it rethrows the
+    // ORIGINAL insert error with its identity intact (no "Failed to ingest
+    // file" prefix — that prefix is applied centrally by the dispatcher mapper
+    // for native errors only). Calling the handler directly here bypasses the
+    // dispatcher, so we observe the raw error.
     let caught: unknown
     try {
       await server.handleIngestFile({ filePath: FIXTURE_FILE_PATH })
     } catch (error) {
       caught = error
     }
-    expect(caught).toBeInstanceOf(Error)
-    expect((caught as Error).message).toBe(`Failed to ingest file: ${induced.message}`)
+    expect(caught).toBe(induced)
 
     // Assert: backup capture happened BEFORE delete.
     // mock.invocationCallOrder is a monotonically increasing global counter.

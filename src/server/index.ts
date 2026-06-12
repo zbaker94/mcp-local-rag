@@ -15,7 +15,7 @@ import { Embedder } from '../embedder/index.js'
 import { buildChunksAndEmbeddings, buildVectorChunks } from '../ingest/compute.js'
 import { prepareVisualPdfChunks } from '../ingest/visual.js'
 import { parseHtml } from '../parser/html-parser.js'
-import { DocumentParser, ValidationError } from '../parser/index.js'
+import { DocumentParser } from '../parser/index.js'
 import { extractMarkdownTitle, extractTxtTitle } from '../parser/title-extractor.js'
 import type { BaseDirsConfigError } from '../utils/base-dirs.js'
 import {
@@ -32,12 +32,13 @@ import {
 } from '../utils/raw-data-utils.js'
 import { realpathForMatch } from '../utils/scan.js'
 import { type VectorChunk, VectorStore } from '../vectordb/index.js'
-import { DatabaseError } from '../vectordb/types.js'
 import {
   appendConfigWarnings,
   buildConfigErrorBlock,
-  formatErrorMessage,
+  logError,
   type RagContentBlock,
+  type ToMcpErrorContext,
+  toMcpError,
 } from './error-utils.js'
 import { normalizeBaseDirs, scanBaseDir } from './list-scanner.js'
 import { toolDefinitions } from './tool-definitions.js'
@@ -56,6 +57,27 @@ import type {
   ReadChunkNeighborsResultItem,
   SourceEntry,
 } from './types.js'
+
+/**
+ * Per-tool client-message policy consumed by the central dispatcher mapper
+ * (`toMcpError(error, context)`). The `prefix`, when present, is prepended to
+ * the controlled client message ONLY for native / non-`AppError` failures; a
+ * recognized `AppError` (e.g. `DatabaseError`, `EmbeddingError`) always keeps
+ * its own raw message regardless of the prefix (see `toMcpError`). This table
+ * is the single source of truth for the Contract-Delta per-handler policy:
+ * - `ingest_file` / `ingest_data` / `delete_file` / `read_chunk_neighbors`
+ *   prepend an operation prefix on native errors.
+ * - `query_documents` / `list_files` / `status` are prefix-less.
+ */
+const TOOL_ERROR_CONTEXT: Record<string, ToMcpErrorContext> = {
+  ingest_file: { prefix: 'Failed to ingest file' },
+  ingest_data: { prefix: 'Failed to ingest data' },
+  delete_file: { prefix: 'Failed to delete file' },
+  read_chunk_neighbors: { prefix: 'Failed to read chunk neighbors' },
+  query_documents: {},
+  list_files: {},
+  status: {},
+}
 
 /** RAG server compliant with MCP Protocol */
 export class RAGServer {
@@ -171,9 +193,10 @@ export class RAGServer {
    * is stored on the instance the server is in degraded mode (invalid
    * `BASE_DIRS` — see `resolveBaseDirs`) and every root-dependent tool MUST
    * reject BEFORE any DB / embedder / parser access so the user sees the
-   * configuration problem unambiguously. Surfaces the error as an
-   * `McpError(InvalidParams)` so MCP clients render it as a structured tool
-   * error.
+   * configuration problem unambiguously. Throws the stored
+   * {@link BaseDirsConfigError} (kind `config`) so the central dispatcher
+   * mapper renders it as `McpError(InvalidParams)` — error→code ownership
+   * stays in exactly one place instead of being hand-built here.
    *
    * `status` deliberately does NOT call this helper; it remains callable in
    * degraded mode and exposes the error via a diagnostic content block so
@@ -181,7 +204,7 @@ export class RAGServer {
    */
   private assertConfigOk(): void {
     if (this.configError !== null) {
-      throw new McpError(ErrorCode.InvalidParams, this.configError.message)
+      throw this.configError
     }
   }
 
@@ -204,35 +227,48 @@ export class RAGServer {
       tools: toolDefinitions,
     }))
 
-    // Tool invocation
+    // Tool invocation. The handlers are gutted of error mapping — every error
+    // they throw (with its ORIGINAL identity) is routed through the single
+    // central catch below, which logs the full cause chain to stderr and maps
+    // the error to an `McpError` for the client via `toMcpError(error,
+    // context)`. The per-tool `context` (see `TOOL_ERROR_CONTEXT`) encodes each
+    // handler's client-message prefix policy so the Contract-Delta per-handler
+    // table is preserved in exactly one place.
     this.server.setRequestHandler(
       CallToolRequestSchema,
       async (request: { params: { name: string; arguments?: unknown } }) => {
-        switch (request.params.name) {
-          case 'query_documents':
-            return await this.handleQueryDocuments(
-              parseQueryDocumentsInput(request.params.arguments)
-            )
-          case 'ingest_file':
-            return await this.handleIngestFile(
-              request.params.arguments as unknown as IngestFileInput
-            )
-          case 'ingest_data':
-            return await this.handleIngestData(parseIngestDataInput(request.params.arguments))
-          case 'delete_file':
-            return await this.handleDeleteFile(
-              request.params.arguments as unknown as DeleteFileInput
-            )
-          case 'read_chunk_neighbors':
-            return await this.handleReadChunkNeighbors(
-              request.params.arguments as unknown as ReadChunkNeighborsInput
-            )
-          case 'list_files':
-            return await this.handleListFiles()
-          case 'status':
-            return await this.handleStatus()
-          default:
-            throw new Error(`Unknown tool: ${request.params.name}`)
+        const toolName = request.params.name
+        try {
+          switch (toolName) {
+            case 'query_documents':
+              return await this.handleQueryDocuments(
+                parseQueryDocumentsInput(request.params.arguments)
+              )
+            case 'ingest_file':
+              return await this.handleIngestFile(
+                request.params.arguments as unknown as IngestFileInput
+              )
+            case 'ingest_data':
+              return await this.handleIngestData(parseIngestDataInput(request.params.arguments))
+            case 'delete_file':
+              return await this.handleDeleteFile(
+                request.params.arguments as unknown as DeleteFileInput
+              )
+            case 'read_chunk_neighbors':
+              return await this.handleReadChunkNeighbors(
+                request.params.arguments as unknown as ReadChunkNeighborsInput
+              )
+            case 'list_files':
+              return await this.handleListFiles()
+            case 'status':
+              return await this.handleStatus()
+            default:
+              throw new Error(`Unknown tool: ${toolName}`)
+          }
+        } catch (error) {
+          const context = TOOL_ERROR_CONTEXT[toolName] ?? {}
+          logError(toolName, error)
+          throw toMcpError(error, context)
         }
       }
     )
@@ -254,47 +290,45 @@ export class RAGServer {
     // it stays callable in degraded mode (configError present). The warning
     // and error blocks attached via `withWarnings` / status remain the user-
     // visible diagnostic surface for the config problem.
-    try {
-      // Generate query embedding
-      const queryVector = await this.embedder.embed(args.query)
+    //
+    // No local catch: any failure propagates with original identity to the
+    // central dispatcher mapper (prefix-less context for this tool).
+    // Generate query embedding
+    const queryVector = await this.embedder.embed(args.query)
 
-      // Hybrid search (vector + BM25 keyword matching)
-      const searchResults = await this.vectorStore.search(queryVector, args.query, args.limit || 10)
+    // Hybrid search (vector + BM25 keyword matching)
+    const searchResults = await this.vectorStore.search(queryVector, args.query, args.limit || 10)
 
-      // Format results with source restoration for raw-data files
-      const results: QueryResult[] = searchResults.map((result) => {
-        const queryResult: QueryResult = {
-          filePath: result.filePath,
-          chunkIndex: result.chunkIndex,
-          text: result.text,
-          score: result.score,
-          fileTitle: result.fileTitle ?? null,
+    // Format results with source restoration for raw-data files
+    const results: QueryResult[] = searchResults.map((result) => {
+      const queryResult: QueryResult = {
+        filePath: result.filePath,
+        chunkIndex: result.chunkIndex,
+        text: result.text,
+        score: result.score,
+        fileTitle: result.fileTitle ?? null,
+      }
+
+      if (looksLikeRawDataPath(result.filePath)) {
+        const source = extractSourceFromPath(result.filePath)
+        if (source) {
+          queryResult.source = source
         }
+      }
 
-        if (looksLikeRawDataPath(result.filePath)) {
-          const source = extractSourceFromPath(result.filePath)
-          if (source) {
-            queryResult.source = source
-          }
-        }
+      return queryResult
+    })
 
-        return queryResult
-      })
+    const content: RagContentBlock[] = [
+      {
+        type: 'text',
+        text: JSON.stringify(results, null, 2),
+      },
+    ]
 
-      const content: RagContentBlock[] = [
-        {
-          type: 'text',
-          text: JSON.stringify(results, null, 2),
-        },
-      ]
-
-      // Append config warnings on every call because MCP clients may hide
-      // stderr and may not retain context across calls.
-      return { content: this.withWarnings(content) }
-    } catch (error) {
-      console.error('Failed to query documents:', error)
-      throw error
-    }
+    // Append config warnings on every call because MCP clients may hide
+    // stderr and may not retain context across calls.
+    return { content: this.withWarnings(content) }
   }
 
   /**
@@ -338,7 +372,10 @@ export class RAGServer {
 
     let backup: VectorChunk[] | null = null
 
-    try {
+    // No outer error-mapping catch: failures propagate with original identity
+    // to the central dispatcher mapper. The inner insert/rollback try/catch
+    // below is retained — it is local-effect (data rollback) only.
+    {
       // Parse file (with header/footer filtering for PDFs)
       // For raw-data files (from ingest_data), read directly without validation
       // since the path is internally generated and content is already processed
@@ -453,10 +490,11 @@ export class RAGServer {
             await this.vectorStore.optimize()
             console.error(`Rollback completed: ${backup.length} chunks restored`)
           } catch (rollbackError) {
+            // Record the rollback failure on stderr for diagnostics, then
+            // rethrow the ORIGINAL insert error with its identity intact. The
+            // central dispatcher mapper owns the client-facing message; no
+            // plain-Error conversion happens here.
             console.error('Rollback failed:', rollbackError)
-            throw new Error(
-              `Failed to ingest file and rollback failed: ${(insertError as Error).message}`
-            )
           }
         }
         throw insertError
@@ -478,24 +516,6 @@ export class RAGServer {
           },
         ]),
       }
-    } catch (error) {
-      // Re-throw McpError as-is to preserve error code
-      if (error instanceof McpError) {
-        console.error('Failed to ingest file:', error.message)
-        throw error
-      }
-
-      // Input errors (bad path, missing file, unsupported format, size) → InvalidParams.
-      if (error instanceof ValidationError) {
-        console.error('Failed to ingest file:', error.message)
-        throw new McpError(ErrorCode.InvalidParams, error.message)
-      }
-
-      const errorMessage = formatErrorMessage(error)
-
-      console.error('Failed to ingest file:', errorMessage)
-
-      throw new Error(`Failed to ingest file: ${errorMessage}`)
     }
   }
 
@@ -515,7 +535,11 @@ export class RAGServer {
     // diagnose the config error from `status`. The internal `handleIngestFile`
     // call below operates on a generated raw-data path, which routes
     // around `parser.validateFilePath`, so no baseDirs access happens.
-    try {
+    //
+    // No outer error-mapping catch: failures propagate with original identity
+    // to the central dispatcher mapper. The inner raw-data rollback try/catch
+    // below is retained — it is local-effect (file cleanup) only.
+    {
       let contentToSave = args.content
       let formatToSave: ContentFormat = args.metadata.format
       let title: string | null = null
@@ -578,12 +602,6 @@ export class RAGServer {
         }
         throw ingestError
       }
-    } catch (error) {
-      const errorMessage = formatErrorMessage(error)
-
-      console.error('Failed to ingest data:', errorMessage)
-
-      throw new Error(`Failed to ingest data: ${errorMessage}`)
     }
   }
 
@@ -608,8 +626,10 @@ export class RAGServer {
    */
   async handleListFiles(): Promise<{ content: RagContentBlock[] }> {
     // Root-dependent tool: fail fast on configError BEFORE any DB / FS access.
+    // `assertConfigOk` throws `BaseDirsConfigError` (mapped to InvalidParams by
+    // the central dispatcher); no local error-mapping catch here.
     this.assertConfigOk()
-    try {
+    {
       // Get all ingested entries and index them by file IDENTITY (realpath), so
       // a file ingested via a different spelling (symlinked prefix or alias)
       // still matches the scan. Storage/display stay normal-path; realpath is
@@ -686,9 +706,6 @@ export class RAGServer {
         content.push({ type: 'text', text: `Warning: ${w}` })
       }
       return { content: this.withWarnings(content) }
-    } catch (error) {
-      console.error('Failed to list files:', error)
-      throw error
     }
   }
 
@@ -698,28 +715,26 @@ export class RAGServer {
   async handleStatus(): Promise<{ content: RagContentBlock[] }> {
     // `status` remains callable in degraded mode (configError set) so the
     // user can diagnose the root configuration via MCP without inspecting
-    // stderr. Do NOT call `assertConfigOk` here.
-    try {
-      const status = await this.vectorStore.getStatus()
-      const content: RagContentBlock[] = [
-        {
-          type: 'text',
-          text: JSON.stringify(status, null, 2),
-        },
-      ]
+    // stderr. Do NOT call `assertConfigOk` here — status surfaces the config
+    // error as a diagnostic content block instead of throwing. No local
+    // error-mapping catch: genuine DB failures propagate (prefix-less) to the
+    // central dispatcher mapper.
+    const status = await this.vectorStore.getStatus()
+    const content: RagContentBlock[] = [
+      {
+        type: 'text',
+        text: JSON.stringify(status, null, 2),
+      },
+    ]
 
-      // Surface the configError as a diagnostic content block when present.
-      // Placed BEFORE warning blocks so it appears with the primary status
-      // payload at a higher priority annotation.
-      if (this.configError !== null) {
-        content.push(buildConfigErrorBlock(this.configError.message))
-      }
-
-      return { content: this.withWarnings(content) }
-    } catch (error) {
-      console.error('Failed to get status:', error)
-      throw error
+    // Surface the configError as a diagnostic content block when present.
+    // Placed BEFORE warning blocks so it appears with the primary status
+    // payload at a higher priority annotation.
+    if (this.configError !== null) {
+      content.push(buildConfigErrorBlock(this.configError.message))
     }
+
+    return { content: this.withWarnings(content) }
   }
 
   /**
@@ -728,7 +743,11 @@ export class RAGServer {
    * Supports both filePath (for ingest_file) and source (for ingest_data)
    */
   async handleDeleteFile(args: DeleteFileInput): Promise<{ content: RagContentBlock[] }> {
-    try {
+    // No outer error-mapping catch: the inline `McpError(InvalidParams)` and
+    // `assertConfigOk` throw propagate with original identity to the central
+    // dispatcher mapper. The inner unlink try/catch blocks below are
+    // local-effect (best-effort file cleanup) and are retained.
+    {
       let targetPath: string
       let skipValidation = false
 
@@ -794,19 +813,6 @@ export class RAGServer {
           },
         ]),
       }
-    } catch (error) {
-      // Re-throw McpError as-is so structured tool errors (e.g. from
-      // `assertConfigOk` in the filePath branch) preserve their code at the
-      // MCP boundary instead of being wrapped in a generic Error.
-      if (error instanceof McpError) {
-        console.error('Failed to delete file:', error.message)
-        throw error
-      }
-      const errorMessage = formatErrorMessage(error)
-
-      console.error('Failed to delete file:', errorMessage)
-
-      throw new Error(`Failed to delete file: ${errorMessage}`)
     }
   }
 
@@ -819,7 +825,12 @@ export class RAGServer {
   async handleReadChunkNeighbors(
     args: ReadChunkNeighborsInput
   ): Promise<{ content: RagContentBlock[] }> {
-    try {
+    // No local error-mapping catch: the inline `McpError(InvalidParams)` input
+    // checks and `assertConfigOk` throw propagate with original identity to the
+    // central dispatcher mapper. A `DatabaseError` reaches the mapper as a
+    // recognized `AppError` and so stays prefix-less (no "Failed to read chunk
+    // neighbors" prefix); only a native error picks up that prefix.
+    {
       // Validate everything before DB access. This handler intentionally uses
       // structured InvalidParams errors for input validation.
       if (!Number.isInteger(args.chunkIndex) || args.chunkIndex < 0) {
@@ -906,14 +917,6 @@ export class RAGServer {
           },
         ]),
       }
-    } catch (error) {
-      // Re-throw McpError / DatabaseError as-is to preserve semantics.
-      if (error instanceof McpError || error instanceof DatabaseError) {
-        throw error
-      }
-      const errorMessage = formatErrorMessage(error)
-      console.error('Failed to read chunk neighbors:', errorMessage)
-      throw new Error(`Failed to read chunk neighbors: ${errorMessage}`)
     }
   }
 
