@@ -32,6 +32,7 @@ import {
 } from '../utils/raw-data-utils.js'
 import { realpathForMatch } from '../utils/scan.js'
 import { type VectorChunk, VectorStore } from '../vectordb/index.js'
+import { DatabaseError } from '../vectordb/types.js'
 import {
   appendConfigWarnings,
   buildConfigErrorBlock,
@@ -375,147 +376,147 @@ export class RAGServer {
     // No outer error-mapping catch: failures propagate with original identity
     // to the central dispatcher mapper. The inner insert/rollback try/catch
     // below is retained — it is local-effect (data rollback) only.
-    {
-      // Parse file (with header/footer filtering for PDFs)
-      // For raw-data files (from ingest_data), read directly without validation
-      // since the path is internally generated and content is already processed
-      const isPdf = args.filePath.toLowerCase().endsWith('.pdf')
-      let text: string
-      let title: string | null = null
-      let chunks: Awaited<ReturnType<typeof buildChunksAndEmbeddings>>['chunks']
-      let embeddings: Awaited<ReturnType<typeof buildChunksAndEmbeddings>>['embeddings']
-      if (await isPathInRawDataDir(args.filePath, this.dbPath)) {
-        // Raw-data files: skip parser validation, read directly.
-        text = await readFile(args.filePath, 'utf-8')
-        const meta = await loadMetaJson(args.filePath)
-        title = meta?.title ?? null
-        console.error(`Read raw-data file: ${args.filePath} (${text.length} characters)`)
-        ;({ chunks, embeddings } = await buildChunksAndEmbeddings(
-          text,
-          title,
-          this.chunker,
-          this.embedder
-        ))
-      } else if (visualArg === true && isPdf) {
-        // Visual dispatch delegates to `prepareVisualPdfChunks`, which owns
-        // the dynamic `pdf-visual` import so the default path does not load
-        // visual dependencies. This handler keeps its backup/rollback/
-        // optimize/response-shaping persistence semantics.
-        const visualResult = await prepareVisualPdfChunks(
-          args.filePath,
-          this.parser,
-          this.chunker,
-          this.embedder,
-          {
-            profile: visualQuality,
-            cacheDir: this.cacheDir,
-            device: this.device,
-          }
-        )
-        chunks = visualResult.chunks
-        embeddings = visualResult.embeddings
-        text = visualResult.text
-        title = visualResult.title
-      } else if (isPdf) {
-        const result = await this.parser.parsePdf(args.filePath, this.embedder)
-        text = result.content
-        title = result.title || null
-        ;({ chunks, embeddings } = await buildChunksAndEmbeddings(
-          text,
-          title,
-          this.chunker,
-          this.embedder
-        ))
-      } else {
-        const result = await this.parser.parseFile(args.filePath)
-        text = result.content
-        title = result.title || null
-        ;({ chunks, embeddings } = await buildChunksAndEmbeddings(
-          text,
-          title,
-          this.chunker,
-          this.embedder
-        ))
-      }
-
-      // Fail-fast: Prevent data loss when chunking produces 0 chunks
-      // This check must happen BEFORE delete to preserve existing data on re-ingest
-      if (chunks.length === 0) {
-        throw new McpError(
-          ErrorCode.InvalidParams,
-          `No chunks generated from file: ${args.filePath}. The file may be empty or all content was filtered (minimum ${this.minChunkLength} characters required). Existing data has been preserved.`
-        )
-      }
-
-      // Back up existing chunks BEFORE the destructive delete, with their real
-      // stored vectors and the full chunk set, so a failed re-ingest can be
-      // rolled back without data loss or vector corruption (TD-7). Read this
-      // before deleting; if the read fails it propagates here — leaving the
-      // existing data untouched — rather than proceeding into the delete with
-      // an empty/partial backup.
-      backup = await this.vectorStore.getChunksByFilePath(args.filePath)
-      if (backup.length > 0) {
-        console.error(`Backup created: ${backup.length} chunks for ${args.filePath}`)
-      }
-
-      // Delete existing data
-      await this.vectorStore.deleteChunks(args.filePath)
-      console.error(`Deleted existing chunks for: ${args.filePath}`)
-
-      // Create vector chunks
-      const vectorChunks = buildVectorChunks({
-        filePath: args.filePath,
-        chunks,
-        embeddings,
-        fileSize: text.length,
-        fileTitle: title || null,
-      })
-
-      // Insert vectors (transaction processing)
-      try {
-        await this.vectorStore.insertChunks(vectorChunks)
-        console.error(`Inserted ${vectorChunks.length} chunks for: ${args.filePath}`)
-
-        // Optimize once after both delete + insert (not per-operation)
-        await this.vectorStore.optimize()
-
-        // Delete backup on success
-        backup = null
-      } catch (insertError) {
-        // Rollback on error
-        if (backup && backup.length > 0) {
-          console.error('Ingestion failed, rolling back...', insertError)
-          try {
-            await this.vectorStore.insertChunks(backup)
-            await this.vectorStore.optimize()
-            console.error(`Rollback completed: ${backup.length} chunks restored`)
-          } catch (rollbackError) {
-            // Record the rollback failure on stderr for diagnostics, then
-            // rethrow the ORIGINAL insert error with its identity intact. The
-            // central dispatcher mapper owns the client-facing message; no
-            // plain-Error conversion happens here.
-            console.error('Rollback failed:', rollbackError)
-          }
+    // Parse file (with header/footer filtering for PDFs)
+    // For raw-data files (from ingest_data), read directly without validation
+    // since the path is internally generated and content is already processed
+    const isPdf = args.filePath.toLowerCase().endsWith('.pdf')
+    let text: string
+    let title: string | null = null
+    let chunks: Awaited<ReturnType<typeof buildChunksAndEmbeddings>>['chunks']
+    let embeddings: Awaited<ReturnType<typeof buildChunksAndEmbeddings>>['embeddings']
+    if (await isPathInRawDataDir(args.filePath, this.dbPath)) {
+      // Raw-data files: skip parser validation, read directly.
+      text = await readFile(args.filePath, 'utf-8')
+      const meta = await loadMetaJson(args.filePath)
+      title = meta?.title ?? null
+      console.error(`Read raw-data file: ${args.filePath} (${text.length} characters)`)
+      ;({ chunks, embeddings } = await buildChunksAndEmbeddings(
+        text,
+        title,
+        this.chunker,
+        this.embedder
+      ))
+    } else if (visualArg === true && isPdf) {
+      // Visual dispatch delegates to `prepareVisualPdfChunks`, which owns
+      // the dynamic `pdf-visual` import so the default path does not load
+      // visual dependencies. This handler keeps its backup/rollback/
+      // optimize/response-shaping persistence semantics.
+      const visualResult = await prepareVisualPdfChunks(
+        args.filePath,
+        this.parser,
+        this.chunker,
+        this.embedder,
+        {
+          profile: visualQuality,
+          cacheDir: this.cacheDir,
+          device: this.device,
         }
-        throw insertError
-      }
+      )
+      chunks = visualResult.chunks
+      embeddings = visualResult.embeddings
+      text = visualResult.text
+      title = visualResult.title
+    } else if (isPdf) {
+      const result = await this.parser.parsePdf(args.filePath, this.embedder)
+      text = result.content
+      title = result.title || null
+      ;({ chunks, embeddings } = await buildChunksAndEmbeddings(
+        text,
+        title,
+        this.chunker,
+        this.embedder
+      ))
+    } else {
+      const result = await this.parser.parseFile(args.filePath)
+      text = result.content
+      title = result.title || null
+      ;({ chunks, embeddings } = await buildChunksAndEmbeddings(
+        text,
+        title,
+        this.chunker,
+        this.embedder
+      ))
+    }
 
-      // Result
-      const result: IngestResult = {
-        filePath: args.filePath,
-        chunkCount: chunks.length,
-        timestamp: new Date().toISOString(),
-        fileTitle: title || null,
-      }
+    // Fail-fast: Prevent data loss when chunking produces 0 chunks
+    // This check must happen BEFORE delete to preserve existing data on re-ingest
+    if (chunks.length === 0) {
+      throw new McpError(
+        ErrorCode.InvalidParams,
+        `No chunks generated from file: ${args.filePath}. The file may be empty or all content was filtered (minimum ${this.minChunkLength} characters required). Existing data has been preserved.`
+      )
+    }
 
-      return {
-        content: this.withWarnings([
-          {
-            type: 'text',
-            text: JSON.stringify(result, null, 2),
-          },
-        ]),
+    // Back up existing chunks BEFORE the destructive delete, with their real
+    // stored vectors and the full chunk set, so a failed re-ingest can be
+    // rolled back without data loss or vector corruption (TD-7). Read this
+    // before deleting; if the read fails it propagates here — leaving the
+    // existing data untouched — rather than proceeding into the delete with
+    // an empty/partial backup.
+    backup = await this.vectorStore.getChunksByFilePath(args.filePath)
+    if (backup.length > 0) {
+      console.error(`Backup created: ${backup.length} chunks for ${args.filePath}`)
+    }
+
+    // Delete existing data
+    await this.vectorStore.deleteChunks(args.filePath)
+    console.error(`Deleted existing chunks for: ${args.filePath}`)
+
+    // Create vector chunks
+    const vectorChunks = buildVectorChunks({
+      filePath: args.filePath,
+      chunks,
+      embeddings,
+      fileSize: text.length,
+      fileTitle: title || null,
+    })
+
+    // Insert vectors (transaction processing)
+    try {
+      await this.vectorStore.insertChunks(vectorChunks)
+      console.error(`Inserted ${vectorChunks.length} chunks for: ${args.filePath}`)
+
+      // Optimize once after both delete + insert (not per-operation)
+      await this.vectorStore.optimize()
+
+      // Delete backup on success
+      backup = null
+    } catch (insertError) {
+      // Rollback on error
+      if (backup && backup.length > 0) {
+        console.error('Ingestion failed, rolling back...', insertError)
+        try {
+          await this.vectorStore.insertChunks(backup)
+          await this.vectorStore.optimize()
+          console.error(`Rollback completed: ${backup.length} chunks restored`)
+        } catch (rollbackError) {
+          // Rollback also failed: throw a distinct error (cause = insertError)
+          // so the client learns the prior data may be lost, not just that the insert failed.
+          console.error('Rollback failed:', rollbackError)
+          throw new DatabaseError(
+            `Ingest failed and rollback failed for ${args.filePath}; existing data may not have been restored. Original insert error: ${(insertError as Error).message}`,
+            insertError as Error
+          )
+        }
       }
+      throw insertError
+    }
+
+    // Result
+    const result: IngestResult = {
+      filePath: args.filePath,
+      chunkCount: chunks.length,
+      timestamp: new Date().toISOString(),
+      fileTitle: title || null,
+    }
+
+    return {
+      content: this.withWarnings([
+        {
+          type: 'text',
+          text: JSON.stringify(result, null, 2),
+        },
+      ]),
     }
   }
 
@@ -539,69 +540,67 @@ export class RAGServer {
     // No outer error-mapping catch: failures propagate with original identity
     // to the central dispatcher mapper. The inner raw-data rollback try/catch
     // below is retained — it is local-effect (file cleanup) only.
-    {
-      let contentToSave = args.content
-      let formatToSave: ContentFormat = args.metadata.format
-      let title: string | null = null
+    let contentToSave = args.content
+    let formatToSave: ContentFormat = args.metadata.format
+    let title: string | null = null
 
-      // Per-format title extraction and content preparation
-      if (args.metadata.format === 'html') {
-        console.error(`Parsing HTML from: ${args.metadata.source}`)
-        const { content: markdown, title: htmlTitle } = await parseHtml(
-          args.content,
-          args.metadata.source
-        )
-
-        if (!markdown.trim()) {
-          throw new Error(
-            'Failed to extract content from HTML. The page may have no readable content.'
-          )
-        }
-
-        title = htmlTitle || null
-        contentToSave = markdown
-        formatToSave = 'markdown' // Save as .md file
-        console.error(`Converted HTML to Markdown: ${markdown.length} characters`)
-      } else if (args.metadata.format === 'markdown') {
-        const result = extractMarkdownTitle(args.content, args.metadata.source)
-        title = result.source !== 'filename' ? result.title : null
-      } else {
-        // text format
-        const result = extractTxtTitle(args.content, args.metadata.source)
-        title = result.source !== 'filename' ? result.title : null
-      }
-
-      // Save content to raw-data directory
-      const rawDataPath = await saveRawData(
-        this.dbPath,
-        args.metadata.source,
-        contentToSave,
-        formatToSave
+    // Per-format title extraction and content preparation
+    if (args.metadata.format === 'html') {
+      console.error(`Parsing HTML from: ${args.metadata.source}`)
+      const { content: markdown, title: htmlTitle } = await parseHtml(
+        args.content,
+        args.metadata.source
       )
 
-      // Save metadata sidecar (.meta.json) alongside the raw-data file
-      await saveMetaJson(rawDataPath, {
-        title,
-        source: args.metadata.source,
-        format: args.metadata.format,
-      })
-
-      console.error(`Saved raw data: ${args.metadata.source} -> ${rawDataPath}`)
-
-      // Call existing ingest_file internally with rollback on failure
-      try {
-        return await this.handleIngestFile({ filePath: rawDataPath })
-      } catch (ingestError) {
-        // Rollback: delete the raw-data file and .meta.json if ingest fails
-        try {
-          await unlink(rawDataPath)
-          await unlink(generateMetaJsonPath(rawDataPath))
-          console.error(`Rolled back raw-data file: ${rawDataPath}`)
-        } catch {
-          console.warn(`Failed to rollback raw-data file: ${rawDataPath}`)
-        }
-        throw ingestError
+      if (!markdown.trim()) {
+        throw new Error(
+          'Failed to extract content from HTML. The page may have no readable content.'
+        )
       }
+
+      title = htmlTitle || null
+      contentToSave = markdown
+      formatToSave = 'markdown' // Save as .md file
+      console.error(`Converted HTML to Markdown: ${markdown.length} characters`)
+    } else if (args.metadata.format === 'markdown') {
+      const result = extractMarkdownTitle(args.content, args.metadata.source)
+      title = result.source !== 'filename' ? result.title : null
+    } else {
+      // text format
+      const result = extractTxtTitle(args.content, args.metadata.source)
+      title = result.source !== 'filename' ? result.title : null
+    }
+
+    // Save content to raw-data directory
+    const rawDataPath = await saveRawData(
+      this.dbPath,
+      args.metadata.source,
+      contentToSave,
+      formatToSave
+    )
+
+    // Save metadata sidecar (.meta.json) alongside the raw-data file
+    await saveMetaJson(rawDataPath, {
+      title,
+      source: args.metadata.source,
+      format: args.metadata.format,
+    })
+
+    console.error(`Saved raw data: ${args.metadata.source} -> ${rawDataPath}`)
+
+    // Call existing ingest_file internally with rollback on failure
+    try {
+      return await this.handleIngestFile({ filePath: rawDataPath })
+    } catch (ingestError) {
+      // Rollback: delete the raw-data file and .meta.json if ingest fails
+      try {
+        await unlink(rawDataPath)
+        await unlink(generateMetaJsonPath(rawDataPath))
+        console.error(`Rolled back raw-data file: ${rawDataPath}`)
+      } catch {
+        console.warn(`Failed to rollback raw-data file: ${rawDataPath}`)
+      }
+      throw ingestError
     }
   }
 
@@ -629,84 +628,82 @@ export class RAGServer {
     // `assertConfigOk` throws `BaseDirsConfigError` (mapped to InvalidParams by
     // the central dispatcher); no local error-mapping catch here.
     this.assertConfigOk()
-    {
-      // Get all ingested entries and index them by file IDENTITY (realpath), so
-      // a file ingested via a different spelling (symlinked prefix or alias)
-      // still matches the scan. Storage/display stay normal-path; realpath is
-      // used here only for the "same file?" comparison (see BaseDirsConfig).
-      const ingested = await this.vectorStore.listFiles()
-      const ingestedKeyed = await Promise.all(
-        ingested.map(async (f) => ({ entry: f, key: await realpathForMatch(f.filePath) }))
+    // Get all ingested entries and index them by file IDENTITY (realpath), so
+    // a file ingested via a different spelling (symlinked prefix or alias)
+    // still matches the scan. Storage/display stay normal-path; realpath is
+    // used here only for the "same file?" comparison (see BaseDirsConfig).
+    const ingested = await this.vectorStore.listFiles()
+    const ingestedKeyed = await Promise.all(
+      ingested.map(async (f) => ({ entry: f, key: await realpathForMatch(f.filePath) }))
+    )
+    const ingestedByKey = new Map(ingestedKeyed.map(({ entry, key }) => [key, entry]))
+
+    // Scan each effective root (normal-path `rawBaseDirs`), dedup by identity
+    // key (a file reachable from multiple roots appears once, first root wins),
+    // and cross-reference by that key. Per-root scan warnings are surfaced via
+    // `withWarnings` below.
+    const files: FileEntry[] = []
+    const seenKeys = new Set<string>()
+    const matchedKeys = new Set<string>()
+    const scanWarnings: string[] = []
+    for (const baseDir of this.rawBaseDirs) {
+      const { files: scanned, warnings: rootWarnings } = await scanBaseDir(
+        baseDir,
+        this.excludePaths
       )
-      const ingestedByKey = new Map(ingestedKeyed.map(({ entry, key }) => [key, entry]))
-
-      // Scan each effective root (normal-path `rawBaseDirs`), dedup by identity
-      // key (a file reachable from multiple roots appears once, first root wins),
-      // and cross-reference by that key. Per-root scan warnings are surfaced via
-      // `withWarnings` below.
-      const files: FileEntry[] = []
-      const seenKeys = new Set<string>()
-      const matchedKeys = new Set<string>()
-      const scanWarnings: string[] = []
-      for (const baseDir of this.rawBaseDirs) {
-        const { files: scanned, warnings: rootWarnings } = await scanBaseDir(
-          baseDir,
-          this.excludePaths
+      for (const w of rootWarnings) {
+        scanWarnings.push(`[${baseDir}] ${w}`)
+      }
+      for (const scannedPath of scanned) {
+        const key = await realpathForMatch(scannedPath)
+        if (seenKeys.has(key)) continue
+        seenKeys.add(key)
+        const entry = ingestedByKey.get(key)
+        // Ingested rows display the stored (normal) path so it round-trips
+        // into delete/read; not-ingested rows display the scanned path.
+        files.push(
+          entry
+            ? {
+                filePath: entry.filePath,
+                baseDir,
+                ingested: true,
+                chunkCount: entry.chunkCount,
+                timestamp: entry.timestamp,
+              }
+            : { filePath: scannedPath, baseDir, ingested: false }
         )
-        for (const w of rootWarnings) {
-          scanWarnings.push(`[${baseDir}] ${w}`)
-        }
-        for (const scannedPath of scanned) {
-          const key = await realpathForMatch(scannedPath)
-          if (seenKeys.has(key)) continue
-          seenKeys.add(key)
-          const entry = ingestedByKey.get(key)
-          // Ingested rows display the stored (normal) path so it round-trips
-          // into delete/read; not-ingested rows display the scanned path.
-          files.push(
-            entry
-              ? {
-                  filePath: entry.filePath,
-                  baseDir,
-                  ingested: true,
-                  chunkCount: entry.chunkCount,
-                  timestamp: entry.timestamp,
-                }
-              : { filePath: scannedPath, baseDir, ingested: false }
-          )
-          if (entry) matchedKeys.add(key)
-        }
+        if (entry) matchedKeys.add(key)
       }
-
-      // Content ingested via ingest_data plus orphaned DB entries: ingested
-      // entries whose identity key matched no scanned file.
-      const sources: SourceEntry[] = ingestedKeyed
-        .filter(({ key }) => !matchedKeys.has(key))
-        .map(({ entry: f }) => {
-          if (looksLikeRawDataPath(f.filePath)) {
-            const source = extractSourceFromPath(f.filePath)
-            if (source) return { source, chunkCount: f.chunkCount, timestamp: f.timestamp }
-          }
-          return { filePath: f.filePath, chunkCount: f.chunkCount, timestamp: f.timestamp }
-        })
-
-      const result: ListFilesResult = {
-        baseDir: this.rawBaseDir,
-        baseDirs: [...this.rawBaseDirs],
-        files,
-        sources,
-      }
-      // Build the response with the primary JSON block first, then any
-      // per-root scan warnings as additional text blocks so
-      // clients see the warnings alongside the file list without needing
-      // to inspect stderr. Config-level warnings (`configWarnings`) are
-      // still appended via `withWarnings`.
-      const content: RagContentBlock[] = [{ type: 'text', text: JSON.stringify(result, null, 2) }]
-      for (const w of scanWarnings) {
-        content.push({ type: 'text', text: `Warning: ${w}` })
-      }
-      return { content: this.withWarnings(content) }
     }
+
+    // Content ingested via ingest_data plus orphaned DB entries: ingested
+    // entries whose identity key matched no scanned file.
+    const sources: SourceEntry[] = ingestedKeyed
+      .filter(({ key }) => !matchedKeys.has(key))
+      .map(({ entry: f }) => {
+        if (looksLikeRawDataPath(f.filePath)) {
+          const source = extractSourceFromPath(f.filePath)
+          if (source) return { source, chunkCount: f.chunkCount, timestamp: f.timestamp }
+        }
+        return { filePath: f.filePath, chunkCount: f.chunkCount, timestamp: f.timestamp }
+      })
+
+    const result: ListFilesResult = {
+      baseDir: this.rawBaseDir,
+      baseDirs: [...this.rawBaseDirs],
+      files,
+      sources,
+    }
+    // Build the response with the primary JSON block first, then any
+    // per-root scan warnings as additional text blocks so
+    // clients see the warnings alongside the file list without needing
+    // to inspect stderr. Config-level warnings (`configWarnings`) are
+    // still appended via `withWarnings`.
+    const content: RagContentBlock[] = [{ type: 'text', text: JSON.stringify(result, null, 2) }]
+    for (const w of scanWarnings) {
+      content.push({ type: 'text', text: `Warning: ${w}` })
+    }
+    return { content: this.withWarnings(content) }
   }
 
   /**
@@ -747,72 +744,70 @@ export class RAGServer {
     // `assertConfigOk` throw propagate with original identity to the central
     // dispatcher mapper. The inner unlink try/catch blocks below are
     // local-effect (best-effort file cleanup) and are retained.
-    {
-      let targetPath: string
-      let skipValidation = false
+    let targetPath: string
+    let skipValidation = false
 
-      if (args.source) {
-        // Generate raw-data path from source (extension is always .md)
-        // Internal path generation is secure, skip baseDir validation.
-        // The `source` branch never touches `baseDirs`, so it stays callable
-        // in degraded mode (configError present).
-        targetPath = generateRawDataPath(this.dbPath, args.source, 'markdown')
-        skipValidation = true
-      } else if (args.filePath) {
-        // Root-dependent branch: a user-supplied filePath is validated against
-        // the configured roots, so we must fail fast when the config is
-        // invalid. Placed AFTER the `source` branch so source-mode requests
-        // continue to work in degraded mode.
-        this.assertConfigOk()
-        // DB key = the verbatim resolve()-stored path; look up as-is (realpath
-        // stays in validateFilePath; see BaseDirsConfig for the path policy).
-        targetPath = args.filePath
-      } else {
-        // Missing required input is a client error → InvalidParams (matches
-        // read_chunk_neighbors); a plain Error would surface as InternalError.
-        throw new McpError(ErrorCode.InvalidParams, 'Either filePath or source must be provided')
+    if (args.source) {
+      // Generate raw-data path from source (extension is always .md)
+      // Internal path generation is secure, skip baseDir validation.
+      // The `source` branch never touches `baseDirs`, so it stays callable
+      // in degraded mode (configError present).
+      targetPath = generateRawDataPath(this.dbPath, args.source, 'markdown')
+      skipValidation = true
+    } else if (args.filePath) {
+      // Root-dependent branch: a user-supplied filePath is validated against
+      // the configured roots, so we must fail fast when the config is
+      // invalid. Placed AFTER the `source` branch so source-mode requests
+      // continue to work in degraded mode.
+      this.assertConfigOk()
+      // DB key = the verbatim resolve()-stored path; look up as-is (realpath
+      // stays in validateFilePath; see BaseDirsConfig for the path policy).
+      targetPath = args.filePath
+    } else {
+      // Missing required input is a client error → InvalidParams (matches
+      // read_chunk_neighbors); a plain Error would surface as InternalError.
+      throw new McpError(ErrorCode.InvalidParams, 'Either filePath or source must be provided')
+    }
+
+    // Only validate user-provided filePath (not internally generated paths)
+    if (!skipValidation) {
+      await this.parser.validateFilePath(targetPath)
+    }
+
+    // Delete chunks from vector database
+    await this.vectorStore.deleteChunks(targetPath)
+    await this.vectorStore.optimize()
+
+    // Also delete physical raw-data file if applicable.
+    if (isPathInRawDataDirLexical(targetPath, this.dbPath)) {
+      try {
+        await unlink(targetPath)
+        console.error(`Deleted raw-data file: ${targetPath}`)
+      } catch {
+        console.warn(`Could not delete raw-data file (may not exist): ${targetPath}`)
       }
-
-      // Only validate user-provided filePath (not internally generated paths)
-      if (!skipValidation) {
-        await this.parser.validateFilePath(targetPath)
+      try {
+        await unlink(generateMetaJsonPath(targetPath))
+        console.error(`Deleted meta.json: ${generateMetaJsonPath(targetPath)}`)
+      } catch {
+        // .meta.json may not exist for old data, silently ignore
       }
+    }
 
-      // Delete chunks from vector database
-      await this.vectorStore.deleteChunks(targetPath)
-      await this.vectorStore.optimize()
+    // Return success message
+    const result = {
+      filePath: targetPath,
+      deleted: true,
+      timestamp: new Date().toISOString(),
+    }
 
-      // Also delete physical raw-data file if applicable.
-      if (isPathInRawDataDirLexical(targetPath, this.dbPath)) {
-        try {
-          await unlink(targetPath)
-          console.error(`Deleted raw-data file: ${targetPath}`)
-        } catch {
-          console.warn(`Could not delete raw-data file (may not exist): ${targetPath}`)
-        }
-        try {
-          await unlink(generateMetaJsonPath(targetPath))
-          console.error(`Deleted meta.json: ${generateMetaJsonPath(targetPath)}`)
-        } catch {
-          // .meta.json may not exist for old data, silently ignore
-        }
-      }
-
-      // Return success message
-      const result = {
-        filePath: targetPath,
-        deleted: true,
-        timestamp: new Date().toISOString(),
-      }
-
-      return {
-        content: this.withWarnings([
-          {
-            type: 'text',
-            text: JSON.stringify(result, null, 2),
-          },
-        ]),
-      }
+    return {
+      content: this.withWarnings([
+        {
+          type: 'text',
+          text: JSON.stringify(result, null, 2),
+        },
+      ]),
     }
   }
 
@@ -830,93 +825,88 @@ export class RAGServer {
     // central dispatcher mapper. A `DatabaseError` reaches the mapper as a
     // recognized `AppError` and so stays prefix-less (no "Failed to read chunk
     // neighbors" prefix); only a native error picks up that prefix.
-    {
-      // Validate everything before DB access. This handler intentionally uses
-      // structured InvalidParams errors for input validation.
-      if (!Number.isInteger(args.chunkIndex) || args.chunkIndex < 0) {
-        throw new McpError(ErrorCode.InvalidParams, 'chunkIndex must be a non-negative integer')
-      }
-      const before = args.before ?? 2
-      if (!Number.isInteger(before) || before < 0) {
-        throw new McpError(ErrorCode.InvalidParams, 'before must be a non-negative integer')
-      }
-      if (before > 50) {
-        throw new McpError(
-          ErrorCode.InvalidParams,
-          `before must be between 0 and 50 (got ${before})`
-        )
-      }
-      const after = args.after ?? 2
-      if (!Number.isInteger(after) || after < 0) {
-        throw new McpError(ErrorCode.InvalidParams, 'after must be a non-negative integer')
-      }
-      if (after > 50) {
-        throw new McpError(ErrorCode.InvalidParams, `after must be between 0 and 50 (got ${after})`)
-      }
-      const hasFilePath = typeof args.filePath === 'string' && args.filePath.trim().length > 0
-      const hasSource = typeof args.source === 'string' && args.source.trim().length > 0
-      if (hasFilePath && hasSource) {
-        throw new McpError(ErrorCode.InvalidParams, 'Provide either filePath or source, not both')
-      }
-      if (!hasFilePath && !hasSource) {
-        throw new McpError(ErrorCode.InvalidParams, 'Either filePath or source must be provided')
-      }
+    // Validate everything before DB access. This handler intentionally uses
+    // structured InvalidParams errors for input validation.
+    if (!Number.isInteger(args.chunkIndex) || args.chunkIndex < 0) {
+      throw new McpError(ErrorCode.InvalidParams, 'chunkIndex must be a non-negative integer')
+    }
+    const before = args.before ?? 2
+    if (!Number.isInteger(before) || before < 0) {
+      throw new McpError(ErrorCode.InvalidParams, 'before must be a non-negative integer')
+    }
+    if (before > 50) {
+      throw new McpError(ErrorCode.InvalidParams, `before must be between 0 and 50 (got ${before})`)
+    }
+    const after = args.after ?? 2
+    if (!Number.isInteger(after) || after < 0) {
+      throw new McpError(ErrorCode.InvalidParams, 'after must be a non-negative integer')
+    }
+    if (after > 50) {
+      throw new McpError(ErrorCode.InvalidParams, `after must be between 0 and 50 (got ${after})`)
+    }
+    const hasFilePath = typeof args.filePath === 'string' && args.filePath.trim().length > 0
+    const hasSource = typeof args.source === 'string' && args.source.trim().length > 0
+    if (hasFilePath && hasSource) {
+      throw new McpError(ErrorCode.InvalidParams, 'Provide either filePath or source, not both')
+    }
+    if (!hasFilePath && !hasSource) {
+      throw new McpError(ErrorCode.InvalidParams, 'Either filePath or source must be provided')
+    }
 
-      // Dual-input resolution (mirrors handleDeleteFile).
-      // Use the same non-empty predicates as the XOR check above so an empty
-      // string ('' / whitespace-only) is ignored here too, not just in validation.
-      //
-      // configError gating happens AFTER the input-shape validation but BEFORE
-      // any parser/DB access on the user-supplied filePath. The `source` branch
-      // never touches `baseDirs`, so it stays callable in degraded mode; the
-      // `filePath` branch must fail fast because `parser.validateFilePath`
-      // depends on the configured roots being valid.
-      let targetPath: string
-      let skipValidation = false
-      if (hasSource) {
-        targetPath = generateRawDataPath(this.dbPath, args.source as string, 'markdown')
-        skipValidation = true
-      } else {
-        // XOR + hasSource === false guarantees filePath is a non-empty string here.
-        this.assertConfigOk()
-        // DB key = the verbatim resolve()-stored path; look up as-is (realpath
-        // stays in validateFilePath; see BaseDirsConfig for the path policy).
-        targetPath = args.filePath as string
+    // Dual-input resolution (mirrors handleDeleteFile).
+    // Use the same non-empty predicates as the XOR check above so an empty
+    // string ('' / whitespace-only) is ignored here too, not just in validation.
+    //
+    // configError gating happens AFTER the input-shape validation but BEFORE
+    // any parser/DB access on the user-supplied filePath. The `source` branch
+    // never touches `baseDirs`, so it stays callable in degraded mode; the
+    // `filePath` branch must fail fast because `parser.validateFilePath`
+    // depends on the configured roots being valid.
+    let targetPath: string
+    let skipValidation = false
+    if (hasSource) {
+      targetPath = generateRawDataPath(this.dbPath, args.source as string, 'markdown')
+      skipValidation = true
+    } else {
+      // XOR + hasSource === false guarantees filePath is a non-empty string here.
+      this.assertConfigOk()
+      // DB key = the verbatim resolve()-stored path; look up as-is (realpath
+      // stays in validateFilePath; see BaseDirsConfig for the path policy).
+      targetPath = args.filePath as string
+    }
+    if (!skipValidation) {
+      await this.parser.validateFilePath(targetPath)
+    }
+
+    // Range composition (handler-side clamp; primitive stays feature-agnostic).
+    const minIdx = Math.max(0, args.chunkIndex - before)
+    const maxIdx = args.chunkIndex + after
+
+    // Primitive call.
+    const rows = await this.vectorStore.getChunksByRange(targetPath, minIdx, maxIdx)
+
+    // Post-fetch marking: isTarget per item; source attached for raw-data rows.
+    const isRaw = looksLikeRawDataPath(targetPath)
+    const sourceForAll = isRaw ? extractSourceFromPath(targetPath) : null
+    const items: ReadChunkNeighborsResultItem[] = rows.map((row) => {
+      const item: ReadChunkNeighborsResultItem = {
+        filePath: row.filePath,
+        chunkIndex: row.chunkIndex,
+        text: row.text,
+        isTarget: row.chunkIndex === args.chunkIndex,
+        fileTitle: row.fileTitle ?? null,
       }
-      if (!skipValidation) {
-        await this.parser.validateFilePath(targetPath)
-      }
+      if (sourceForAll) item.source = sourceForAll
+      return item
+    })
 
-      // Range composition (handler-side clamp; primitive stays feature-agnostic).
-      const minIdx = Math.max(0, args.chunkIndex - before)
-      const maxIdx = args.chunkIndex + after
-
-      // Primitive call.
-      const rows = await this.vectorStore.getChunksByRange(targetPath, minIdx, maxIdx)
-
-      // Post-fetch marking: isTarget per item; source attached for raw-data rows.
-      const isRaw = looksLikeRawDataPath(targetPath)
-      const sourceForAll = isRaw ? extractSourceFromPath(targetPath) : null
-      const items: ReadChunkNeighborsResultItem[] = rows.map((row) => {
-        const item: ReadChunkNeighborsResultItem = {
-          filePath: row.filePath,
-          chunkIndex: row.chunkIndex,
-          text: row.text,
-          isTarget: row.chunkIndex === args.chunkIndex,
-          fileTitle: row.fileTitle ?? null,
-        }
-        if (sourceForAll) item.source = sourceForAll
-        return item
-      })
-
-      return {
-        content: this.withWarnings([
-          {
-            type: 'text',
-            text: JSON.stringify(items, null, 2),
-          },
-        ]),
-      }
+    return {
+      content: this.withWarnings([
+        {
+          type: 'text',
+          text: JSON.stringify(items, null, 2),
+        },
+      ]),
     }
   }
 

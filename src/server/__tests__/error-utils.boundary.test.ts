@@ -45,11 +45,16 @@ describe('formatErrorForClient', () => {
     expect(result).not.toContain('mid layer failed')
   })
 
-  it('coerces non-Error values to their string message', () => {
+  it('coerces non-Error values to a string message', () => {
     process.env['NODE_ENV'] = 'production'
     expect(formatErrorForClient('string error')).toBe('string error')
-    expect(formatErrorForClient({ message: 'obj error' })).toBe('obj error')
+    expect(formatErrorForClient('')).toBe('')
     expect(formatErrorForClient(null)).toBe('null')
+    expect(formatErrorForClient(undefined)).toBe('undefined')
+    expect(formatErrorForClient(42)).toBe('42')
+    expect(formatErrorForClient({ message: 'obj error' })).toBe('obj error')
+    expect(formatErrorForClient({ message: 123 })).toBe('[object Object]')
+    expect(formatErrorForClient({ custom: true })).toBe('[object Object]')
   })
 
   it('never includes a stack trace even under NODE_ENV=development', () => {

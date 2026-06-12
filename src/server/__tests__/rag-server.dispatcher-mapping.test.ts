@@ -107,14 +107,10 @@ describe('Central dispatcher error mapping (AC-004/005/006/008)', () => {
   it('ingest_file: prepends "Failed to ingest file" to a native (non-AppError) error', async () => {
     const testFile = resolve(testDataDir, 'dispatch-ingest.txt')
     writeFileSync(testFile, 'Some ingestible content. '.repeat(40))
-    // First ingest to create a backup, then fail the insert with a NATIVE error.
-    await dispatch(server, 'ingest_file', { filePath: testFile })
+    // Fail at embedding (before any delete/insert) with a NATIVE error so it
+    // propagates to the dispatcher prefix without touching the rollback path.
+    vi.spyOn(internals(server).embedder, 'embedBatch').mockRejectedValue(new Error('disk full'))
 
-    const vectorStore = internals(server).vectorStore
-    vi.spyOn(vectorStore, 'insertChunks').mockRejectedValue(new Error('disk full'))
-    vi.spyOn(vectorStore, 'optimize').mockResolvedValue(undefined)
-
-    writeFileSync(testFile, 'Updated ingestible content. '.repeat(30))
     try {
       await dispatch(server, 'ingest_file', { filePath: testFile })
       throw new Error('expected throw')
