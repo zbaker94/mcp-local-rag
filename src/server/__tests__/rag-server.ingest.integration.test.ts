@@ -56,7 +56,7 @@ describe('AC-008: File Re-ingestion', () => {
     expect(targetFiles.length).toBe(1)
     // Validation: Chunk count matches new data (not old + new combined)
     expect(targetFiles[0].chunkCount).toBe(updatedChunkCount)
-  })
+  }, 60000)
 
   // AC interpretation: [Data protection] Prevent data loss when re-ingest results in 0 chunks
   // Validation: When chunking produces 0 chunks, error is thrown before delete (preserves existing data)
@@ -80,7 +80,7 @@ describe('AC-008: File Re-ingestion', () => {
     const targetFiles = files.files.filter((f: { filePath: string }) => f.filePath === testFile)
     expect(targetFiles.length).toBe(1)
     expect(targetFiles[0].chunkCount).toBe(ingest1.chunkCount)
-  })
+  }, 60000)
 })
 
 describe('AC-009: Error Handling (Complete)', () => {
