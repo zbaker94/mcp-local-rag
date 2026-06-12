@@ -51,6 +51,20 @@ describe('formatErrorForClient', () => {
     expect(formatErrorForClient({ message: 'obj error' })).toBe('obj error')
     expect(formatErrorForClient(null)).toBe('null')
   })
+
+  it('never includes a stack trace even under NODE_ENV=development', () => {
+    process.env['NODE_ENV'] = 'development'
+    const error = new Error('dev mode failure')
+    // The real Error carries a stack with frame markers; none of it may reach
+    // the client. The full stack stays available on the LOG side (asserted in
+    // the formatErrorForLog suite below).
+    expect(error.stack).toContain(' at ')
+    const result = formatErrorForClient(error)
+    expect(result).toBe('dev mode failure')
+    expect(result).not.toContain(' at ')
+    expect(result).not.toContain('.ts:')
+    expect(result).not.toContain('.js:')
+  })
 })
 
 describe('formatErrorForLog', () => {

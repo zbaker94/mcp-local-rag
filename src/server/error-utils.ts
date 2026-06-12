@@ -88,16 +88,6 @@ export function buildConfigErrorBlock(message: string): RagContentBlock {
 }
 
 /**
- * Format error message based on environment.
- * Shows stack trace in development mode for debugging.
- * Shows only error message in production for security (secure by default).
- */
-export function formatErrorMessage(error: unknown): string {
-  const err = toError(error)
-  return process.env['NODE_ENV'] === 'development' ? err.stack || err.message : err.message
-}
-
-/**
  * Coerce an arbitrary thrown value into an `Error`. Preserves a real `Error`
  * unchanged (so its `name`/`cause`/`stack` survive); reconstructs from a
  * `{ message: string }` shape; otherwise stringifies. Centralized so every
@@ -131,15 +121,13 @@ export type ToMcpErrorContext = {
 /**
  * Build the controlled, type-appropriate message sent to the MCP client.
  *
- * Honors the same secure-by-default environment behavior as
- * {@link formatErrorMessage} (stack only in development), but is the dedicated
- * client-facing API: it never appends the raw `.cause` chain, so internal
- * details cannot leak to the client. Full diagnostics belong in
- * {@link formatErrorForLog} (stderr only).
+ * Returns only the error's `.message`, regardless of `NODE_ENV`: the client
+ * boundary never receives a stack trace or the raw `.cause` chain, so internal
+ * details cannot leak to the client even in development. Full diagnostics
+ * (stack + cause chain) belong in {@link formatErrorForLog} (stderr only).
  */
 export function formatErrorForClient(error: unknown): string {
-  const err = toError(error)
-  return process.env['NODE_ENV'] === 'development' ? err.stack || err.message : err.message
+  return toError(error).message
 }
 
 /**
