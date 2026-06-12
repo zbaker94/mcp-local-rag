@@ -1,7 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { formatErrorMessage } from '../error-utils.js'
+import { formatErrorForClient } from '../error-utils.js'
 
-describe('formatErrorMessage', () => {
+// Coercion + secure-by-default coverage for the client-facing formatter.
+// (Previously exercised the removed `formatErrorMessage`; retargeted to the
+// replacement API `formatErrorForClient`, which now returns only `.message`
+// regardless of NODE_ENV.)
+describe('formatErrorForClient (coercion + environment policy)', () => {
   let originalNodeEnv: string | undefined
 
   beforeEach(() => {
@@ -23,7 +27,7 @@ describe('formatErrorMessage', () => {
 
     it('should return only the error message', () => {
       const error = new Error('Something went wrong')
-      const result = formatErrorMessage(error)
+      const result = formatErrorForClient(error)
       expect(result).toBe('Something went wrong')
     })
 
@@ -31,7 +35,7 @@ describe('formatErrorMessage', () => {
       const error = new Error('Production error')
       // Ensure stack exists
       expect(error.stack).toBeDefined()
-      const result = formatErrorMessage(error)
+      const result = formatErrorForClient(error)
       expect(result).toBe('Production error')
     })
   })
@@ -41,23 +45,15 @@ describe('formatErrorMessage', () => {
       process.env['NODE_ENV'] = 'development'
     })
 
-    it('should return the stack trace when available', () => {
+    it('should return only the message and never the stack trace', () => {
       const error = new Error('Dev error')
-      const result = formatErrorMessage(error)
-      // Stack trace includes the message and file info
-      expect(result).toContain('Dev error')
-      expect(result).toContain('Error:')
-    })
-
-    it('should return the error message when stack is not available', () => {
-      const error = new Error('No stack error')
-      // Simulate an Error whose `stack` is unavailable. Under
-      // exactOptionalPropertyTypes, deleting the optional property (rather than
-      // assigning `undefined`) is the type-correct way to model its absence;
-      // reading `error.stack` afterwards still yields `undefined` at runtime.
-      delete error.stack
-      const result = formatErrorMessage(error)
-      expect(result).toBe('No stack error')
+      // A real Error has a stack containing the "Error:" header and frame info;
+      // the client formatter must not expose any of it.
+      expect(error.stack).toBeDefined()
+      const result = formatErrorForClient(error)
+      expect(result).toBe('Dev error')
+      expect(result).not.toContain(' at ')
+      expect(result).not.toContain('Error:')
     })
   })
 
@@ -68,7 +64,7 @@ describe('formatErrorMessage', () => {
 
     it('should return only the error message (secure by default)', () => {
       const error = new Error('Default mode error')
-      const result = formatErrorMessage(error)
+      const result = formatErrorForClient(error)
       expect(result).toBe('Default mode error')
     })
   })
@@ -80,42 +76,42 @@ describe('formatErrorMessage', () => {
       })
 
       it('should return "null" when error is null', () => {
-        const result = formatErrorMessage(null)
+        const result = formatErrorForClient(null)
         expect(result).toBe('null')
       })
 
       it('should return "undefined" when error is undefined', () => {
-        const result = formatErrorMessage(undefined)
+        const result = formatErrorForClient(undefined)
         expect(result).toBe('undefined')
       })
 
       it('should return the string itself when error is a string', () => {
-        const result = formatErrorMessage('string error')
+        const result = formatErrorForClient('string error')
         expect(result).toBe('string error')
       })
 
       it('should return stringified number when error is a number', () => {
-        const result = formatErrorMessage(42)
+        const result = formatErrorForClient(42)
         expect(result).toBe('42')
       })
 
       it('should return empty string when error is empty string', () => {
-        const result = formatErrorMessage('')
+        const result = formatErrorForClient('')
         expect(result).toBe('')
       })
 
       it('should return message when object has string message property', () => {
-        const result = formatErrorMessage({ message: 'obj error' })
+        const result = formatErrorForClient({ message: 'obj error' })
         expect(result).toBe('obj error')
       })
 
       it('should return stringified object when object has non-string message', () => {
-        const result = formatErrorMessage({ message: 123 })
+        const result = formatErrorForClient({ message: 123 })
         expect(result).toBe('[object Object]')
       })
 
       it('should return stringified object when object has no message', () => {
-        const result = formatErrorMessage({ custom: true })
+        const result = formatErrorForClient({ custom: true })
         expect(result).toBe('[object Object]')
       })
     })

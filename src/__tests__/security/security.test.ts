@@ -369,12 +369,13 @@ The chunker requires sufficient text length to generate meaningful chunks.`
   // S-004: MCP security best practices compliance
   // --------------------------------------------
   describe('S-004: MCP security best practices compliance', () => {
-    // The stack-trace policy (formatErrorMessage) governs INTERNAL (non-input)
+    // The stack-trace policy (formatErrorForClient) governs INTERNAL (non-input)
     // failures only. Input errors (bad path, missing file, unsupported format,
     // size) surface as McpError InvalidParams with a clean message and never
-    // reach formatErrorMessage. To exercise the policy substantively we induce a
-    // genuine internal failure: path/size validation passes for an existing
-    // fixture, then the parse step throws a generic Error.
+    // reach formatErrorForClient. To exercise the policy substantively we induce
+    // a genuine internal failure: path/size validation passes for an existing
+    // fixture, then the parse step throws a generic Error. The client message
+    // never carries a stack trace, regardless of NODE_ENV.
     const internalErrorMessage = 'Induced internal parse failure'
 
     // Default behavior: Stack traces NOT included (secure by default for MCP servers)
@@ -406,8 +407,10 @@ The chunker requires sufficient text length to generate meaningful chunks.`
       }
     })
 
-    // Development mode: Stack traces ARE included for debugging
-    it('Stack traces included when NODE_ENV=development', async () => {
+    // Development mode: Stack traces are STILL withheld from the client. The
+    // dev-mode stack is available on the LOG side (stderr) only; the
+    // client-facing message never carries it, regardless of NODE_ENV.
+    it('Stack traces not included even when NODE_ENV=development', async () => {
       const originalEnv = process.env['NODE_ENV']
       process.env['NODE_ENV'] = 'development'
 
@@ -422,9 +425,13 @@ The chunker requires sufficient text length to generate meaningful chunks.`
       } catch (error) {
         const errorMessage = (error as Error).message
 
-        // Verify stack trace IS included in development mode (the client
-        // message is built by the central mapper's formatErrorForClient).
-        expect(errorMessage).toContain(' at ')
+        // The internal failure message still surfaces, but the client message
+        // never carries stack-trace details even in development mode (the
+        // client message is built by the central mapper's formatErrorForClient).
+        expect(errorMessage).toContain(internalErrorMessage)
+        expect(errorMessage).not.toContain(' at ')
+        expect(errorMessage).not.toContain('.ts:')
+        expect(errorMessage).not.toContain('.js:')
       } finally {
         parseSpy.mockRestore()
         // Restore environment variable
