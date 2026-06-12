@@ -30,10 +30,9 @@
 
 import { mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
-import { McpError } from '@modelcontextprotocol/sdk/types.js'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { resolveServerConfig } from '../../server-main.js'
-import { type BaseDirsConfigError, displayPath, resolveBaseDirs } from '../../utils/base-dirs.js'
+import { BaseDirsConfigError, displayPath, resolveBaseDirs } from '../../utils/base-dirs.js'
 import { RAGServer } from '../index.js'
 
 // =============================================================================
@@ -592,8 +591,11 @@ describe('post-launch findings #3 + #4: server-main wiring rejects sensitive roo
     // baseDirs MUST be empty: no silent cwd fallback.
     expect(config.baseDirs).toEqual([])
 
-    // Root-dependent tool: must fail fast.
-    await expect(server.handleListFiles()).rejects.toBeInstanceOf(McpError)
+    // Root-dependent tool: must fail fast. The config gate now throws the
+    // structured BaseDirsConfigError with original identity (the central
+    // dispatcher mapper maps it to McpError(InvalidParams) at the boundary —
+    // see rag-server.dispatcher-mapping.test.ts).
+    await expect(server.handleListFiles()).rejects.toBeInstanceOf(BaseDirsConfigError)
 
     // status: must remain callable and expose the diagnostic.
     await server.initialize()
@@ -656,12 +658,15 @@ describe('AC-010: invalid BASE_DIRS end-to-end (real resolveBaseDirs)', () => {
     try {
       await server.initialize()
 
-      // Root-dependent tool: throws structured McpError with the resolver's message.
+      // Root-dependent tool: throws the structured BaseDirsConfigError with the
+      // resolver's message and original identity. The central dispatcher mapper
+      // maps it to McpError(InvalidParams) at the MCP boundary (covered by
+      // rag-server.dispatcher-mapping.test.ts).
       const listError = await server
         .handleListFiles()
         .then(() => null)
         .catch((e) => e)
-      expect(listError).toBeInstanceOf(McpError)
+      expect(listError).toBeInstanceOf(BaseDirsConfigError)
       expect((listError as Error).message).toMatch(/BASE_DIRS/)
 
       // status remains callable and surfaces the configError as a diagnostic block.
@@ -696,16 +701,20 @@ describe('AC-010: invalid BASE_DIRS end-to-end (real resolveBaseDirs)', () => {
       // DB access for the fail-fast set, so we can skip the heavy
       // initialize() path for this case.
 
+      // The config gate throws the structured BaseDirsConfigError with original
+      // identity for every fail-fast tool; the central dispatcher mapper turns
+      // it into McpError(InvalidParams) at the boundary (see
+      // rag-server.dispatcher-mapping.test.ts).
       await expect(server.handleIngestFile({ filePath: '/tmp/x.txt' })).rejects.toBeInstanceOf(
-        McpError
+        BaseDirsConfigError
       )
       await expect(server.handleDeleteFile({ filePath: '/tmp/x.txt' })).rejects.toBeInstanceOf(
-        McpError
+        BaseDirsConfigError
       )
       await expect(
         server.handleReadChunkNeighbors({ filePath: '/tmp/x.txt', chunkIndex: 0 })
-      ).rejects.toBeInstanceOf(McpError)
-      await expect(server.handleListFiles()).rejects.toBeInstanceOf(McpError)
+      ).rejects.toBeInstanceOf(BaseDirsConfigError)
+      await expect(server.handleListFiles()).rejects.toBeInstanceOf(BaseDirsConfigError)
     } finally {
       // Do not close — server was never initialized.
     }
