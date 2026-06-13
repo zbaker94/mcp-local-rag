@@ -211,6 +211,10 @@ jobs:
       run: pnpm run build
 
     - name: Smoke-test the published package in isolation
+      # The CPU native binary is bundled; skip onnxruntime-node's postinstall,
+      # which otherwise downloads CUDA EP binaries from NuGet (flaky on CI).
+      env:
+        ONNXRUNTIME_NODE_INSTALL: skip
       run: |
         pnpm pack --pack-destination "${RUNNER_TEMP}"
         SMOKE_DIR="$(mktemp -d)"
