@@ -201,6 +201,42 @@ describe('CLI delete', () => {
     expect(parsed.timestamp).toBeDefined()
   })
 
+  it('should report removed chunks and existed=true when vector rows were deleted', async () => {
+    mocks.deleteChunks.mockResolvedValue(3)
+
+    const { error } = await captureStderr(() => runDelete(['/path/to/file.md']))
+
+    expect(error).toBeUndefined()
+
+    expect(stdoutSpy).toHaveBeenCalledTimes(1)
+    const writtenData = stdoutSpy.mock.calls[0]![0] as string
+    const parsed = JSON.parse(writtenData)
+    expect(parsed.filePath).toBe(resolve('/path/to/file.md'))
+    expect(parsed.deleted).toBe(true)
+    expect(parsed.removedChunks).toBe(3)
+    expect(parsed.existed).toBe(true)
+  })
+
+  it('should report existed=true when only raw-data meta exists', async () => {
+    const { generateMetaJsonPath, generateRawDataPath } = await import(
+      '../../utils/raw-data-utils.js'
+    )
+    const mdPath = generateRawDataPath(cleanupDbPath, 'https://example.com/meta-only', 'markdown')
+    await mkdir(resolve(cleanupDbPath, 'raw-data'), { recursive: true })
+    await writeFile(generateMetaJsonPath(mdPath), '{}')
+
+    const { error } = await captureStderr(() =>
+      runDelete(['--source', 'https://example.com/meta-only'], { dbPath: cleanupDbPath })
+    )
+
+    expect(error).toBeUndefined()
+
+    const writtenData = stdoutSpy.mock.calls[0]![0] as string
+    const parsed = JSON.parse(writtenData)
+    expect(parsed.removedChunks).toBe(0)
+    expect(parsed.existed).toBe(true)
+  })
+
   // --------------------------------------------
   // Delete by --source
   // --------------------------------------------
@@ -251,6 +287,11 @@ describe('CLI delete', () => {
     const unlinkCalls = mocks.unlink.mock.calls.map((c: unknown[]) => c[0] as string)
     expect(unlinkCalls.some((p: string) => p.endsWith('.md'))).toBe(true)
     expect(unlinkCalls.some((p: string) => p.endsWith('.meta.json'))).toBe(true)
+
+    const writtenData = stdoutSpy.mock.calls[0]![0] as string
+    const parsed = JSON.parse(writtenData)
+    expect(parsed.removedChunks).toBe(0)
+    expect(parsed.existed).toBe(true)
   })
 
   it('should not clean up files when path is not a raw-data path', async () => {
@@ -287,7 +328,7 @@ describe('CLI delete', () => {
     expect(parsed.existed).toBe(false)
   })
 
-  it('attempts .meta.json cleanup even when the .md file is already missing', async () => {
+  it('should attempt .meta.json cleanup even when the .md file is already missing', async () => {
     mocks.deleteChunks.mockResolvedValue(0)
     const enoentError = Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
     mocks.unlink.mockRejectedValue(enoentError)

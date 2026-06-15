@@ -358,6 +358,26 @@ This is markdown content with **bold** and _italic_ text.
       await expect(server.handleDeleteFile({ filePath })).resolves.toBeDefined()
     })
 
+    it('delete_file throws when raw-data unlink fails for a non-ENOENT reason', async () => {
+      const source = 'https://example.com/delete-unlink-failure-test'
+      const content =
+        'Content for testing raw-data unlink failure handling. ' +
+        'This needs to be long enough to create chunks for the test to work properly.'
+
+      const ingestResult = await server.handleIngestData({
+        content,
+        metadata: { source, format: 'text' },
+      })
+      const parsed = JSON.parse(ingestResult.content[0].text)
+      const filePath = parsed.filePath
+
+      const { unlink } = await import('node:fs/promises')
+      await unlink(filePath)
+      await mkdir(filePath)
+
+      await expect(server.handleDeleteFile({ filePath })).rejects.toThrow()
+    })
+
     it('delete_file accepts source parameter to delete raw-data', async () => {
       const source = 'https://example.com/delete-by-source-test'
       const content =

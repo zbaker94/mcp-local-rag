@@ -278,15 +278,20 @@ export async function loadMetaJson(mdPath: string): Promise<RawDataMeta | null> 
     const content = await readFile(metaPath, 'utf-8')
     return JSON.parse(content) as RawDataMeta
   } catch (error: unknown) {
-    if (
-      error instanceof Error &&
-      'code' in error &&
-      (error as NodeJS.ErrnoException).code === 'ENOENT'
-    ) {
+    if (isEnoent(error)) {
       return null
     }
     throw error
   }
+}
+
+/**
+ * True when a filesystem error means the target path does not exist.
+ */
+export function isEnoent(error: unknown): boolean {
+  return (
+    error instanceof Error && 'code' in error && (error as NodeJS.ErrnoException).code === 'ENOENT'
+  )
 }
 
 // ============================================
