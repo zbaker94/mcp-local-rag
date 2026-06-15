@@ -1,8 +1,9 @@
 // CLI delete subcommand — delete ingested content by file path or source URL
 
-import { access, unlink } from 'node:fs/promises'
+import { unlink } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import {
+  checkRawDataArtifacts,
   generateMetaJsonPath,
   generateRawDataPath,
   isPathInRawDataDirLexical,
@@ -86,15 +87,6 @@ function parseArgs(args: string[]): DeleteArgs {
   return result
 }
 
-async function pathExists(path: string): Promise<boolean> {
-  try {
-    await access(path)
-    return true
-  } catch {
-    return false
-  }
-}
-
 // ============================================
 // Main Entry Point
 // ============================================
@@ -157,14 +149,20 @@ export async function runDelete(args: string[], globalOptions: GlobalOptions = {
 
     // Delete chunks from VectorStore
     const removedChunks = await vectorStore.deleteChunks(targetPath)
+    // Optimize immediately after the DB delete: a later raw-data unlink failure
+    // (re-thrown below for non-ENOENT) must not skip compaction once the rows
+    // are already gone.
+    await vectorStore.optimize()
 
     let rawDataExisted = false
     let metaExisted = false
 
     // Clean up physical raw-data files if applicable.
     if (isPathInRawDataDirLexical(targetPath, globalConfig.dbPath)) {
-      rawDataExisted = await pathExists(targetPath)
-      metaExisted = await pathExists(generateMetaJsonPath(targetPath))
+      // Pre-unlink existence (shared with the MCP server delete path).
+      const artifacts = await checkRawDataArtifacts(targetPath)
+      rawDataExisted = artifacts.rawDataExisted
+      metaExisted = artifacts.metaExisted
 
       try {
         await unlink(targetPath)
@@ -192,9 +190,6 @@ export async function runDelete(args: string[], globalOptions: GlobalOptions = {
         }
       }
     }
-
-    // Optimize VectorStore after deletion
-    await vectorStore.optimize()
 
     // Output result JSON to stdout
     const result = {
