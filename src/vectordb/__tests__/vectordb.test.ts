@@ -115,24 +115,6 @@ describe('VectorStore', () => {
       await expect(store.deleteChunks('/docs/anything.txt')).resolves.toBe(0)
     })
 
-    it('countChunksForFile returns the number of stored chunks', async () => {
-      const store = new VectorStore({ dbPath: testDbPath, tableName: 'chunks' })
-      await store.initialize()
-      await store.insertChunks([
-        createTestChunk('one', '/docs/count.txt', 0),
-        createTestChunk('two', '/docs/count.txt', 1),
-      ])
-
-      await expect(store.countChunksForFile('/docs/count.txt')).resolves.toBe(2)
-      await expect(store.countChunksForFile('/docs/missing.txt')).resolves.toBe(0)
-    })
-
-    it('countChunksForFile returns 0 on an empty table', async () => {
-      const store = new VectorStore({ dbPath: testDbPath, tableName: 'chunks' })
-      await store.initialize()
-      await expect(store.countChunksForFile('/docs/anything.txt')).resolves.toBe(0)
-    })
-
     it('escapes single quotes in the file path (SQL-injection-safe)', async () => {
       const store = new VectorStore({ dbPath: testDbPath, tableName: 'chunks' })
       await store.initialize()

@@ -1,6 +1,6 @@
 // RAGServer implementation with MCP tools
 
-import { access, readFile, unlink } from 'node:fs/promises'
+import { readFile, unlink } from 'node:fs/promises'
 import { resolve, sep } from 'node:path'
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
@@ -20,6 +20,7 @@ import { extractMarkdownTitle, extractTxtTitle } from '../parser/title-extractor
 import type { BaseDirsConfigError } from '../utils/base-dirs.js'
 import {
   type ContentFormat,
+  checkRawDataArtifacts,
   extractSourceFromPath,
   generateMetaJsonPath,
   generateRawDataPath,
@@ -218,15 +219,6 @@ export class RAGServer {
    */
   private withWarnings(content: RagContentBlock[]): RagContentBlock[] {
     return appendConfigWarnings(content, this.configWarnings)
-  }
-
-  private async pathExists(path: string): Promise<boolean> {
-    try {
-      await access(path)
-      return true
-    } catch {
-      return false
-    }
   }
 
   /**
@@ -786,14 +778,19 @@ export class RAGServer {
 
     // Delete chunks from vector database
     const removedChunks = await this.vectorStore.deleteChunks(targetPath)
+    // Optimize immediately after the DB delete: a later raw-data unlink failure
+    // must not skip compaction once the rows are already gone.
+    await this.vectorStore.optimize()
 
     let rawDataExisted = false
     let metaExisted = false
 
     // Also delete physical raw-data file if applicable.
     if (isPathInRawDataDirLexical(targetPath, this.dbPath)) {
-      rawDataExisted = await this.pathExists(targetPath)
-      metaExisted = await this.pathExists(generateMetaJsonPath(targetPath))
+      // Pre-unlink existence (shared with the CLI delete path).
+      const artifacts = await checkRawDataArtifacts(targetPath)
+      rawDataExisted = artifacts.rawDataExisted
+      metaExisted = artifacts.metaExisted
 
       try {
         await unlink(targetPath)
@@ -808,8 +805,6 @@ export class RAGServer {
         // .meta.json may not exist for old data, silently ignore
       }
     }
-
-    await this.vectorStore.optimize()
 
     const result: DeleteFileResult = {
       filePath: targetPath,

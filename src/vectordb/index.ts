@@ -80,31 +80,6 @@ export class VectorStore {
   }
 
   /**
-   * Count stored chunks for a single file path.
-   *
-   * Lazy-table null returns 0 (mirrors deleteChunks).
-   *
-   * @param filePath - File path (absolute)
-   */
-  async countChunksForFile(filePath: string): Promise<number> {
-    if (!this.table) {
-      return 0
-    }
-
-    try {
-      const escapedFilePath = filePath.replace(/'/g, "''")
-      const raw = await this.table
-        .query()
-        .where(`\`filePath\` = '${escapedFilePath}'`)
-        .select(['filePath'])
-        .toArray()
-      return raw.length
-    } catch (error) {
-      throw new DatabaseError(`Failed to count chunks for file: ${filePath}`, error as Error)
-    }
-  }
-
-  /**
    * Delete all chunks for specified file path
    *
    * @param filePath - File path (absolute)
@@ -118,18 +93,16 @@ export class VectorStore {
     }
 
     try {
-      const removedChunks = await this.countChunksForFile(filePath)
-      if (removedChunks === 0) {
-        return 0
-      }
-
       // Use LanceDB delete API to remove records matching filePath.
       // Escape single quotes to prevent SQL injection.
       // Note: Field names are case-sensitive, use backticks for camelCase fields.
       const escapedFilePath = filePath.replace(/'/g, "''")
-      await this.table.delete(`\`filePath\` = '${escapedFilePath}'`)
-      console.error(`VectorStore: Deleted ${removedChunks} chunks for file "${filePath}"`)
-      return removedChunks
+      // delete() reports the authoritative removed count (numDeletedRows) from
+      // the same operation, so the total stays correct under concurrent deletes
+      // and we avoid a second pre-count query that materializes matching rows.
+      const { numDeletedRows } = await this.table.delete(`\`filePath\` = '${escapedFilePath}'`)
+      console.error(`VectorStore: Deleted ${numDeletedRows} chunks for file "${filePath}"`)
+      return numDeletedRows
     } catch (error) {
       // LanceDB's delete is a no-op (resolves normally) when no rows match the
       // predicate, so reaching this catch means a genuine failure — a malformed
