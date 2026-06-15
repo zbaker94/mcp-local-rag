@@ -76,9 +76,9 @@
     "turndown": "7.2.4"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.4.16",
+    "@biomejs/biome": "^2.5.0",
     "@types/jsdom": "^28.0.3",
-    "@types/node": "^25.9.2",
+    "@types/node": "^25.9.3",
     "@types/turndown": "5.0.6",
     "dpdm": "^4.2.0",
     "husky": "^9.1.7",
