@@ -83,12 +83,13 @@ export class VectorStore {
    * Delete all chunks for specified file path
    *
    * @param filePath - File path (absolute)
+   * @returns Number of chunks removed (0 when nothing matched)
    */
-  async deleteChunks(filePath: string): Promise<void> {
+  async deleteChunks(filePath: string): Promise<number> {
     if (!this.table) {
       // If table doesn't exist, no deletion targets, return normally
       console.error('VectorStore: Skipping deletion as table does not exist')
-      return
+      return 0
     }
 
     try {
@@ -96,8 +97,12 @@ export class VectorStore {
       // Escape single quotes to prevent SQL injection.
       // Note: Field names are case-sensitive, use backticks for camelCase fields.
       const escapedFilePath = filePath.replace(/'/g, "''")
-      await this.table.delete(`\`filePath\` = '${escapedFilePath}'`)
-      console.error(`VectorStore: Deleted chunks for file "${filePath}"`)
+      // delete() reports the authoritative removed count (numDeletedRows) from
+      // the same operation, so the total stays correct under concurrent deletes
+      // and we avoid a second pre-count query that materializes matching rows.
+      const { numDeletedRows } = await this.table.delete(`\`filePath\` = '${escapedFilePath}'`)
+      console.error(`VectorStore: Deleted ${numDeletedRows} chunks for file "${filePath}"`)
+      return numDeletedRows
     } catch (error) {
       // LanceDB's delete is a no-op (resolves normally) when no rows match the
       // predicate, so reaching this catch means a genuine failure — a malformed

@@ -3,6 +3,7 @@
 import { unlink } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import {
+  checkRawDataArtifacts,
   generateMetaJsonPath,
   generateRawDataPath,
   isPathInRawDataDirLexical,
@@ -147,10 +148,22 @@ export async function runDelete(args: string[], globalOptions: GlobalOptions = {
     }
 
     // Delete chunks from VectorStore
-    await vectorStore.deleteChunks(targetPath)
+    const removedChunks = await vectorStore.deleteChunks(targetPath)
+    // Optimize immediately after the DB delete: a later raw-data unlink failure
+    // (re-thrown below for non-ENOENT) must not skip compaction once the rows
+    // are already gone.
+    await vectorStore.optimize()
+
+    let rawDataExisted = false
+    let metaExisted = false
 
     // Clean up physical raw-data files if applicable.
     if (isPathInRawDataDirLexical(targetPath, globalConfig.dbPath)) {
+      // Pre-unlink existence (shared with the MCP server delete path).
+      const artifacts = await checkRawDataArtifacts(targetPath)
+      rawDataExisted = artifacts.rawDataExisted
+      metaExisted = artifacts.metaExisted
+
       try {
         await unlink(targetPath)
       } catch (error: unknown) {
@@ -178,13 +191,12 @@ export async function runDelete(args: string[], globalOptions: GlobalOptions = {
       }
     }
 
-    // Optimize VectorStore after deletion
-    await vectorStore.optimize()
-
     // Output result JSON to stdout
     const result = {
       filePath: targetPath,
       deleted: true,
+      removedChunks,
+      existed: removedChunks > 0 || rawDataExisted || metaExisted,
       timestamp: new Date().toISOString(),
     }
     process.stdout.write(JSON.stringify(result))

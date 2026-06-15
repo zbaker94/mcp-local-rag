@@ -1,7 +1,7 @@
 // Raw Data Utilities for ingest_data tool
 // Handles: base64url encoding, source normalization, file saving, source extraction
 
-import { mkdir, readFile, realpath, writeFile } from 'node:fs/promises'
+import { access, mkdir, readFile, realpath, writeFile } from 'node:fs/promises'
 import { dirname, join, resolve, sep } from 'node:path'
 
 // ============================================
@@ -287,4 +287,42 @@ export async function loadMetaJson(mdPath: string): Promise<RawDataMeta | null> 
     }
     throw error
   }
+}
+
+// ============================================
+// Raw-Data Artifact Existence
+// ============================================
+
+/**
+ * Whether a path exists. access()-based, never throws.
+ */
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await access(path)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Pre-unlink existence of the on-disk raw-data artifacts for a target .md
+ * path: the raw-data file itself and its .meta.json sidecar.
+ */
+export interface RawDataArtifactExistence {
+  rawDataExisted: boolean
+  metaExisted: boolean
+}
+
+/**
+ * Report which raw-data artifacts exist for a target path. Single source for
+ * the delete `existed` signal so the MCP server and CLI delete paths cannot
+ * drift. Call BEFORE unlinking — it reports pre-unlink state.
+ *
+ * @param targetPath - Raw-data .md file path
+ */
+export async function checkRawDataArtifacts(targetPath: string): Promise<RawDataArtifactExistence> {
+  const rawDataExisted = await pathExists(targetPath)
+  const metaExisted = await pathExists(generateMetaJsonPath(targetPath))
+  return { rawDataExisted, metaExisted }
 }

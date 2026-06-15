@@ -20,6 +20,7 @@ import { extractMarkdownTitle, extractTxtTitle } from '../parser/title-extractor
 import type { BaseDirsConfigError } from '../utils/base-dirs.js'
 import {
   type ContentFormat,
+  checkRawDataArtifacts,
   extractSourceFromPath,
   generateMetaJsonPath,
   generateRawDataPath,
@@ -46,6 +47,7 @@ import { toolDefinitions } from './tool-definitions.js'
 import { parseIngestDataInput, parseQueryDocumentsInput } from './tool-input.js'
 import type {
   DeleteFileInput,
+  DeleteFileResult,
   FileEntry,
   IngestDataInput,
   IngestFileInput,
@@ -775,11 +777,21 @@ export class RAGServer {
     }
 
     // Delete chunks from vector database
-    await this.vectorStore.deleteChunks(targetPath)
+    const removedChunks = await this.vectorStore.deleteChunks(targetPath)
+    // Optimize immediately after the DB delete: a later raw-data unlink failure
+    // must not skip compaction once the rows are already gone.
     await this.vectorStore.optimize()
+
+    let rawDataExisted = false
+    let metaExisted = false
 
     // Also delete physical raw-data file if applicable.
     if (isPathInRawDataDirLexical(targetPath, this.dbPath)) {
+      // Pre-unlink existence (shared with the CLI delete path).
+      const artifacts = await checkRawDataArtifacts(targetPath)
+      rawDataExisted = artifacts.rawDataExisted
+      metaExisted = artifacts.metaExisted
+
       try {
         await unlink(targetPath)
         console.error(`Deleted raw-data file: ${targetPath}`)
@@ -794,10 +806,11 @@ export class RAGServer {
       }
     }
 
-    // Return success message
-    const result = {
+    const result: DeleteFileResult = {
       filePath: targetPath,
       deleted: true,
+      removedChunks,
+      existed: removedChunks > 0 || rawDataExisted || metaExisted,
       timestamp: new Date().toISOString(),
     }
 
