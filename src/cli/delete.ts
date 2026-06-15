@@ -6,6 +6,7 @@ import {
   checkRawDataArtifacts,
   generateMetaJsonPath,
   generateRawDataPath,
+  isEnoent,
   isPathInRawDataDirLexical,
 } from '../utils/raw-data-utils.js'
 import { createVectorStore, formatCliError } from './common.js'
@@ -168,11 +169,7 @@ export async function runDelete(args: string[], globalOptions: GlobalOptions = {
         await unlink(targetPath)
       } catch (error: unknown) {
         // Ignore ENOENT (file already deleted / never existed)
-        if (
-          !(error instanceof Error) ||
-          !('code' in error) ||
-          (error as NodeJS.ErrnoException).code !== 'ENOENT'
-        ) {
+        if (!isEnoent(error)) {
           throw error
         }
       }
@@ -181,11 +178,7 @@ export async function runDelete(args: string[], globalOptions: GlobalOptions = {
         await unlink(generateMetaJsonPath(targetPath))
       } catch (error: unknown) {
         // Ignore ENOENT
-        if (
-          !(error instanceof Error) ||
-          !('code' in error) ||
-          (error as NodeJS.ErrnoException).code !== 'ENOENT'
-        ) {
+        if (!isEnoent(error)) {
           throw error
         }
       }
