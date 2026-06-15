@@ -24,6 +24,7 @@ import {
   extractSourceFromPath,
   generateMetaJsonPath,
   generateRawDataPath,
+  isEnoent,
   isPathInRawDataDir,
   isPathInRawDataDirLexical,
   loadMetaJson,
@@ -795,14 +796,19 @@ export class RAGServer {
       try {
         await unlink(targetPath)
         console.error(`Deleted raw-data file: ${targetPath}`)
-      } catch {
+      } catch (error: unknown) {
+        if (!isEnoent(error)) {
+          throw error
+        }
         console.warn(`Could not delete raw-data file (may not exist): ${targetPath}`)
       }
       try {
         await unlink(generateMetaJsonPath(targetPath))
         console.error(`Deleted meta.json: ${generateMetaJsonPath(targetPath)}`)
-      } catch {
-        // .meta.json may not exist for old data, silently ignore
+      } catch (error: unknown) {
+        if (!isEnoent(error)) {
+          throw error
+        }
       }
     }
 
