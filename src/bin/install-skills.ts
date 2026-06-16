@@ -29,29 +29,17 @@ import { fileURLToPath } from 'node:url'
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const SKILLS_SOURCE = resolve(__dirname, '..', '..', 'skills', 'mcp-local-rag')
 
-// Codex home directory (supports CODEX_HOME environment variable)
-// https://developers.openai.com/codex/local-config/
-const CODEX_HOME = process.env['CODEX_HOME'] || join(homedir(), '.codex')
-
-// Installation targets
-const TARGETS = {
-  'claude-code-project': './.claude/skills/mcp-local-rag',
-  'claude-code-global': join(homedir(), '.claude', 'skills', 'mcp-local-rag'),
-  'codex-project': './.codex/skills/mcp-local-rag',
-  'codex-global': join(CODEX_HOME, 'skills', 'mcp-local-rag'),
-} as const
-
 // ============================================
 // CLI Argument Parsing
 // ============================================
 
-interface Options {
+export interface Options {
   target: 'claude-code-project' | 'claude-code-global' | 'codex-project' | 'codex-global' | 'custom'
   customPath?: string
   help: boolean
 }
 
-function parseArgs(args: string[]): Options {
+export function parseArgs(args: string[]): Options {
   const options: Options = {
     target: 'claude-code-project',
     help: false,
@@ -157,7 +145,7 @@ Examples:
 // Installation
 // ============================================
 
-function getTargetPath(options: Options): string {
+export function getTargetPath(options: Options): string {
   if (options.target === 'custom') {
     if (!options.customPath) {
       console.error('Error: Custom path not specified')
@@ -166,7 +154,18 @@ function getTargetPath(options: Options): string {
     return resolve(options.customPath, 'mcp-local-rag')
   }
 
-  return TARGETS[options.target]
+  // Resolve install targets at invocation time so CODEX_HOME is read per-call
+  // (https://developers.openai.com/codex/local-config/) rather than frozen at
+  // import — importing this module then performs no env reads.
+  const codexHome = process.env['CODEX_HOME'] || join(homedir(), '.codex')
+  const targets = {
+    'claude-code-project': './.claude/skills/mcp-local-rag',
+    'claude-code-global': join(homedir(), '.claude', 'skills', 'mcp-local-rag'),
+    'codex-project': './.codex/skills/mcp-local-rag',
+    'codex-global': join(codexHome, 'skills', 'mcp-local-rag'),
+  } as const
+
+  return targets[options.target]
 }
 
 function install(targetPath: string): void {

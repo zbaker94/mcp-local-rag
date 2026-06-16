@@ -50,7 +50,17 @@ export function buildSensitivePrefixes(
   return [...set]
 }
 
-const SENSITIVE_PATH_PREFIXES: ReadonlyArray<string> = buildSensitivePrefixes()
+// Lazily built + memoized on first `checkSensitivePath` call so importing this
+// widely-used security module performs no filesystem syscalls at module-eval
+// time (the realpath I/O only happens when the policy is first consulted).
+let sensitivePathPrefixes: ReadonlyArray<string> | null = null
+
+function getSensitivePathPrefixes(): ReadonlyArray<string> {
+  if (sensitivePathPrefixes === null) {
+    sensitivePathPrefixes = buildSensitivePrefixes()
+  }
+  return sensitivePathPrefixes
+}
 
 /**
  * Directories under `$HOME` that hold credentials and must never be opened
@@ -77,7 +87,7 @@ export function checkSensitivePath(value: string, flagName: string): string | un
   const expanded = value.startsWith('~/') ? `${home}/${value.slice(2)}` : value
   const valueCmp = toComparable(expanded)
 
-  for (const prefix of SENSITIVE_PATH_PREFIXES) {
+  for (const prefix of getSensitivePathPrefixes()) {
     const prefixCmp = toComparable(prefix)
     if (valueCmp === prefixCmp || valueCmp.startsWith(`${prefixCmp}/`)) {
       return `Refusing to use sensitive system path for ${flagName}: ${value}`
