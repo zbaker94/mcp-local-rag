@@ -48,6 +48,24 @@ const MIN_VECTOR_AREA_RATIO = 0.0005
 const VECTOR_STROKE_COUNT_THRESHOLD = 5
 
 /**
+ * Hard upper bound on how many stroke-path callbacks the vector scan will
+ * service for a single page before it aborts the content-stream replay.
+ *
+ * `page.run(...)` invokes the `strokePath` callback once per stroke op in the
+ * content stream, and each callback does a `getBounds` + clamp + area math.
+ * A maliciously crafted PDF can pack millions of tiny stroke ops onto one page,
+ * turning the scan into an unbounded-CPU DoS that the on-disk file-size cap
+ * does not bound. Legitimate diagrams/charts have at most a few thousand
+ * strokes, so this budget never affects real documents — it only caps the
+ * adversarial case. When the budget is hit the rects collected so far already
+ * satisfy the candidate decision, so aborting does not change the outcome.
+ */
+const MAX_VECTOR_STROKE_OPS = 50_000
+
+/** Internal sentinel used to abort `page.run` once the stroke budget is hit. */
+class StrokeBudgetExceeded extends Error {}
+
+/**
  * Input page record consumed by the detector. `stextJson` is typed `unknown`
  * because mupdf's `StructuredText.asJSON()` shape is not statically declared
  * by `mupdf.d.ts`. The implementation narrows it locally.
@@ -208,8 +226,18 @@ function getEffectiveVectorStrokeRects(
   if (pageArea <= 0) return []
 
   const rects: Rect[] = []
+  let strokeOps = 0
+  let budgetExceeded = false
   const device = new mupdf.Device({
     strokePath(pathObj: mupdf.Path, stroke: mupdf.StrokeState, ctm: mupdf.Matrix) {
+      // Short-circuit once the budget is hit, in case mupdf keeps invoking the
+      // callback after the abort throw fails to propagate across the WASM
+      // boundary — every subsequent op is then a single comparison + return.
+      if (budgetExceeded) return
+      if (++strokeOps > MAX_VECTOR_STROKE_OPS) {
+        budgetExceeded = true
+        throw new StrokeBudgetExceeded()
+      }
       try {
         const rawRect = pathObj.getBounds(stroke, ctm)
         const [x0, y0, x1, y1] = rawRect
@@ -237,6 +265,15 @@ function getEffectiveVectorStrokeRects(
   try {
     page.run(device, mupdf.Matrix.identity)
   } catch (err) {
+    if (err instanceof StrokeBudgetExceeded) {
+      // Adversarial (or pathologically dense) page: stop replaying the content
+      // stream. The rects collected before the budget was hit already exceed
+      // the candidate threshold, so the decision is unchanged.
+      console.warn(
+        `detector: vector scan on page ${pageNum} aborted after ${MAX_VECTOR_STROKE_OPS} stroke ops (possible PDF bomb)`
+      )
+      return rects
+    }
     // A per-page mupdf failure here would otherwise propagate out of
     // `detectVisualCandidates` and abort the entire visual ingest before the
     // orchestrator's per-page fallback can swallow it. Degrading the vector

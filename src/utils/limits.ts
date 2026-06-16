@@ -29,3 +29,21 @@ export const MAX_FILE_SIZE_LIMIT = 524_288_000
  * limit reflects real memory cost, not JS code-unit count.
  */
 export const MAX_INGEST_DATA_CONTENT_BYTES = 52_428_800
+
+/**
+ * Maximum number of pages processed from a single PDF. The on-disk
+ * `validateFileSize` cap bounds the file's compressed bytes but NOT the work
+ * the per-page extraction loop performs: a small PDF can declare an enormous
+ * page count via compressed object/xref streams ("PDF bomb"), driving the
+ * loop into multi-GB heap + unbounded CPU. Pages beyond this cap are rejected
+ * with a `ValidationError` before any per-page work accumulates.
+ */
+export const MAX_PDF_PAGES = 5_000
+
+/**
+ * Maximum size (in UTF-16 code units of the structured-text JSON) accepted for
+ * a single PDF page. Guards against a single page packed with millions of
+ * glyph runs — which `MAX_PDF_PAGES` alone does not bound — expanding into a
+ * giant in-memory JSON string + items array. ~32 MB of JSON text per page.
+ */
+export const MAX_PDF_PAGE_STEXT_CHARS = 33_554_432

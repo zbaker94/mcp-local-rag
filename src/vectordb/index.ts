@@ -413,31 +413,31 @@ export class VectorStore {
     try {
       // Project to only the columns needed for aggregation, excluding the
       // embedding vector payload. LanceDB JS has no group-by, so the per-file
-      // count + latest-timestamp aggregation still runs here — but over a much
-      // smaller row payload than a full `query().toArray()`.
-      const allRecords = await this.table.query().select(['filePath', 'timestamp']).toArray()
-
-      // Group by file path
+      // count + latest-timestamp aggregation runs here — but stream the result
+      // batch-by-batch instead of `toArray()` so peak memory is one batch plus
+      // the aggregation Map (O(unique files)), not O(total chunks).
       const fileMap = new Map<string, { chunkCount: number; timestamp: string }>()
 
-      for (const record of allRecords) {
-        const filePath = record.filePath
-        const timestamp = record.timestamp
-        // Type-guard parity with toSearchResult/toChunkRow: skip rows missing
-        // the expected string columns rather than coercing via `as string`.
-        if (typeof filePath !== 'string' || typeof timestamp !== 'string') continue
+      for await (const batch of this.table.query().select(['filePath', 'timestamp'])) {
+        for (const record of batch) {
+          const filePath = record['filePath']
+          const timestamp = record['timestamp']
+          // Type-guard parity with toSearchResult/toChunkRow: skip rows missing
+          // the expected string columns rather than coercing via `as string`.
+          if (typeof filePath !== 'string' || typeof timestamp !== 'string') continue
 
-        if (fileMap.has(filePath)) {
-          const fileInfo = fileMap.get(filePath)
-          if (fileInfo) {
-            fileInfo.chunkCount += 1
-            // Keep most recent timestamp
-            if (timestamp > fileInfo.timestamp) {
-              fileInfo.timestamp = timestamp
+          if (fileMap.has(filePath)) {
+            const fileInfo = fileMap.get(filePath)
+            if (fileInfo) {
+              fileInfo.chunkCount += 1
+              // Keep most recent timestamp
+              if (timestamp > fileInfo.timestamp) {
+                fileInfo.timestamp = timestamp
+              }
             }
+          } else {
+            fileMap.set(filePath, { chunkCount: 1, timestamp })
           }
-        } else {
-          fileMap.set(filePath, { chunkCount: 1, timestamp })
         }
       }
 
@@ -483,11 +483,14 @@ export class VectorStore {
 
       // Distinct document count: LanceDB JS has no DISTINCT, so project to just
       // the filePath column (excludes the vector payload) and dedupe here.
-      const records = await this.table.query().select(['filePath']).toArray()
+      // Stream batch-by-batch so peak memory is one batch plus the dedupe Set
+      // (O(unique files)), not O(total chunks).
       const uniqueFilePaths = new Set<string>()
-      for (const record of records) {
-        const filePath = record.filePath
-        if (typeof filePath === 'string') uniqueFilePaths.add(filePath)
+      for await (const batch of this.table.query().select(['filePath'])) {
+        for (const record of batch) {
+          const filePath = record['filePath']
+          if (typeof filePath === 'string') uniqueFilePaths.add(filePath)
+        }
       }
       const documentCount = uniqueFilePaths.size
 

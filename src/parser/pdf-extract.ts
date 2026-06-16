@@ -9,6 +9,8 @@
 //     visual-candidate detector.
 
 import type { Document as MupdfDocument } from 'mupdf'
+import { MAX_PDF_PAGE_STEXT_CHARS, MAX_PDF_PAGES } from '../utils/limits.js'
+import { ValidationError } from './errors.js'
 import { type EmbedderInterface, filterPageBoundarySentences, type PageData } from './pdf-filter.js'
 
 /**
@@ -82,6 +84,14 @@ export async function extractPdfPages(
   stextOptions: string
 ): Promise<ExtractedPdf> {
   const numPages = doc.countPages()
+  // Reject PDF bombs before any per-page work accumulates: the file-size cap
+  // bounds compressed bytes, not the page count a few KB of object streams can
+  // declare. See `MAX_PDF_PAGES`.
+  if (numPages > MAX_PDF_PAGES) {
+    throw new ValidationError(
+      `PDF page count exceeds limit: ${numPages} > ${MAX_PDF_PAGES}. The file may be malformed or maliciously crafted.`
+    )
+  }
   const metadataTitle = doc.getMetaData('info:Title') || undefined
 
   const pageDataList: PageData[] = []
@@ -91,7 +101,14 @@ export async function extractPdfPages(
     const bounds = page.getBounds() // [x0, y0, x1, y1]
     const pageHeight = bounds[3] - bounds[1]
     const stext = page.toStructuredText(stextOptions)
-    const json = JSON.parse(stext.asJSON()) as StextJson
+    // Bound a single glyph-bomb page before parsing its JSON into memory.
+    const stextRaw = stext.asJSON()
+    if (stextRaw.length > MAX_PDF_PAGE_STEXT_CHARS) {
+      throw new ValidationError(
+        `PDF page ${i + 1} structured-text exceeds limit: ${stextRaw.length} > ${MAX_PDF_PAGE_STEXT_CHARS} chars. The file may be malformed or maliciously crafted.`
+      )
+    }
+    const json = JSON.parse(stextRaw) as StextJson
 
     const items: Array<{
       text: string

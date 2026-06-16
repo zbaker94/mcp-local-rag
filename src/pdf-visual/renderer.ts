@@ -28,12 +28,33 @@ export { VlmError }
 // pixmap bytes for no measured retrieval-quality gain.
 const RENDER_DPI = 200
 
+/**
+ * Hard upper bound on the pixel area (width × height) of a rendered pixmap.
+ * A malformed/malicious PDF can declare an absurd MediaBox; at `RENDER_DPI`
+ * that turns `toPixmap` into a multi-GB allocation (each pixel is 3 RGB bytes)
+ * — an OOM DoS the on-disk file-size cap does not bound. 100 megapixels (~300
+ * MB RGB) clears even large-format (A0/A1) engineering drawings while rejecting
+ * the pathological case. Exceeding it raises `VlmError`, which the orchestrator
+ * tolerates per-page (the page is skipped, ingest continues text-only).
+ */
+const MAX_RENDER_PIXELS = 100_000_000
+
 type Rect = [number, number, number, number]
 
-function renderCrop(page: mupdf.Page, cropRect: Rect, scale: number): Uint8Array {
+function assertRenderBudget(width: number, height: number, pageNum: number): void {
+  if (width * height > MAX_RENDER_PIXELS) {
+    throw new VlmError('PDF page exceeds maximum render dimensions', {
+      cause: new Error(`${width}x${height} px > ${MAX_RENDER_PIXELS} px budget`),
+      pageNum,
+    })
+  }
+}
+
+function renderCrop(page: mupdf.Page, cropRect: Rect, scale: number, pageNum: number): Uint8Array {
   const [x0, y0, x1, y1] = cropRect
   const width = Math.max(1, Math.ceil((x1 - x0) * scale))
   const height = Math.max(1, Math.ceil((y1 - y0) * scale))
+  assertRenderBudget(width, height, pageNum)
   const pixmap = new mupdf.Pixmap(mupdf.ColorSpace.DeviceRGB, [0, 0, width, height], false)
   const matrix: mupdf.Matrix = [scale, 0, 0, scale, -x0 * scale, -y0 * scale]
   const device = new mupdf.DrawDevice(matrix, pixmap)
@@ -72,7 +93,13 @@ export async function renderPdfPage(
   try {
     page = doc.loadPage(pageNum - 1)
     const scale = RENDER_DPI / 72
-    if (cropRect) return renderCrop(page, cropRect, scale)
+    if (cropRect) return renderCrop(page, cropRect, scale, pageNum)
+
+    // Reject an absurd MediaBox before `toPixmap` allocates the buffer.
+    const bounds = page.getBounds()
+    const fullWidth = Math.max(1, Math.ceil((bounds[2] - bounds[0]) * scale))
+    const fullHeight = Math.max(1, Math.ceil((bounds[3] - bounds[1]) * scale))
+    assertRenderBudget(fullWidth, fullHeight, pageNum)
 
     const matrix: mupdf.Matrix = [scale, 0, 0, scale, 0, 0]
     fullPagePixmap = page.toPixmap(matrix, mupdf.ColorSpace.DeviceRGB, false, true)

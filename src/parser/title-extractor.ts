@@ -52,10 +52,25 @@ export function fileNameToTitle(fileName: string): string {
  * @returns Title extraction result
  */
 export function extractMarkdownTitle(text: string, fileName: string): TitleExtractionResult {
-  // 1. Try YAML frontmatter
-  const frontmatterMatch = text.match(/^---\n[\s\S]*?title:\s*['"]?(.+?)['"]?\s*\n[\s\S]*?---/)
-  if (frontmatterMatch?.[1]) {
-    return { title: frontmatterMatch[1].trim(), source: 'metadata' }
+  // 1. Try YAML frontmatter.
+  //
+  // Anchor the frontmatter block first (one lazy span bounded by the literal
+  // closing `\n---`), THEN search the captured block for a `title:` line. The
+  // previous single regex chained two unbounded `[\s\S]*?` spans around
+  // `title:`, which backtracks catastrophically (ReDoS) on a large document
+  // that opens `---` but never closes it. The block regex has a single bounded
+  // lazy span and the line search is anchored within one line, so both are
+  // linear.
+  const frontmatterBlock = text.match(/^---\r?\n([\s\S]*?)\r?\n---/)
+  if (frontmatterBlock?.[1]) {
+    const titleLine = frontmatterBlock[1].match(/^title:[ \t]*(.+?)[ \t]*$/m)
+    if (titleLine?.[1]) {
+      // Strip a single pair of surrounding quotes if present.
+      const title = titleLine[1].replace(/^(['"])(.*)\1$/, '$2').trim()
+      if (title.length > 0) {
+        return { title, source: 'metadata' }
+      }
+    }
   }
 
   // 2. Try first H1 heading
