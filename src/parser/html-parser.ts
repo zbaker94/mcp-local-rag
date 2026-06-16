@@ -4,6 +4,7 @@
 import { Readability } from '@mozilla/readability'
 import { JSDOM } from 'jsdom'
 import TurndownService from 'turndown'
+import { FileOperationError } from './errors.js'
 import { extractHtmlTitle } from './title-extractor.js'
 
 // ============================================
@@ -123,8 +124,16 @@ export async function parseHtml(
 
     return { content: markdown.trim(), title }
   } catch (error) {
-    // Log error but don't throw - return empty values for graceful degradation
-    console.error('Failed to parse HTML:', error)
-    return { content: '', title: '' }
+    // A genuine failure of the JSDOM/Readability/Turndown pipeline is an I/O-class
+    // processing error, not a "no content" result. Wrap it in the parser's
+    // FileOperationError with the original as `cause` (matching every other
+    // parser boundary) instead of swallowing it into empty strings — the only
+    // intentional empty results are the empty-input early return and the
+    // no-extractable-content fallbacks above, so callers can still distinguish
+    // "no content" from "parse failed" while the cause chain is preserved.
+    throw new FileOperationError(
+      'Failed to parse HTML content',
+      error instanceof Error ? error : undefined
+    )
   }
 }

@@ -78,6 +78,9 @@ export function normalizeSource(source: string): string {
  */
 export type ContentFormat = 'text' | 'html' | 'markdown'
 
+/** The {@link ContentFormat} values as a runtime list (single source of truth). */
+export const CONTENT_FORMATS: readonly ContentFormat[] = ['text', 'html', 'markdown']
+
 /**
  * Get file extension from content format
  *
@@ -243,6 +246,23 @@ export interface RawDataMeta {
 }
 
 /**
+ * Type guard for {@link RawDataMeta}. Validates the parsed sidecar shape so a
+ * truncated or hand-edited `.meta.json` is rejected at the boundary instead of
+ * being trusted via a bare cast (mirrors `isDocumentMetadata` in
+ * `vectordb/types.ts`).
+ */
+function isRawDataMeta(value: unknown): value is RawDataMeta {
+  if (typeof value !== 'object' || value === null) return false
+  const obj = value as Record<string, unknown>
+  return (
+    (typeof obj['title'] === 'string' || obj['title'] === null) &&
+    typeof obj['source'] === 'string' &&
+    typeof obj['format'] === 'string' &&
+    CONTENT_FORMATS.includes(obj['format'] as ContentFormat)
+  )
+}
+
+/**
  * Generate the .meta.json sidecar path for a given .md file path
  * Replaces the trailing `.md` extension with `.meta.json`
  *
@@ -267,7 +287,9 @@ export async function saveMetaJson(mdPath: string, meta: RawDataMeta): Promise<v
 /**
  * Load metadata from a .meta.json sidecar file
  * Returns null when the sidecar file does not exist (ENOENT).
- * All other read errors are re-thrown (fail-fast).
+ * All other read errors — including a malformed/invalid sidecar shape — are
+ * re-thrown (fail-fast): the sidecar is written by `saveMetaJson`, so a shape
+ * mismatch signals corruption, not absence.
  *
  * @param mdPath - Path to the .md raw-data file
  * @returns Parsed metadata or null if file does not exist
@@ -276,7 +298,11 @@ export async function loadMetaJson(mdPath: string): Promise<RawDataMeta | null> 
   const metaPath = generateMetaJsonPath(mdPath)
   try {
     const content = await readFile(metaPath, 'utf-8')
-    return JSON.parse(content) as RawDataMeta
+    const parsed: unknown = JSON.parse(content)
+    if (!isRawDataMeta(parsed)) {
+      throw new Error(`Malformed raw-data metadata sidecar: ${metaPath}`)
+    }
+    return parsed
   } catch (error: unknown) {
     if (isEnoent(error)) {
       return null
