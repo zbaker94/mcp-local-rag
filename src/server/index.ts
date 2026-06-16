@@ -1,6 +1,7 @@
 // RAGServer implementation with MCP tools
 
 import { readFile, unlink } from 'node:fs/promises'
+import { createRequire } from 'node:module'
 import { resolve, sep } from 'node:path'
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
@@ -83,6 +84,24 @@ const TOOL_ERROR_CONTEXT: Record<string, ToMcpErrorContext> = {
   status: {},
 }
 
+/**
+ * Resolve the package version for the MCP server handshake from package.json so
+ * it cannot drift from the published version (previously hard-coded to
+ * '1.0.0'). Reads at runtime via createRequire — `../../package.json` resolves
+ * to the package root from both `dist/server/index.js` (built) and
+ * `src/server/index.ts` (tsx dev). Falls back to '0.0.0' if unreadable so a
+ * packaging edge case can never crash server construction.
+ */
+function resolvePackageVersion(): string {
+  try {
+    const require = createRequire(import.meta.url)
+    const pkg = require('../../package.json') as { version?: unknown }
+    return typeof pkg.version === 'string' ? pkg.version : '0.0.0'
+  } catch {
+    return '0.0.0'
+  }
+}
+
 /** RAG server compliant with MCP Protocol */
 export class RAGServer {
   private readonly server: Server
@@ -142,7 +161,7 @@ export class RAGServer {
     this.device = config.device
     this.excludePaths = [`${resolve(this.dbPath)}${sep}`, `${resolve(this.cacheDir)}${sep}`]
     this.server = new Server(
-      { name: 'rag-mcp-server', version: '1.0.0' },
+      { name: 'rag-mcp-server', version: resolvePackageVersion() },
       { capabilities: { tools: {} } }
     )
 
