@@ -29,6 +29,23 @@ export async function collectFiles(
       )
       return []
     }
+    // Confirm the file lives under a configured root, mirroring the directory
+    // branch below. The parser still enforces containment at read time, but
+    // without this check the file and directory branches were inconsistent —
+    // a single-file target outside every root was silently accepted here and
+    // only rejected later with a less actionable error. realpath both sides
+    // (roots are already realpath-normalized with a trailing sep) so the prefix
+    // check is symlink-safe and sibling-prefix safe.
+    const realResolvedFile = await realpath(resolved)
+    const insideAnyRoot = baseDirs.some((root) => realResolvedFile.startsWith(root))
+    if (!insideAnyRoot) {
+      console.error(
+        `Error: ${targetPath} is not under any configured base directory. ` +
+          `Allowed roots: ${baseDirs.join(', ')}. ` +
+          `Provide a path inside one of the configured roots, or set BASE_DIRS / --base-dir to include the desired tree.`
+      )
+      process.exit(1)
+    }
     // Store the resolve()'d path (the DB key), not realpath — path policy:
     // realpath only at the security boundary, resolve() everywhere user-facing.
     return [resolved]
