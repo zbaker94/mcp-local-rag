@@ -1,5 +1,6 @@
 import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js'
 import { describe, expect, it } from 'vitest'
+import { MAX_INGEST_DATA_CONTENT_BYTES } from '../../utils/limits.js'
 import { parseIngestDataInput, parseQueryDocumentsInput } from '../tool-input.js'
 
 describe('parseQueryDocumentsInput', () => {
@@ -92,5 +93,30 @@ describe('parseIngestDataInput', () => {
     ['non-string format', { content: 'b', metadata: { source: 's', format: 1 } }],
   ])('rejects %s', (_label, raw) => {
     expect(() => parseIngestDataInput(raw)).toThrow(/metadata\.format must be one of/)
+  })
+
+  it('accepts content exactly at the 50MB byte limit', () => {
+    const atLimit = 'a'.repeat(MAX_INGEST_DATA_CONTENT_BYTES) // ASCII → 1 byte each
+    expect(() =>
+      parseIngestDataInput({ content: atLimit, metadata: { source: 's', format: 'text' } })
+    ).not.toThrow()
+  })
+
+  it('rejects content exceeding the 50MB byte limit', () => {
+    const overLimit = 'a'.repeat(MAX_INGEST_DATA_CONTENT_BYTES + 1)
+    expect(() =>
+      parseIngestDataInput({ content: overLimit, metadata: { source: 's', format: 'text' } })
+    ).toThrow(/content exceeds maximum size/)
+  })
+
+  it('measures the limit in UTF-8 bytes, not code units', () => {
+    // '𐀀' (U+10000) is 4 UTF-8 bytes but 2 JS code units; a string whose code
+    // unit length is under the limit can still exceed it in bytes.
+    const charCount = Math.floor(MAX_INGEST_DATA_CONTENT_BYTES / 4) + 1
+    const multibyte = '𐀀'.repeat(charCount)
+    expect(multibyte.length).toBeLessThanOrEqual(MAX_INGEST_DATA_CONTENT_BYTES)
+    expect(() =>
+      parseIngestDataInput({ content: multibyte, metadata: { source: 's', format: 'text' } })
+    ).toThrow(/content exceeds maximum size/)
   })
 })

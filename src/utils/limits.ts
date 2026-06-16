@@ -19,3 +19,13 @@ export const DEFAULT_MAX_FILE_SIZE = 104_857_600
  * (500 MB). Values above this are rejected by `validateMaxFileSize`.
  */
 export const MAX_FILE_SIZE_LIMIT = 524_288_000
+
+/**
+ * Maximum byte length of in-memory content accepted by the `ingest_data` MCP
+ * tool (50 MB). Unlike `ingest_file`, `ingest_data` content never touches
+ * `validateFileSize` (it is parsed/embedded straight from the request), so this
+ * is the only bound protecting the HTML parser (JSDOM/Readability/Turndown) and
+ * the embedder from an unbounded request body. Measured in UTF-8 bytes so the
+ * limit reflects real memory cost, not JS code-unit count.
+ */
+export const MAX_INGEST_DATA_CONTENT_BYTES = 52_428_800

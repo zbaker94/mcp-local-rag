@@ -67,7 +67,8 @@ export const toolDefinitions: Tool[] = [
       properties: {
         content: {
           type: 'string',
-          description: 'The content to ingest (text, HTML, or Markdown)',
+          maxLength: 52_428_800,
+          description: 'The content to ingest (text, HTML, or Markdown). Max 50MB (UTF-8).',
         },
         metadata: {
           type: 'object',

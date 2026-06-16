@@ -9,6 +9,7 @@
 // leaking internal diagnostics to the client.
 
 import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js'
+import { MAX_INGEST_DATA_CONTENT_BYTES } from '../utils/limits.js'
 import type { ContentFormat } from '../utils/raw-data-utils.js'
 import type { IngestDataInput, QueryDocumentsInput } from './types.js'
 
@@ -59,6 +60,18 @@ export function parseIngestDataInput(raw: unknown): IngestDataInput {
 
   if (typeof content !== 'string' || content.length === 0) {
     throw new McpError(ErrorCode.InvalidParams, 'content must be a non-empty string')
+  }
+
+  // Bound the request body BEFORE any HTML parsing / embedding. ingest_data
+  // content bypasses validateFileSize (it is never read from disk first), so
+  // this is the only guard preventing an oversized payload from exhausting
+  // memory/CPU in JSDOM or the embedder. Measured in UTF-8 bytes.
+  const contentBytes = Buffer.byteLength(content, 'utf-8')
+  if (contentBytes > MAX_INGEST_DATA_CONTENT_BYTES) {
+    throw new McpError(
+      ErrorCode.InvalidParams,
+      `content exceeds maximum size: ${contentBytes} bytes > ${MAX_INGEST_DATA_CONTENT_BYTES} bytes (50MB)`
+    )
   }
 
   const meta = asRecord(metadata, 'ingest_data metadata')
