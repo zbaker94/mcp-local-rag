@@ -9,9 +9,10 @@ import {
   isEnoent,
   isPathInRawDataDirLexical,
 } from '../utils/raw-data-utils.js'
+import { checkSensitivePath } from '../utils/sensitive-path.js'
 import { createVectorStore, formatCliError } from './common.js'
 import type { GlobalOptions } from './options.js'
-import { resolveGlobalConfig, validatePath } from './options.js'
+import { resolveGlobalConfig } from './options.js'
 
 // ============================================
 // Help
@@ -50,7 +51,7 @@ interface DeleteArgs {
  * Accepts a positional <file-path>, --source <url>, and -h/--help.
  * Unknown flags or conflicting args cause exit(1).
  */
-function parseArgs(args: string[]): DeleteArgs {
+export function parseArgs(args: string[]): DeleteArgs {
   let help = false
   let source: string | undefined
   let filePath: string | undefined
@@ -136,11 +137,11 @@ export async function runDelete(args: string[], globalOptions: GlobalOptions = {
       targetPath = generateRawDataPath(globalConfig.dbPath, parsed.source, 'markdown')
     } else {
       // DB key is the resolve()'d ingest path, so look up by resolve() (never
-      // realpath) — realpath stays in validatePath/validateFilePath.
+      // realpath) — realpath stays in checkSensitivePath/validateFilePath.
       targetPath = resolve(parsed.filePath!)
 
       // Validate path (reject sensitive system directories)
-      const pathError = validatePath(targetPath, '<file-path>')
+      const pathError = checkSensitivePath(targetPath, '<file-path>')
       if (pathError) {
         console.error(pathError)
         process.exitCode = 1

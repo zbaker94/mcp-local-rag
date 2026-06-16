@@ -6,9 +6,10 @@ import {
   generateRawDataPath,
   looksLikeRawDataPath,
 } from '../utils/raw-data-utils.js'
+import { checkSensitivePath } from '../utils/sensitive-path.js'
 import { createVectorStore, formatCliError } from './common.js'
 import type { GlobalOptions } from './options.js'
-import { resolveGlobalConfig, validatePath } from './options.js'
+import { resolveGlobalConfig } from './options.js'
 
 // ============================================
 // Defaults
@@ -82,7 +83,7 @@ function parseNonNegativeInteger(flag: string, rawValue: string | undefined): nu
  * Integer flags are validated syntactically (must be non-negative integer).
  * Semantic validation (required-ness, XOR) is performed in runReadNeighbors.
  */
-function parseArgs(args: string[]): ReadNeighborsArgs {
+export function parseArgs(args: string[]): ReadNeighborsArgs {
   let help = false
   let filePath: string | undefined
   let source: string | undefined
@@ -207,7 +208,7 @@ export async function runReadNeighbors(
       // DB key is the resolve()'d ingest path, so look up by resolve() (never
       // realpath); validate below (mirrors runDelete; realpath stays there).
       targetPath = resolve(parsed.filePath!)
-      const pathError = validatePath(targetPath, '--file-path')
+      const pathError = checkSensitivePath(targetPath, '--file-path')
       if (pathError) {
         console.error(pathError)
         process.exit(1)

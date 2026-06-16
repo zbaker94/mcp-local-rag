@@ -6,9 +6,10 @@ import { displayPath } from '../utils/base-dirs.js'
 import { MAX_SCAN_DEPTH } from '../utils/limits.js'
 import { extractSourceFromPath, looksLikeRawDataPath } from '../utils/raw-data-utils.js'
 import { bfsCollectSupportedFiles, realpathForMatch } from '../utils/scan.js'
+import { checkSensitivePath } from '../utils/sensitive-path.js'
 import { createVectorStore, formatCliError, resolveCliBaseDirsOrExit } from './common.js'
 import type { GlobalOptions } from './options.js'
-import { consumeBaseDirArg, resolveGlobalConfig, validatePath } from './options.js'
+import { consumeBaseDirArg, resolveGlobalConfig } from './options.js'
 
 // ============================================
 // Helpers
@@ -60,7 +61,7 @@ interface ListCliOptions {
   baseDirs?: string[] | undefined
 }
 
-interface ParsedArgs {
+interface ListArgs {
   options: ListCliOptions
   help: boolean
 }
@@ -131,7 +132,7 @@ Global options (must appear before "list"):
  * No positional arguments accepted.
  * Unknown flags cause exit(1).
  */
-export function parseArgs(args: string[]): ParsedArgs {
+export function parseArgs(args: string[]): ListArgs {
   const options: ListCliOptions = {}
   let help = false
 
@@ -198,7 +199,7 @@ export async function runList(args: string[], globalOptions: GlobalOptions = {})
   // without an unnecessary realpath round-trip on a rejected path.
   const cliBaseDirs = options.baseDirs ?? []
   for (const root of cliBaseDirs) {
-    const baseDirError = validatePath(root, '--base-dir')
+    const baseDirError = checkSensitivePath(root, '--base-dir')
     if (baseDirError) {
       console.error(baseDirError)
       process.exit(1)

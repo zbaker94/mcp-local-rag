@@ -8,17 +8,6 @@ import { checkSensitivePath } from '../utils/sensitive-path.js'
 // ============================================
 
 /**
- * Validate that a path is not a sensitive system directory.
- * Delegates to the shared `checkSensitivePath` helper so the CLI and the
- * MCP server entry point share one policy implementation.
- *
- * Returns an error message if invalid, or undefined if valid.
- */
-export function validatePath(value: string, flagName: string): string | undefined {
-  return checkSensitivePath(value, flagName)
-}
-
-/**
  * Validate model name against allowed pattern.
  * Returns an error message if invalid, or undefined if valid.
  */
@@ -238,13 +227,13 @@ export function resolveGlobalConfig(options: GlobalOptions): ResolvedGlobalConfi
   const modelName = options.modelName ?? process.env['MODEL_NAME'] ?? GLOBAL_DEFAULTS.modelName
 
   // Validate paths
-  const dbPathError = validatePath(dbPath, '--db-path')
+  const dbPathError = checkSensitivePath(dbPath, '--db-path')
   if (dbPathError) {
     console.error(dbPathError)
     process.exit(1)
   }
 
-  const cacheDirError = validatePath(cacheDir, '--cache-dir')
+  const cacheDirError = checkSensitivePath(cacheDir, '--cache-dir')
   if (cacheDirError) {
     console.error(cacheDirError)
     process.exit(1)

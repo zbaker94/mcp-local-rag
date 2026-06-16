@@ -13,7 +13,7 @@ interface QueryCliOptions {
   limit?: number | undefined
 }
 
-interface ParsedArgs {
+interface QueryArgs {
   queryText: string | undefined
   options: QueryCliOptions
   help: boolean
@@ -62,7 +62,7 @@ Global options (must appear before "query"):
  * Flags: --limit, -h/--help
  * Unknown flags (including global flags passed after subcommand) cause an error.
  */
-export function parseArgs(args: string[]): ParsedArgs {
+export function parseArgs(args: string[]): QueryArgs {
   const options: QueryCliOptions = {}
   let queryText: string | undefined
   let help = false
@@ -159,9 +159,12 @@ export async function runQuery(args: string[], globalOptions: GlobalOptions = {}
   // Initialize components
   const vectorStore = createVectorStore(globalConfig)
   const embedder = createEmbedder(globalConfig)
-  await vectorStore.initialize()
 
   try {
+    // Initialize inside the try so an init failure is still covered by the
+    // `finally` cleanup (otherwise it leaks the opened store + embedder).
+    await vectorStore.initialize()
+
     // Generate query embedding
     const embeddings = await embedder.embedBatch([queryText])
     const queryVector = embeddings[0]

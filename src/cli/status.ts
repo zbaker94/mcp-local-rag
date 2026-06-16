@@ -29,7 +29,7 @@ Global options (must appear before "status"):
  * Status accepts no options or positional args — only -h/--help.
  * Unknown flags or positional args cause an error.
  */
-function parseArgs(args: string[]): { help: boolean } {
+export function parseArgs(args: string[]): { help: boolean } {
   let help = false
 
   for (const arg of args) {

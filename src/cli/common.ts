@@ -8,10 +8,10 @@ import {
   parseBaseDirsEnv,
   resolveBaseDirs,
 } from '../utils/base-dirs.js'
-import { getCauseChain } from '../utils/errors.js'
+import { renderCauseChain } from '../utils/errors.js'
 import { checkSensitivePath } from '../utils/sensitive-path.js'
 import { VectorStore } from '../vectordb/index.js'
-import { type ResolvedGlobalConfig, resolveDevice, resolveDtype, validatePath } from './options.js'
+import { type ResolvedGlobalConfig, resolveDevice, resolveDtype } from './options.js'
 
 /**
  * Render an unknown caught value for a CLI failure site: every link of the
@@ -28,12 +28,7 @@ import { type ResolvedGlobalConfig, resolveDevice, resolveDtype, validatePath } 
  */
 export function formatCliError(error: unknown): string {
   const err = error instanceof Error ? error : new Error(String(error))
-  return getCauseChain(err)
-    .map((link, index) => {
-      const header = index === 0 ? '' : 'Caused by: '
-      return `${header}${link.stack || `${link.name}: ${link.message}`}`
-    })
-    .join('\n')
+  return renderCauseChain(err)
 }
 
 /**
@@ -149,7 +144,7 @@ export async function resolveCliBaseDirsOrExit(cliRoots: string[]): Promise<CliB
   // realpath-resolved targets of symlinks). Reported under `--base-dir`
   // because that is the flag the user most directly controls.
   for (const root of result.config.baseDirs) {
-    const sensitive = validatePath(root, '--base-dir')
+    const sensitive = checkSensitivePath(root, '--base-dir')
     if (sensitive) {
       console.error(sensitive)
       process.exit(1)
