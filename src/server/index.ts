@@ -14,6 +14,7 @@ import {
 import { DEFAULT_MIN_CHUNK_LENGTH, SemanticChunker } from '../chunker/index.js'
 import { Embedder } from '../embedder/index.js'
 import { buildChunksAndEmbeddings, buildVectorChunks } from '../ingest/compute.js'
+import { replaceFileChunks } from '../ingest/replace-chunks.js'
 import { prepareVisualPdfChunks } from '../ingest/visual.js'
 import { parseHtml } from '../parser/html-parser.js'
 import { DocumentParser } from '../parser/index.js'
@@ -34,8 +35,7 @@ import {
   saveRawData,
 } from '../utils/raw-data-utils.js'
 import { realpathForMatch } from '../utils/scan.js'
-import { type VectorChunk, VectorStore } from '../vectordb/index.js'
-import { DatabaseError } from '../vectordb/types.js'
+import { VectorStore } from '../vectordb/index.js'
 import {
   appendConfigWarnings,
   buildConfigErrorBlock,
@@ -46,7 +46,13 @@ import {
 } from './error-utils.js'
 import { normalizeBaseDirs, scanBaseDir } from './list-scanner.js'
 import { toolDefinitions } from './tool-definitions.js'
-import { parseIngestDataInput, parseQueryDocumentsInput } from './tool-input.js'
+import {
+  parseDeleteFileInput,
+  parseIngestDataInput,
+  parseIngestFileInput,
+  parseQueryDocumentsInput,
+  parseReadChunkNeighborsInput,
+} from './tool-input.js'
 import type {
   DeleteFileInput,
   DeleteFileResult,
@@ -114,15 +120,13 @@ export class RAGServer {
    * One or more allowed document base directories — REALPATH-normalized
    * (the validation/security domain). Passed to `DocumentParser` as the
    * security boundary. NOT used for `list_files` scanning/display; that uses
-   * the NORMAL-path `rawBaseDirs` below. Normalized from either the legacy
-   * `{ baseDir }` config shape or the new `{ baseDirs }` shape so downstream
-   * readers do not need to branch on shape.
+   * the NORMAL-path `rawBaseDirs` below.
    */
   private readonly baseDirs: readonly string[]
   /**
    * Normal-path (resolve()) roots, index-aligned with `baseDirs`, for
-   * user-facing `list_files` scan/display. Falls back to `baseDirs` for legacy
-   * `{ baseDir }` callers. See {@link BaseDirsConfig} for the path policy.
+   * user-facing `list_files` scan/display. Falls back to `baseDirs` when the
+   * config omits `rawBaseDirs`. See {@link BaseDirsConfig} for the path policy.
    */
   private readonly rawBaseDirs: readonly string[]
   /** Legacy single-root accessor for `rawBaseDirs`. Derived from `rawBaseDirs[0]`. */
@@ -144,13 +148,13 @@ export class RAGServer {
 
   constructor(config: RAGServerConfig) {
     this.dbPath = config.dbPath
-    // Normalize both config shapes into a single `baseDirs: string[]` plus the
-    // legacy single-root accessor. See `normalizeBaseDirs` for the degraded-
-    // mode and misuse semantics.
+    // Normalize the config into a single `baseDirs: string[]` plus the
+    // output-side single-root accessor. See `normalizeBaseDirs` for the
+    // degraded-mode and misuse semantics.
     const { baseDirs, baseDir } = normalizeBaseDirs(config)
     this.baseDirs = baseDirs
     // Normal-path roots for user-facing scanning; fall back to the realpath'd
-    // roots for legacy `{ baseDir }` callers.
+    // roots when the config omits `rawBaseDirs`.
     const rawBaseDirs = config.rawBaseDirs !== undefined ? [...config.rawBaseDirs] : [...baseDirs]
     this.rawBaseDirs = rawBaseDirs
     this.rawBaseDir = rawBaseDirs[0] ?? baseDir
@@ -202,10 +206,8 @@ export class RAGServer {
     this.chunker = new SemanticChunker(
       config.chunkMinLength !== undefined ? { minChunkLength: config.chunkMinLength } : {}
     )
-    // Always construct the parser with the multi-root shape — the parser
-    // accepts a single-element `baseDirs` array as the byte-equivalent of
-    // the legacy `baseDir` shape, so passing `this.baseDirs` covers both
-    // config inputs without branching here.
+    // A single-element `baseDirs` array is byte-equivalent to the original
+    // single-root behavior, so passing `this.baseDirs` covers every root count.
     this.parser = new DocumentParser({
       baseDirs: this.baseDirs,
       maxFileSize: config.maxFileSize,
@@ -271,18 +273,14 @@ export class RAGServer {
                 parseQueryDocumentsInput(request.params.arguments)
               )
             case 'ingest_file':
-              return await this.handleIngestFile(
-                request.params.arguments as unknown as IngestFileInput
-              )
+              return await this.handleIngestFile(parseIngestFileInput(request.params.arguments))
             case 'ingest_data':
               return await this.handleIngestData(parseIngestDataInput(request.params.arguments))
             case 'delete_file':
-              return await this.handleDeleteFile(
-                request.params.arguments as unknown as DeleteFileInput
-              )
+              return await this.handleDeleteFile(parseDeleteFileInput(request.params.arguments))
             case 'read_chunk_neighbors':
               return await this.handleReadChunkNeighbors(
-                request.params.arguments as unknown as ReadChunkNeighborsInput
+                parseReadChunkNeighborsInput(request.params.arguments)
               )
             case 'list_files':
               return await this.handleListFiles()
@@ -396,11 +394,9 @@ export class RAGServer {
       visualQuality = visualQualityArg
     }
 
-    let backup: VectorChunk[] | null = null
-
     // No outer error-mapping catch: failures propagate with original identity
-    // to the central dispatcher mapper. The inner insert/rollback try/catch
-    // below is retained — it is local-effect (data rollback) only.
+    // to the central dispatcher mapper. The transactional rollback lives in the
+    // shared `replaceFileChunks` helper below — it is local-effect only.
     // Parse file (with header/footer filtering for PDFs)
     // For raw-data files (from ingest_data), read directly without validation
     // since the path is internally generated and content is already processed
@@ -472,21 +468,6 @@ export class RAGServer {
       )
     }
 
-    // Back up existing chunks BEFORE the destructive delete, with their real
-    // stored vectors and the full chunk set, so a failed re-ingest can be
-    // rolled back without data loss or vector corruption (TD-7). Read this
-    // before deleting; if the read fails it propagates here — leaving the
-    // existing data untouched — rather than proceeding into the delete with
-    // an empty/partial backup.
-    backup = await this.vectorStore.getChunksByFilePath(args.filePath)
-    if (backup.length > 0) {
-      console.error(`Backup created: ${backup.length} chunks for ${args.filePath}`)
-    }
-
-    // Delete existing data
-    await this.vectorStore.deleteChunks(args.filePath)
-    console.error(`Deleted existing chunks for: ${args.filePath}`)
-
     // Create vector chunks
     const vectorChunks = buildVectorChunks({
       filePath: args.filePath,
@@ -496,36 +477,10 @@ export class RAGServer {
       fileTitle: title || null,
     })
 
-    // Insert vectors (transaction processing)
-    try {
-      await this.vectorStore.insertChunks(vectorChunks)
-      console.error(`Inserted ${vectorChunks.length} chunks for: ${args.filePath}`)
-
-      // Optimize once after both delete + insert (not per-operation)
-      await this.vectorStore.optimize()
-
-      // Delete backup on success
-      backup = null
-    } catch (insertError) {
-      // Rollback on error
-      if (backup && backup.length > 0) {
-        console.error('Ingestion failed, rolling back...', insertError)
-        try {
-          await this.vectorStore.insertChunks(backup)
-          await this.vectorStore.optimize()
-          console.error(`Rollback completed: ${backup.length} chunks restored`)
-        } catch (rollbackError) {
-          // Rollback also failed: throw a distinct error (cause = insertError)
-          // so the client learns the prior data may be lost, not just that the insert failed.
-          console.error('Rollback failed:', rollbackError)
-          throw new DatabaseError(
-            `Ingest failed and rollback failed for ${args.filePath}; existing data may not have been restored. Original insert error: ${(insertError as Error).message}`,
-            insertError as Error
-          )
-        }
-      }
-      throw insertError
-    }
+    // Transactional replace (backup → delete → insert, rollback on failure),
+    // shared with the CLI ingest path. The MCP handler optimizes per call
+    // (`optimize: true`); the CLI bulk loop defers to one optimize at the end.
+    await replaceFileChunks(this.vectorStore, args.filePath, vectorChunks, { optimize: true })
 
     // Result
     const result: IngestResult = {

@@ -6,11 +6,13 @@ import { resolve, sep } from 'node:path'
 import { SemanticChunker } from '../chunker/index.js'
 import type { Embedder } from '../embedder/index.js'
 import { buildChunksAndEmbeddings, buildVectorChunks } from '../ingest/compute.js'
+import { replaceFileChunks } from '../ingest/replace-chunks.js'
 import { prepareVisualPdfChunks } from '../ingest/visual.js'
 import { DocumentParser } from '../parser/index.js'
 import type { QualityProfile } from '../pdf-visual/types.js'
 import type { BaseDirsConfig, BaseDirsConfigWarning } from '../utils/base-dirs.js'
 import { DEFAULT_MAX_FILE_SIZE } from '../utils/limits.js'
+import { checkSensitivePath } from '../utils/sensitive-path.js'
 import type { VectorStore } from '../vectordb/index.js'
 import {
   createEmbedder,
@@ -27,7 +29,6 @@ import {
   resolveGlobalConfig,
   validateChunkMinLength,
   validateMaxFileSize,
-  validatePath,
 } from './options.js'
 
 // ============================================
@@ -68,7 +69,7 @@ interface IngestCliOptions {
   visualQuality?: QualityProfile | undefined
 }
 
-interface ParsedArgs {
+interface IngestArgs {
   positional: string | undefined
   options: IngestCliOptions
   help: boolean
@@ -112,7 +113,7 @@ Global options (must appear before "ingest"):
  * Flags: --base-dir, --max-file-size, -h/--help
  * Unknown flags (including global flags passed after subcommand) cause an error.
  */
-export function parseArgs(args: string[]): ParsedArgs {
+export function parseArgs(args: string[]): IngestArgs {
   const options: IngestCliOptions = {}
   let positional: string | undefined
   let help = false
@@ -227,7 +228,7 @@ export async function resolveConfig(
   // resolver) keeps the error message attributed to `--base-dir` and avoids
   // an unnecessary realpath round-trip on a path we will reject anyway.
   for (const root of cliBaseDirs) {
-    const baseDirError = validatePath(root, '--base-dir')
+    const baseDirError = checkSensitivePath(root, '--base-dir')
     if (baseDirError) {
       console.error(baseDirError)
       process.exit(1)
@@ -355,7 +356,6 @@ export async function ingestSingleFile(
     // joined enriched-page text is taken from the helper to preserve the
     // pre-existing `metadata.fileSize` semantics (post-enrichment,
     // pre-chunking text length).
-    await vectorStore.deleteChunks(filePath)
     const vectorChunks = buildVectorChunks({
       filePath,
       chunks,
@@ -363,7 +363,7 @@ export async function ingestSingleFile(
       fileSize: visualResult.text.length,
       fileTitle: title,
     })
-    await vectorStore.insertChunks(vectorChunks)
+    await replaceFileChunks(vectorStore, filePath, vectorChunks)
     return vectorChunks.length
   } else if (isPdf) {
     const result = await parser.parsePdf(filePath, embedder)
@@ -382,9 +382,6 @@ export async function ingestSingleFile(
     return 0
   }
 
-  // Delete existing chunks for this file
-  await vectorStore.deleteChunks(filePath)
-
   // Build vector chunks
   const vectorChunks = buildVectorChunks({
     filePath,
@@ -394,8 +391,8 @@ export async function ingestSingleFile(
     fileTitle: title,
   })
 
-  // Insert chunks
-  await vectorStore.insertChunks(vectorChunks)
+  // Replace existing chunks transactionally (backup + rollback on failure).
+  await replaceFileChunks(vectorStore, filePath, vectorChunks)
 
   return vectorChunks.length
 }
@@ -473,12 +470,15 @@ export async function runIngest(args: string[], globalOptions: GlobalOptions = {
   )
   const embedder = createEmbedder(globalConfig)
   const vectorStore = createVectorStore(globalConfig)
-  await vectorStore.initialize()
 
   // Process each file
   const summary: IngestSummary = { succeeded: 0, failed: 0, totalChunks: 0 }
 
   try {
+    // Initialize inside the try so a failure here is still covered by the
+    // `finally` cleanup (otherwise an init throw leaks the embedder + store).
+    await vectorStore.initialize()
+
     for (let i = 0; i < files.length; i++) {
       const filePath = files[i]!
       const label = `[${i + 1}/${files.length}]`
