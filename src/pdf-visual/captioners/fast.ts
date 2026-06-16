@@ -32,8 +32,13 @@
 import { AutoModelForImageTextToText, AutoProcessor } from '@huggingface/transformers'
 
 import type { Captioner } from '../types.js'
-import { VlmError } from '../types.js'
-import { createModelLoader, decodePngToRawImage, postProcess } from './shared.js'
+import {
+  createModelLoader,
+  decodePngToRawImage,
+  narrowProcessorModel,
+  postProcess,
+  wrapCaptionError,
+} from './shared.js'
 
 const MODEL_NAME = 'HuggingFaceTB/SmolVLM-256M-Instruct'
 
@@ -81,18 +86,10 @@ export function createFastCaptioner(resolvedDevice: string): Captioner {
             content: [{ type: 'image' }, { type: 'text', text: PROMPT }],
           },
         ]
-        // The processor and model are dynamic in type at the boundary;
-        // narrow to a minimal callable / generate-able shape here. IDEFICS3
-        // processor takes an array of images.
-        const proc = processor as {
-          apply_chat_template: (m: unknown, o: { add_generation_prompt: boolean }) => string
-          batch_decode: (t: unknown, o: { skip_special_tokens: boolean }) => string[]
-        } & ((prompt: string, images: unknown[]) => Promise<{ input_ids: { dims: number[] } }>)
-        const mdl = model as {
-          generate: (inputs: unknown) => Promise<{
-            slice: (axis: null, range: [number, number | null]) => unknown
-          }>
-        }
+        // The processor and model are dynamic in type at the boundary; narrow
+        // to the shared minimal shapes. IDEFICS3's processor takes an array of
+        // images, so the image-argument shape is `unknown[]`.
+        const { proc, mdl } = narrowProcessorModel<unknown[]>(processor, model)
 
         const chatPrompt = proc.apply_chat_template(messages, { add_generation_prompt: true })
         const inputs = await proc(chatPrompt, [rawImage])
@@ -113,9 +110,7 @@ export function createFastCaptioner(resolvedDevice: string): Captioner {
 
         return postProcess(text)
       } catch (err) {
-        if (err instanceof VlmError) throw err
-        const cause = err instanceof Error ? err : new Error(String(err))
-        throw new VlmError(`Captioning failed for page ${pageNum}`, { cause, pageNum })
+        wrapCaptionError(err, pageNum)
       }
     },
   }

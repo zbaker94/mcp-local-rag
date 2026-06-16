@@ -1,8 +1,9 @@
 // Semantic Chunker implementation using Max-Min algorithm
 // Based on: "Max–Min semantic chunking of documents for RAG application" (Springer, 2025)
 
-import type { TextChunk } from './index.js'
+import { cosineSimilarity } from '../utils/vector-math.js'
 import { splitIntoSentences } from './sentence-splitter.js'
+import type { TextChunk } from './types.js'
 
 // ============================================
 // Type Definitions
@@ -191,7 +192,7 @@ export class SemanticChunker {
         const firstEmbedding = currentGroupEmbeddings[0]
         if (!firstEmbedding) continue
 
-        const similarity = this.cosineSimilarity(firstEmbedding, embedding)
+        const similarity = cosineSimilarity(firstEmbedding, embedding)
 
         if (this.config.initConst * similarity > this.config.hardThreshold) {
           // Add to current group
@@ -272,7 +273,7 @@ export class SemanticChunker {
         const embJ = windowEmbeddings[j]
         if (!embI || !embJ) continue
 
-        const sim = this.cosineSimilarity(embI, embJ)
+        const sim = cosineSimilarity(embI, embJ)
         if (sim < minSim) {
           minSim = sim
         }
@@ -287,7 +288,7 @@ export class SemanticChunker {
   private getMaxSimilarity(embedding: number[], chunkEmbeddings: number[][]): number {
     let maxSim = -1.0
     for (const chunkEmb of chunkEmbeddings) {
-      const sim = this.cosineSimilarity(embedding, chunkEmb)
+      const sim = cosineSimilarity(embedding, chunkEmb)
       if (sim > maxSim) {
         maxSim = sim
       }
@@ -310,32 +311,5 @@ export class SemanticChunker {
    */
   private sigmoid(x: number): number {
     return 1 / (1 + Math.exp(-x))
-  }
-
-  /**
-   * Calculate cosine similarity between two vectors
-   * Public for testing
-   */
-  cosineSimilarity(vec1: number[], vec2: number[]): number {
-    if (vec1.length !== vec2.length || vec1.length === 0) {
-      return 0
-    }
-
-    let dotProduct = 0
-    let norm1 = 0
-    let norm2 = 0
-
-    for (let i = 0; i < vec1.length; i++) {
-      const v1 = vec1[i] ?? 0
-      const v2 = vec2[i] ?? 0
-      dotProduct += v1 * v2
-      norm1 += v1 * v1
-      norm2 += v2 * v2
-    }
-
-    const denominator = Math.sqrt(norm1) * Math.sqrt(norm2)
-    if (denominator === 0) return 0
-
-    return dotProduct / denominator
   }
 }

@@ -13,6 +13,8 @@
 
 import { type DeviceType, RawImage } from '@huggingface/transformers'
 
+import { VlmError } from '../errors.js'
+
 /**
  * ONNX quantization variant shared by both captioner profiles. Pinned to the
  * smallest viable variant; production has no user-facing knob.
@@ -43,6 +45,54 @@ export function buildModelLoadOptions(resolvedDevice: string): {
 export interface LoadedModel {
   processor: unknown
   model: unknown
+}
+
+/**
+ * Minimal generate-able shape both profiles narrow the loaded model to. The
+ * model is dynamically typed at the transformers.js boundary; this captures
+ * only the `generate` + `slice` surface the caption loop calls.
+ */
+export type CaptionerModel = {
+  generate: (inputs: unknown) => Promise<{
+    slice: (axis: null, range: [number, number | null]) => unknown
+  }>
+}
+
+/**
+ * Minimal callable processor shape both profiles narrow the loaded processor
+ * to. `TImageArg` is the only genuinely-divergent part: `fast` (IDEFICS3)
+ * passes an array of images, `quality` (Qwen2.5-VL) passes a single image.
+ */
+export type CaptionerProcessor<TImageArg> = {
+  apply_chat_template: (m: unknown, o: { add_generation_prompt: boolean }) => string
+  batch_decode: (t: unknown, o: { skip_special_tokens: boolean }) => string[]
+} & ((prompt: string, image: TImageArg) => Promise<{ input_ids: { dims: number[] } }>)
+
+/**
+ * Narrow the dynamically-typed processor + model from `LoadedModel` to the
+ * minimal callable shapes the caption loop uses. Centralizes the boundary cast
+ * both profiles previously inlined verbatim; the image-argument shape is the
+ * only per-profile parameter.
+ */
+export function narrowProcessorModel<TImageArg>(
+  processor: unknown,
+  model: unknown
+): { proc: CaptionerProcessor<TImageArg>; mdl: CaptionerModel } {
+  return {
+    proc: processor as CaptionerProcessor<TImageArg>,
+    mdl: model as CaptionerModel,
+  }
+}
+
+/**
+ * Wrap a caption-loop failure in `VlmError` (carrying `pageNum` + `cause`),
+ * re-throwing an already-`VlmError` unchanged. Shared by both profiles so the
+ * `catch` tail stays identical. Returns `never` — it always throws.
+ */
+export function wrapCaptionError(err: unknown, pageNum: number): never {
+  if (err instanceof VlmError) throw err
+  const cause = err instanceof Error ? err : new Error(String(err))
+  throw new VlmError(`Captioning failed for page ${pageNum}`, { cause, pageNum })
 }
 
 /**

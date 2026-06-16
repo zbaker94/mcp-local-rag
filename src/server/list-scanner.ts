@@ -3,11 +3,9 @@
 // and the constructor's config-shape normalization live as standalone,
 // behavior-preserving functions independent of instance state.
 
-import { readdir } from 'node:fs/promises'
-import { extname, join } from 'node:path'
-import { SUPPORTED_EXTENSIONS } from '../parser/index.js'
 import { displayPath } from '../utils/base-dirs.js'
 import { MAX_SCAN_DEPTH } from '../utils/limits.js'
+import { bfsCollectSupportedFiles } from '../utils/scan.js'
 import type { RAGServerConfig } from './types.js'
 
 /**
@@ -29,50 +27,19 @@ export async function scanBaseDir(
   baseDir: string,
   excludePaths: readonly string[]
 ): Promise<{ files: string[]; warnings: string[] }> {
-  const files: string[] = []
+  // Delegate the bounded BFS walk to the shared `bfsCollectSupportedFiles`
+  // helper (the single source of truth for depth-bounding, symlink skipping,
+  // exclude-prefix filtering, and supported-extension matching); this surface
+  // only adds the `list_files` warning wording and the sorted output.
+  const { files, unreadableDirs, depthLimited } = await bfsCollectSupportedFiles(
+    baseDir,
+    excludePaths
+  )
+
   const warnings: string[] = []
-  let depthLimited = false
-
-  const queue: { dirPath: string; depth: number }[] = [{ dirPath: baseDir, depth: 0 }]
-
-  while (queue.length > 0) {
-    const { dirPath, depth } = queue.shift()!
-
-    if (depth >= MAX_SCAN_DEPTH) {
-      depthLimited = true
-      continue
-    }
-
-    // TypeScript's `readdir` has overloads keyed on the options shape;
-    // pin the encoding to `'utf8'` and cast so the loop body operates on
-    // string-encoded Dirent entries (matches the rest of the codebase).
-    let entries: import('node:fs').Dirent<string>[]
-    try {
-      entries = (await readdir(dirPath, {
-        withFileTypes: true,
-        encoding: 'utf8',
-      })) as import('node:fs').Dirent<string>[]
-    } catch (error) {
-      const code =
-        error && typeof error === 'object' && 'code' in error
-          ? ((error as NodeJS.ErrnoException).code ?? 'UNKNOWN')
-          : 'UNKNOWN'
-      warnings.push(`cannot read directory: ${displayPath(dirPath)} (${code})`)
-      continue
-    }
-
-    for (const entry of entries) {
-      const fullPath = join(dirPath, entry.name)
-      if (entry.isSymbolicLink()) continue
-      if (excludePaths.some((ep) => fullPath.startsWith(ep))) continue
-      if (entry.isDirectory()) {
-        queue.push({ dirPath: fullPath, depth: depth + 1 })
-      } else if (entry.isFile() && SUPPORTED_EXTENSIONS.has(extname(entry.name).toLowerCase())) {
-        files.push(fullPath)
-      }
-    }
+  for (const { dirPath, code } of unreadableDirs) {
+    warnings.push(`cannot read directory: ${displayPath(dirPath)} (${code})`)
   }
-
   if (depthLimited) {
     warnings.push(
       `some directories under ${displayPath(baseDir)} were skipped because they exceed the maximum depth (${MAX_SCAN_DEPTH})`
@@ -84,12 +51,9 @@ export async function scanBaseDir(
 }
 
 /**
- * Normalize both {@link RAGServerConfig} shapes into a single
- * `{ baseDirs, baseDir }` pair.
- *
- * Exactly one of `baseDir` / `baseDirs` is supplied (enforced by the
- * discriminated union in `RAGServerConfig`); the runtime check below catches
- * misuse from JS-only callers and degraded-mode bugs.
+ * Normalize a {@link RAGServerConfig} into a `{ baseDirs, baseDir }` pair,
+ * where `baseDir` is the single-root accessor derived from `baseDirs[0]` (still
+ * used for the legacy output-side `list_files` `baseDir` field).
  *
  * Empty `baseDirs` is accepted ONLY in degraded mode (configError set). In
  * that case the server stays constructible so `status` remains callable, but
@@ -97,20 +61,18 @@ export async function scanBaseDir(
  * baseDirs-dependent work. Without configError, an empty array is a misuse:
  * reject up front rather than build a parser that silently rejects every path.
  *
- * `baseDir` is the legacy single-root accessor derived from `baseDirs[0]` —
- * empty-string when in degraded mode with an empty `baseDirs` array. It is
- * never consulted in degraded mode because `assertConfigOk` fires before any
- * handler reaches it.
+ * `baseDir` is empty-string when in degraded mode with an empty `baseDirs`
+ * array; it is never consulted there because `assertConfigOk` fires first.
  */
 export function normalizeBaseDirs(config: RAGServerConfig): {
   baseDirs: string[]
   baseDir: string
 } {
-  const normalizedBaseDirs = config.baseDirs !== undefined ? [...config.baseDirs] : [config.baseDir]
+  const normalizedBaseDirs = [...config.baseDirs]
   const firstBaseDir = normalizedBaseDirs[0]
   if (firstBaseDir === undefined && config.configError === undefined) {
     throw new Error(
-      'RAGServerConfig must provide either `baseDir` or a non-empty `baseDirs` array (empty `baseDirs` is allowed only in degraded mode with `configError` set).'
+      'RAGServerConfig requires a non-empty `baseDirs` array (empty `baseDirs` is allowed only in degraded mode with `configError` set).'
     )
   }
   return { baseDirs: normalizedBaseDirs, baseDir: firstBaseDir ?? '' }

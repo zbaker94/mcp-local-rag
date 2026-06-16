@@ -11,8 +11,8 @@
 
 import { readdir, realpath } from 'node:fs/promises'
 import { extname, join } from 'node:path'
-import { SUPPORTED_EXTENSIONS } from '../parser/index.js'
 import { MAX_SCAN_DEPTH } from './limits.js'
+import { SUPPORTED_EXTENSIONS } from './supported-extensions.js'
 
 /**
  * Canonical identity key for the `list`/`list_files` cross-reference: a file's
@@ -30,8 +30,11 @@ export async function realpathForMatch(filePath: string): Promise<string> {
   }
 }
 
-/** A directory that could not be read during the scan. */
-export interface UnreadableDir {
+/**
+ * A directory that could not be read during the scan. Module-private — only
+ * surfaced inside the `ScanResult` returned by the collector in this file.
+ */
+interface UnreadableDir {
   dirPath: string
   /** Node error `code` (e.g. `EACCES`), or `'UNKNOWN'` when unavailable. */
   code: string

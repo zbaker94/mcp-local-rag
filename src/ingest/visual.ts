@@ -21,7 +21,7 @@ import type { SemanticChunker, TextChunk } from '../chunker/index.js'
 import type { EmbedderInterface } from '../chunker/semantic-chunker.js'
 import type { DocumentParser } from '../parser/index.js'
 import { extractPdfTitle } from '../parser/title-extractor.js'
-import type { QualityProfile } from '../pdf-visual/types.js'
+import type { CaptionerConfig } from '../pdf-visual/types.js'
 import { buildChunksAndEmbeddings } from './compute.js'
 
 /**
@@ -34,19 +34,6 @@ import { buildChunksAndEmbeddings } from './compute.js'
  */
 export interface VisualPdfParser {
   parsePdfPages: DocumentParser['parsePdfPages']
-}
-
-/**
- * Captioner configuration forwarded to `pdf-visual.createCaptioner`. The
- * `profile` selects the underlying VLM family (`fast` = SmolVLM-256M,
- * `quality` = Qwen2.5-VL-3B); the actual model identifier lives inside the
- * profile module.
- */
-export interface CaptionerConfig {
-  profile: QualityProfile
-  cacheDir: string
-  /** Execution device passed through to the captioner model. */
-  device?: string | undefined
 }
 
 /**
@@ -85,12 +72,16 @@ export interface PrepareVisualPdfChunksResult {
  *   7. `buildChunksAndEmbeddings(text, null, chunker, embedder)`.
  *   8. `extractPdfTitle(metadataTitle, chunks[0]?.text, basename(filePath),
  *      pages[0]?.page1FontHint)`.
- *   9. `doc.destroy()` in `finally` so the mupdf WASM handle is released on
+ *   9. Append one dedicated chunk per caption (so the chunker cannot split a
+ *      caption's internal structure).
+ *   10. `doc.destroy()` in `finally` so the mupdf WASM handle is released on
  *      both success and error paths.
  *
- * Empty-chunks case is propagated verbatim: when `chunks.length === 0`, this
- * function returns `{ chunks: [], embeddings: [], title }` and the caller
- * handles the warning/error (CLI: log + skip; MCP: throw McpError).
+ * Empty result: the returned `chunks` are the text chunks PLUS the appended
+ * caption chunks, so `chunks` is empty only when BOTH the page text produced no
+ * chunks AND there were no captions. A figure-only PDF (no extractable text but
+ * with captions) therefore returns a non-empty array. The caller treats an
+ * empty result as "nothing to ingest" (CLI: log + skip; MCP: throw McpError).
  *
  * @param filePath        Absolute path to the PDF (caller has already validated).
  * @param parser          Parser instance with `parsePdfPages` (mockable).

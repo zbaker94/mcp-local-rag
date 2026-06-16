@@ -37,8 +37,13 @@
 import { AutoProcessor, Qwen2_5_VLForConditionalGeneration } from '@huggingface/transformers'
 
 import type { Captioner } from '../types.js'
-import { VlmError } from '../types.js'
-import { createModelLoader, decodePngToRawImage, postProcess } from './shared.js'
+import {
+  createModelLoader,
+  decodePngToRawImage,
+  narrowProcessorModel,
+  postProcess,
+  wrapCaptionError,
+} from './shared.js'
 
 const MODEL_NAME = 'onnx-community/Qwen2.5-VL-3B-Instruct-ONNX'
 
@@ -107,19 +112,12 @@ export function createQualityCaptioner(resolvedDevice: string): Captioner {
             content: [{ type: 'image' }, { type: 'text', text: PROMPT }],
           },
         ]
-        // The processor and model are dynamic in type at the boundary;
-        // narrow to a minimal callable / generate-able shape here. Qwen2.5-VL
-        // processor takes a single image (not an array), per the
-        // onnx-community reference example signature `processor(text, image)`.
-        const proc = processor as {
-          apply_chat_template: (m: unknown, o: { add_generation_prompt: boolean }) => string
-          batch_decode: (t: unknown, o: { skip_special_tokens: boolean }) => string[]
-        } & ((prompt: string, image: unknown) => Promise<{ input_ids: { dims: number[] } }>)
-        const mdl = model as {
-          generate: (inputs: unknown) => Promise<{
-            slice: (axis: null, range: [number, number | null]) => unknown
-          }>
-        }
+        // The processor and model are dynamic in type at the boundary; narrow
+        // to the shared minimal shapes. Qwen2.5-VL's processor takes a single
+        // image (not an array), per the onnx-community reference example
+        // signature `processor(text, image)`, so the image-argument shape is
+        // `unknown`.
+        const { proc, mdl } = narrowProcessorModel<unknown>(processor, model)
 
         const chatPrompt = proc.apply_chat_template(messages, { add_generation_prompt: true })
         const inputs = await proc(chatPrompt, rawImage)
@@ -140,9 +138,7 @@ export function createQualityCaptioner(resolvedDevice: string): Captioner {
 
         return postProcess(text)
       } catch (err) {
-        if (err instanceof VlmError) throw err
-        const cause = err instanceof Error ? err : new Error(String(err))
-        throw new VlmError(`Captioning failed for page ${pageNum}`, { cause, pageNum })
+        wrapCaptionError(err, pageNum)
       }
     },
   }

@@ -4,6 +4,7 @@
 
 import type { EmbedderInterface } from '../chunker/semantic-chunker.js'
 import { splitIntoSentences } from '../chunker/sentence-splitter.js'
+import { cosineSimilarity } from '../utils/vector-math.js'
 
 // Re-export for consumers of this module
 export type { EmbedderInterface }
@@ -202,32 +203,6 @@ function mergeSentencesByY(sentences: SentenceWithY[]): SentenceWithY[] {
 // ============================================
 // Sentence-Level Header/Footer Detection
 // ============================================
-
-/**
- * Calculate cosine similarity between two vectors
- */
-function cosineSimilarity(vec1: number[], vec2: number[]): number {
-  if (vec1.length !== vec2.length || vec1.length === 0) {
-    return 0
-  }
-
-  let dotProduct = 0
-  let norm1 = 0
-  let norm2 = 0
-
-  for (let i = 0; i < vec1.length; i++) {
-    const v1 = vec1[i] ?? 0
-    const v2 = vec2[i] ?? 0
-    dotProduct += v1 * v2
-    norm1 += v1 * v1
-    norm2 += v2 * v2
-  }
-
-  const denominator = Math.sqrt(norm1) * Math.sqrt(norm2)
-  if (denominator === 0) return 0
-
-  return dotProduct / denominator
-}
 
 /**
  * Calculate median pairwise similarity for a list of embeddings
@@ -624,7 +599,12 @@ export async function filterPageBoundarySentences(
       cleaned = cleaned.slice(1)
     }
 
-    if (patterns.removeLastSentence && cleaned.length > 0) {
+    // Require >1 remaining sentence before removing the last one. Otherwise,
+    // when BOTH header and footer patterns fire on a short page (e.g. 2
+    // sentences), the header slice above leaves a single sentence and this
+    // slice would delete it too — wiping genuine body text. Guarding on >1
+    // means footer removal only runs when at least one body sentence survives.
+    if (patterns.removeLastSentence && cleaned.length > 1) {
       cleaned = cleaned.slice(0, -1)
     }
 
