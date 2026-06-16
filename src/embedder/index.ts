@@ -32,6 +32,16 @@ export interface EmbedderConfig {
    * preserved on purpose (it gates failure-path error enrichment).
    */
   dtype?: string
+  /**
+   * When `false`, transformers.js is put into offline mode (`allowRemoteModels
+   * = false`, `allowLocalModels = true`) before the pipeline is created, so no
+   * model is fetched from the HuggingFace Hub — only the local cache is used.
+   * `transformers.js` exposes this through a process-global `env`, so the
+   * setting also constrains the visual-caption models that share the singleton.
+   * Undefined (the default) leaves transformers.js at its built-in default
+   * (remote downloads allowed) — behavior is unchanged unless opted out.
+   */
+  allowRemoteModels?: boolean
 }
 
 // ============================================
@@ -97,6 +107,16 @@ export class Embedder {
 
     // Set cache directory BEFORE creating pipeline
     env.cacheDir = this.config.cacheDir
+
+    // Offline mode: refuse Hub downloads, use the local cache only. Set on the
+    // process-global transformers env so it also applies to the visual-caption
+    // models that share the singleton. Left untouched when unset so the default
+    // (remote downloads allowed) is preserved.
+    if (this.config.allowRemoteModels === false) {
+      env.allowRemoteModels = false
+      env.allowLocalModels = true
+      console.error('Embedder: Offline mode enabled (allowRemoteModels=false)')
+    }
 
     // No fallback — if the requested device fails, init throws.
     const device = this.config.device || 'cpu'

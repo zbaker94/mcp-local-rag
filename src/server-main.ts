@@ -1,8 +1,13 @@
 // MCP Server entry point
-import { resolveDevice, resolveDtype } from './cli/options.js'
+import { resolveDevice, resolveDtype, validateMaxFileSize } from './cli/options.js'
 import { RAGServer } from './server/index.js'
-import { BaseDirsConfigError, parseBaseDirsEnv, resolveBaseDirs } from './utils/base-dirs.js'
-import { DEFAULT_MAX_FILE_SIZE } from './utils/limits.js'
+import {
+  BaseDirsConfigError,
+  displayPath,
+  parseBaseDirsEnv,
+  resolveBaseDirs,
+} from './utils/base-dirs.js'
+import { DEFAULT_MAX_FILE_SIZE, MAX_FILE_SIZE_LIMIT } from './utils/limits.js'
 import { checkSensitivePath } from './utils/sensitive-path.js'
 import type { GroupingMode } from './vectordb/index.js'
 
@@ -66,6 +71,27 @@ export function parseHybridWeight(value: string | undefined): ParseResult<number
     return { value: undefined, warning }
   }
   return { value: parsed }
+}
+
+/**
+ * Parse the `RAG_ALLOW_REMOTE_MODELS` environment variable.
+ *
+ * Accepts common boolean spellings (case-insensitive): `false`/`0`/`no`/`off`
+ * disable Hub downloads (offline mode); `true`/`1`/`yes`/`on` keep them
+ * enabled. Unset → `undefined` (transformers.js default, downloads allowed).
+ * An unrecognized non-empty value is ignored with a warning.
+ */
+export function parseAllowRemoteModels(value: string | undefined): ParseResult<boolean> {
+  if (value === undefined || value.trim().length === 0) return { value: undefined }
+  const normalized = value.toLowerCase().trim()
+  if (normalized === 'false' || normalized === '0' || normalized === 'no' || normalized === 'off') {
+    return { value: false }
+  }
+  if (normalized === 'true' || normalized === '1' || normalized === 'yes' || normalized === 'on') {
+    return { value: true }
+  }
+  const warning = `Invalid RAG_ALLOW_REMOTE_MODELS value: "${value.slice(0, 100)}". Expected a boolean (true/false). Ignoring.`
+  return { value: undefined, warning }
 }
 
 /**
@@ -165,13 +191,31 @@ export async function resolveServerConfig(
     configWarnings.push(baseDirsResult.error.message)
   }
 
+  // Validate MAX_FILE_SIZE the same way the CLI validates --max-file-size.
+  // Without this, a non-numeric value parses to NaN and `validateFileSize`'s
+  // `stats.size > NaN` comparison is always false — silently disabling the
+  // size limit entirely. An out-of-range or invalid value falls back to the
+  // default with a surfaced warning instead of a wide-open server.
+  let maxFileSize = DEFAULT_MAX_FILE_SIZE
+  if (env['MAX_FILE_SIZE'] !== undefined && env['MAX_FILE_SIZE'].trim().length > 0) {
+    const parsedMaxFileSize = Number.parseInt(env['MAX_FILE_SIZE'], 10)
+    const maxFileSizeError = validateMaxFileSize(parsedMaxFileSize)
+    if (maxFileSizeError) {
+      configWarnings.push(
+        `Invalid MAX_FILE_SIZE value: "${env['MAX_FILE_SIZE'].slice(0, 100)}". Expected an integer between 1 and ${MAX_FILE_SIZE_LIMIT} (500MB). Using default (${DEFAULT_MAX_FILE_SIZE} bytes).`
+      )
+    } else {
+      maxFileSize = parsedMaxFileSize
+    }
+  }
+
   const config: ConstructorParameters<typeof RAGServer>[0] = {
     dbPath: env['DB_PATH'] || './lancedb/',
     modelName: env['MODEL_NAME'] || 'Xenova/all-MiniLM-L6-v2',
     cacheDir: env['CACHE_DIR'] || './models/',
     baseDirs: baseDirsForServer,
     rawBaseDirs: rawBaseDirsForServer,
-    maxFileSize: Number.parseInt(env['MAX_FILE_SIZE'] || String(DEFAULT_MAX_FILE_SIZE), 10),
+    maxFileSize,
     device,
   }
 
@@ -196,6 +240,12 @@ export async function resolveServerConfig(
   // "RAG_DTYPE unset" (the embedder then applies its fp32 default).
   if (dtype !== undefined) config.dtype = dtype
 
+  // Offline model policy: only thread through when explicitly set, so the
+  // transformers.js default (remote downloads allowed) is preserved when unset.
+  const allowRemoteModels = parseAllowRemoteModels(env['RAG_ALLOW_REMOTE_MODELS'])
+  if (allowRemoteModels.value !== undefined) config.allowRemoteModels = allowRemoteModels.value
+  if (allowRemoteModels.warning) configWarnings.push(allowRemoteModels.warning)
+
   if (configWarnings.length > 0) config.configWarnings = configWarnings
   if (configError !== undefined) config.configError = configError
 
@@ -216,7 +266,16 @@ export async function startServer(): Promise<void> {
     }
 
     console.error('Starting RAG MCP Server...')
-    console.error('Configuration:', config)
+    // Redact absolute paths (substitute $HOME with ~) before logging so the
+    // operating username is not leaked into stderr/log aggregation.
+    const loggedConfig = {
+      ...config,
+      dbPath: displayPath(config.dbPath),
+      cacheDir: displayPath(config.cacheDir),
+      baseDirs: config.baseDirs?.map(displayPath),
+      rawBaseDirs: config.rawBaseDirs?.map(displayPath),
+    }
+    console.error('Configuration:', loggedConfig)
 
     // Start RAGServer
     const server = new RAGServer(config)

@@ -5,12 +5,15 @@ import { mkdir, rm } from 'node:fs/promises'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { RAGServer } from '../../server/index.js'
 import {
+  parseAllowRemoteModels,
   parseChunkMinLength,
   parseGroupingMode,
   parseHybridWeight,
   parseMaxDistance,
   parseMaxFiles,
+  resolveServerConfig,
 } from '../../server-main.js'
+import { DEFAULT_MAX_FILE_SIZE } from '../../utils/limits.js'
 import { withTestDevice } from '../test-device.js'
 
 // ============================================
@@ -103,6 +106,72 @@ describe('parseMaxFiles', () => {
     const result = parseMaxFiles('abc')
     expect(result.value).toBeUndefined()
     expect(result.warning).toContain('Invalid RAG_MAX_FILES')
+  })
+})
+
+describe('resolveServerConfig MAX_FILE_SIZE validation', () => {
+  const cwd = process.cwd()
+
+  it('falls back to the default and warns on a non-numeric value', async () => {
+    const config = await resolveServerConfig({ MAX_FILE_SIZE: 'abc' } as NodeJS.ProcessEnv, cwd)
+    // Previously parsed to NaN, silently disabling the size limit.
+    expect(config.maxFileSize).toBe(DEFAULT_MAX_FILE_SIZE)
+    expect(config.configWarnings?.some((w) => w.includes('Invalid MAX_FILE_SIZE'))).toBe(true)
+  })
+
+  it('falls back to the default and warns when above the 500MB cap', async () => {
+    const config = await resolveServerConfig(
+      { MAX_FILE_SIZE: String(600 * 1024 * 1024) } as NodeJS.ProcessEnv,
+      cwd
+    )
+    expect(config.maxFileSize).toBe(DEFAULT_MAX_FILE_SIZE)
+    expect(config.configWarnings?.some((w) => w.includes('Invalid MAX_FILE_SIZE'))).toBe(true)
+  })
+
+  it('falls back to the default and warns on zero/negative', async () => {
+    for (const bad of ['0', '-1']) {
+      const config = await resolveServerConfig({ MAX_FILE_SIZE: bad } as NodeJS.ProcessEnv, cwd)
+      expect(config.maxFileSize).toBe(DEFAULT_MAX_FILE_SIZE)
+      expect(config.configWarnings?.some((w) => w.includes('Invalid MAX_FILE_SIZE'))).toBe(true)
+    }
+  })
+
+  it('honors a valid in-range value', async () => {
+    const config = await resolveServerConfig({ MAX_FILE_SIZE: '1048576' } as NodeJS.ProcessEnv, cwd)
+    expect(config.maxFileSize).toBe(1_048_576)
+  })
+
+  it('uses the default with no warning when unset', async () => {
+    const config = await resolveServerConfig({} as NodeJS.ProcessEnv, cwd)
+    expect(config.maxFileSize).toBe(DEFAULT_MAX_FILE_SIZE)
+    expect(config.configWarnings?.some((w) => w.includes('MAX_FILE_SIZE')) ?? false).toBe(false)
+  })
+})
+
+describe('parseAllowRemoteModels', () => {
+  it('returns undefined with no warning for empty input', () => {
+    expect(parseAllowRemoteModels(undefined)).toEqual({ value: undefined })
+    expect(parseAllowRemoteModels('')).toEqual({ value: undefined })
+    expect(parseAllowRemoteModels('   ')).toEqual({ value: undefined })
+  })
+
+  it('parses falsey spellings as false (offline mode)', () => {
+    for (const v of ['false', 'FALSE', '0', 'no', 'off', ' Off ']) {
+      expect(parseAllowRemoteModels(v)).toEqual({ value: false })
+    }
+  })
+
+  it('parses truthy spellings as true (downloads allowed)', () => {
+    for (const v of ['true', 'TRUE', '1', 'yes', 'on']) {
+      expect(parseAllowRemoteModels(v)).toEqual({ value: true })
+    }
+  })
+
+  it('returns warning for unrecognized values', () => {
+    const result = parseAllowRemoteModels('maybe')
+    expect(result.value).toBeUndefined()
+    expect(result.warning).toContain('Invalid RAG_ALLOW_REMOTE_MODELS')
+    expect(result.warning).toContain('"maybe"')
   })
 })
 
