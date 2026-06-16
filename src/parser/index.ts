@@ -7,7 +7,8 @@ import mammoth from 'mammoth'
 import type { Document as MupdfDocument } from 'mupdf'
 import { SemanticChunker } from '../chunker/index.js'
 import { withTrailingSeparator } from '../utils/base-dirs.js'
-import { AppError, isAppError } from '../utils/errors.js'
+import { isAppError } from '../utils/errors.js'
+import { FileOperationError, ValidationError } from './errors.js'
 import { extractPdfPages } from './pdf-extract.js'
 import type { EmbedderInterface } from './pdf-filter.js'
 import {
@@ -21,12 +22,11 @@ import {
 // Supported Extensions
 // ============================================
 
-/**
- * File extensions supported by the parser module (parseFile + parsePdf).
- * Exported so other modules (e.g. list_files) stay in sync automatically
- * when new formats are added here.
- */
-export const SUPPORTED_EXTENSIONS = new Set(['.pdf', '.docx', '.txt', '.md'])
+// `SUPPORTED_EXTENSIONS` now lives in the dependency-free
+// `utils/supported-extensions.js` leaf; re-exported here so existing
+// `../parser/index.js` import sites keep working while the `utils/scan.ts` leaf
+// consumer no longer depends on the parser barrel.
+export { SUPPORTED_EXTENSIONS } from '../utils/supported-extensions.js'
 
 // ============================================
 // Type Definitions
@@ -44,53 +44,23 @@ export interface ParseResult {
 /**
  * DocumentParser configuration.
  *
- * Accepts either a single `baseDir` (legacy single-root shape — preserved for
- * backward compatibility with downstream callers that have not yet migrated
- * to the multi-root model) or a `baseDirs` array (multi-root shape produced
- * by `resolveBaseDirs`). Exactly one of the two MUST be supplied; supplying
- * both is rejected by the constructor so misconfiguration cannot silently
- * pick one source over the other.
- *
- * Behavior under a single allowed root (`{ baseDir }` or
- * `{ baseDirs: [oneRoot] }`) is byte-identical to the previous single-root
- * implementation — see `validateFilePath` for the iteration contract under
- * multiple roots.
+ * `baseDirs` is the multi-root security boundary produced by `resolveBaseDirs`.
+ * Behavior under a single allowed root (`{ baseDirs: [oneRoot] }`) is
+ * byte-identical to the original single-root implementation — see
+ * `validateFilePath` for the iteration contract under multiple roots.
  */
-export type ParserConfig =
-  | {
-      /** Security: single allowed base directory (legacy shape). */
-      baseDir: string
-      baseDirs?: undefined
-      /** Maximum file size (100MB). */
-      maxFileSize: number
-    }
-  | {
-      /** Security: one or more allowed base directories (multi-root shape). */
-      baseDirs: readonly string[]
-      baseDir?: undefined
-      /** Maximum file size (100MB). */
-      maxFileSize: number
-    }
-
-/**
- * Validation error (equivalent to 400)
- */
-export class ValidationError extends AppError {
-  constructor(message: string, cause?: Error) {
-    super(message, 'parser', 'validation', cause)
-    this.name = 'ValidationError'
-  }
+export interface ParserConfig {
+  /** Security: one or more allowed base directories. */
+  baseDirs: readonly string[]
+  /** Maximum file size (100MB). */
+  maxFileSize: number
 }
 
-/**
- * File operation error (equivalent to 500)
- */
-export class FileOperationError extends AppError {
-  constructor(message: string, cause?: Error) {
-    super(message, 'parser', 'io', cause)
-    this.name = 'FileOperationError'
-  }
-}
+// `ValidationError` and `FileOperationError` live in `./errors.js` (a
+// dependency-free leaf module) so helpers the parser imports — e.g.
+// `pdf-extract` — can throw them without an import cycle. Re-exported here so
+// existing import sites (`../parser/index.js`) keep working unchanged.
+export { FileOperationError, ValidationError } from './errors.js'
 
 // ============================================
 // DocumentParser Class
@@ -120,22 +90,13 @@ export class DocumentParser {
 
   constructor(config: ParserConfig) {
     this.config = config
-    // Normalize the two accepted shapes into one internal raw-root list.
-    // The type system already rejects supplying both fields simultaneously,
-    // but defensively pick `baseDirs` first so a future relaxation does not
-    // accidentally fall back to the legacy single-root field.
-    //
     // Empty `baseDirs` is accepted here so the parser can be constructed in
     // the MCP server's degraded mode (configError present); `validateFilePath`
     // fails closed in that case so no file is accepted while the empty root
     // list stands. This is the only legitimate way to reach empty
     // `rawBaseDirs`; production wiring always supplies a non-empty list when
     // `configError` is absent.
-    if (config.baseDirs !== undefined) {
-      this.rawBaseDirs = config.baseDirs
-    } else {
-      this.rawBaseDirs = [config.baseDir]
-    }
+    this.rawBaseDirs = config.baseDirs
   }
 
   /**

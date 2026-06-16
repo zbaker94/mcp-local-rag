@@ -25,8 +25,8 @@ import { AppError } from './errors.js'
  * realpath is used ONLY for the security boundary; everything user-facing uses
  * resolve() (normal) paths.
  * - `baseDirs`: realpath-resolved, deduped, nested-pruned — the containment
- *   boundary passed to `DocumentParser`. Input order preserved (first = legacy
- *   single-root accessor; see {@link legacyBaseDir}).
+ *   boundary passed to `DocumentParser`. Input order preserved (first =
+ *   single-root accessor for legacy output-side fields).
  * - `rawBaseDirs`: the SAME roots, same order, resolve()-only. The normal path
  *   space `list`/`list_files` scan + display, so paths match the
  *   resolve()-stored DB keys; otherwise a symlinked prefix (e.g. macOS
@@ -270,7 +270,7 @@ export interface DedupAndPruneResult {
  *    boundary beyond the parent root the user already configured.
  *
  * Input order is preserved for the surviving roots so the first element
- * remains a meaningful legacy `baseDir` (see {@link legacyBaseDir}).
+ * remains a meaningful single-root accessor for legacy output-side fields.
  *
  * All inputs MUST already have a trailing separator (see
  * {@link normalizeRealpath}) — that is what makes the `startsWith`-based
@@ -545,22 +545,6 @@ function selectRoots(input: ResolveBaseDirsInput): SelectRootsResult {
 // ============================================
 // Legacy single-root accessor
 // ============================================
-
-/**
- * Return the legacy single-root `baseDir` value for a {@link BaseDirsConfig}.
- *
- * Used for backward compatibility with consumers (and response fields) that
- * pre-date the multi-root model. The contract is "first effective root after
- * normalization and nested-root pruning"; callers must build the config via
- * {@link dedupAndPruneRoots} for this to hold.
- */
-export function legacyBaseDir(config: BaseDirsConfig): string {
-  const first = config.baseDirs[0]
-  if (first === undefined) {
-    throw new BaseDirsConfigError('BaseDirsConfig must contain at least one base directory.')
-  }
-  return first
-}
 
 // ============================================
 // Private helpers

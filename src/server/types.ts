@@ -5,9 +5,8 @@ import type { ContentFormat } from '../utils/raw-data-utils.js'
 import type { GroupingMode } from '../vectordb/index.js'
 
 /**
- * Fields shared by both `RAGServerConfig` shapes (legacy single-root and
- * multi-root). Extracted so the union below only needs to describe the
- * `baseDir` / `baseDirs` axis.
+ * Fields common to `RAGServerConfig`, extracted so the interface below only
+ * needs to add the `baseDirs` root list.
  */
 interface RAGServerConfigBase {
   /** LanceDB database path */
@@ -42,8 +41,8 @@ interface RAGServerConfigBase {
    * Normal-path (resolve()) roots, index-aligned with the realpath'd `baseDirs`
    * security boundary; used for user-facing `list_files` scan/display so paths
    * match the resolve()-stored DB keys. From `BaseDirsConfig.rawBaseDirs` (see
-   * it for the path policy). Optional: legacy `{ baseDir }` callers fall back to
-   * `baseDirs`.
+   * it for the path policy). Optional: when omitted the constructor falls back
+   * to `baseDirs`.
    */
   rawBaseDirs?: readonly string[]
   /** Configuration validation warnings to surface to users via MCP annotations */
@@ -61,24 +60,17 @@ interface RAGServerConfigBase {
 /**
  * RAGServer configuration.
  *
- * Accepts either a single `baseDir` (legacy shape — preserved so existing
- * direct callers and tests that pass `{ baseDir }` continue to work) or
- * `baseDirs` (multi-root shape produced by `resolveBaseDirs`). Exactly one
- * of the two MUST be supplied. The constructor normalizes both into a single
- * `baseDirs: string[]` internally and derives the legacy `baseDir` accessor
- * as `baseDirs[0]`.
+ * `baseDirs` is the multi-root shape produced by `resolveBaseDirs`. The
+ * constructor derives the single-root accessor (`baseDirs[0]`) used only for the
+ * output-side `list_files` `baseDir` field (kept for single-root clients). The
+ * array is non-empty in normal operation and empty only in degraded mode
+ * (`configError` set), where root-dependent handlers fail closed before
+ * consulting it.
  */
-export type RAGServerConfig =
-  | (RAGServerConfigBase & {
-      /** Document base directory (legacy single-root shape). */
-      baseDir: string
-      baseDirs?: undefined
-    })
-  | (RAGServerConfigBase & {
-      /** One or more allowed document base directories (multi-root shape). */
-      baseDirs: string[]
-      baseDir?: undefined
-    })
+export interface RAGServerConfig extends RAGServerConfigBase {
+  /** One or more allowed document base directories (empty only in degraded mode). */
+  baseDirs: string[]
+}
 
 /**
  * query_documents tool input
