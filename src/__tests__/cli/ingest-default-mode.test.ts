@@ -221,7 +221,7 @@ function buildServer(): InstanceType<RAGServerCtor> {
     dbPath: '/tmp/test/default-mode-db',
     modelName: 'mock-model',
     cacheDir: '/tmp/test/default-mode-cache',
-    baseDir: '/tmp/test',
+    baseDirs: ['/tmp/test'],
     maxFileSize: 1024 * 1024,
     device: 'cpu',
   })
@@ -347,7 +347,7 @@ describe('VLM PDF Enrichment - Default Mode (no --visual)', () => {
         content: GENERIC_PDF_CONTENT,
         title: GENERIC_PDF_TITLE,
       })
-      const parser = new DocumentParser({ baseDir: '/tmp/test', maxFileSize: 1024 * 1024 })
+      const parser = new DocumentParser({ baseDirs: ['/tmp/test'], maxFileSize: 1024 * 1024 })
       const chunker = new SemanticChunker({})
       const embedder = new Embedder({
         modelPath: 'mock-model',
@@ -405,7 +405,7 @@ describe('VLM PDF Enrichment - Default Mode (no --visual)', () => {
         content: GENERIC_PDF_CONTENT,
         title: GENERIC_PDF_TITLE,
       })
-      const parser = new DocumentParser({ baseDir: '/tmp/test', maxFileSize: 1024 * 1024 })
+      const parser = new DocumentParser({ baseDirs: ['/tmp/test'], maxFileSize: 1024 * 1024 })
       const chunker = new SemanticChunker({})
       const embedder = new Embedder({
         modelPath: 'mock-model',
@@ -475,7 +475,7 @@ describe('VLM PDF Enrichment - Default Mode (no --visual)', () => {
         content: FIGURE_HEAVY_PDF_CONTENT,
         title: FIGURE_HEAVY_PDF_TITLE,
       })
-      const parser = new DocumentParser({ baseDir: '/tmp/test', maxFileSize: 1024 * 1024 })
+      const parser = new DocumentParser({ baseDirs: ['/tmp/test'], maxFileSize: 1024 * 1024 })
       const chunker = new SemanticChunker({})
       const embedder = new Embedder({
         modelPath: 'mock-model',

@@ -21,7 +21,7 @@ describe('AC-008: File Re-ingestion', () => {
         dbPath: localTestDbPath,
         modelName: 'Xenova/all-MiniLM-L6-v2',
         cacheDir: testModelCacheDir(),
-        baseDir: localTestDataDir,
+        baseDirs: [localTestDataDir],
         maxFileSize: 100 * 1024 * 1024,
       })
     )
@@ -97,7 +97,7 @@ describe('AC-009: Error Handling (Complete)', () => {
         dbPath: localTestDbPath,
         modelName: 'Xenova/all-MiniLM-L6-v2',
         cacheDir: testModelCacheDir(),
-        baseDir: localTestDataDir,
+        baseDirs: [localTestDataDir],
         maxFileSize: 100 * 1024 * 1024,
       })
     )

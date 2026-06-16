@@ -146,7 +146,7 @@ describe('parser PDF foreign-error reclassification (AC-002 / AC-003)', () => {
     vi.clearAllMocks()
     await mkdir(testDir, { recursive: true })
 
-    parser = new DocumentParser({ baseDir: testDir, maxFileSize })
+    parser = new DocumentParser({ baseDirs: [testDir], maxFileSize })
 
     // Default happy-path behavior for the filter and title extractor; each
     // test overrides the relevant mock to inject its failure class.

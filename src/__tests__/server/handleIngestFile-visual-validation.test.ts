@@ -165,7 +165,7 @@ function buildServer(): InstanceType<RAGServerCtor> {
     dbPath: '/tmp/test/visual-validation-db',
     modelName: 'mock-model',
     cacheDir: '/tmp/test/visual-validation-cache',
-    baseDir: '/tmp/test',
+    baseDirs: ['/tmp/test'],
     maxFileSize: 1024 * 1024,
     device: 'cpu',
   })

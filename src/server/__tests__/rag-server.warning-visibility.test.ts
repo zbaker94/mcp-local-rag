@@ -71,7 +71,7 @@ describe('root-dependent tools fail fast on configError; non-root-dependent stay
         dbPath: testDbPath,
         modelName: 'Xenova/all-MiniLM-L6-v2',
         cacheDir: testModelCacheDir(),
-        baseDir: testDataDir, // degraded-mode fallback root
+        baseDirs: [testDataDir], // degraded-mode fallback root
         maxFileSize: 100 * 1024 * 1024,
         configError,
       })
@@ -144,7 +144,7 @@ describe('P3-T3: status callable with configError and exposes diagnostic', () =>
         dbPath: testDbPath,
         modelName: 'Xenova/all-MiniLM-L6-v2',
         cacheDir: testModelCacheDir(),
-        baseDir: testDataDir,
+        baseDirs: [testDataDir],
         maxFileSize: 100 * 1024 * 1024,
         configError,
       })
@@ -267,7 +267,7 @@ describe('P3-T3: warnings appear in every tool response when warnings exist', ()
         dbPath: testDbPath,
         modelName: 'Xenova/all-MiniLM-L6-v2',
         cacheDir: testModelCacheDir(),
-        baseDir: testDataDir,
+        baseDirs: [testDataDir],
         maxFileSize: 100 * 1024 * 1024,
         configWarnings: [PRECEDENCE_WARNING, NESTED_PRUNED_WARNING],
       })
@@ -378,7 +378,7 @@ describe('P3-T3: no spurious blocks when warnings absent', () => {
         dbPath: testDbPath,
         modelName: 'Xenova/all-MiniLM-L6-v2',
         cacheDir: testModelCacheDir(),
-        baseDir: testDataDir,
+        baseDirs: [testDataDir],
         maxFileSize: 100 * 1024 * 1024,
         // No configWarnings, no configError.
       })

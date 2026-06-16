@@ -16,7 +16,7 @@ const testConfig = {
   dbPath: testDbPath,
   modelName: 'Xenova/all-MiniLM-L6-v2',
   cacheDir: './tmp/test-model-cache',
-  baseDir: '.',
+  baseDirs: ['.'],
   maxFileSize: 10 * 1024 * 1024,
 }
 

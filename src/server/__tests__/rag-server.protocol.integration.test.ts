@@ -22,7 +22,7 @@ describe('AC-001: MCP Protocol Integration', () => {
         dbPath: testDbPath,
         modelName: 'Xenova/all-MiniLM-L6-v2',
         cacheDir: testModelCacheDir(),
-        baseDir: testDataDir,
+        baseDirs: [testDataDir],
         maxFileSize: 100 * 1024 * 1024,
       })
     )
@@ -80,7 +80,7 @@ describe('AC-005: Error Handling (Basic)', () => {
         dbPath: testDbPath,
         modelName: 'Xenova/all-MiniLM-L6-v2',
         cacheDir: testModelCacheDir(),
-        baseDir: testDataDir,
+        baseDirs: [testDataDir],
         maxFileSize: 100 * 1024 * 1024,
       })
     )
@@ -123,7 +123,7 @@ describe('AC-005: Error Handling (Basic)', () => {
         dbPath: invalidDbPath,
         modelName: 'Xenova/all-MiniLM-L6-v2',
         cacheDir: testModelCacheDir(),
-        baseDir: testDataDir,
+        baseDirs: [testDataDir],
         maxFileSize: 100 * 1024 * 1024,
       })
     )

@@ -1,4 +1,4 @@
-import { mkdir, readFile, rm } from 'node:fs/promises'
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -102,6 +102,35 @@ describe('meta.json utilities', () => {
       await mkdir(metaJsonDirPath, { recursive: true })
 
       await expect(loadMetaJson(fakeMdPath)).rejects.toThrow()
+    })
+
+    it('throws on a sidecar whose shape is invalid (corruption, not absence)', async () => {
+      const mdPath = join(testDir, 'bad-shape.md')
+      // Valid JSON, wrong shape: missing `source`, bad `format`.
+      await writeFile(generateMetaJsonPath(mdPath), JSON.stringify({ title: 'x', format: 'pdf' }))
+
+      await expect(loadMetaJson(mdPath)).rejects.toThrow(/Malformed raw-data metadata sidecar/)
+    })
+
+    it('throws on a sidecar containing a non-object JSON value', async () => {
+      const mdPath = join(testDir, 'scalar.md')
+      await writeFile(generateMetaJsonPath(mdPath), '"just a string"')
+
+      await expect(loadMetaJson(mdPath)).rejects.toThrow(/Malformed raw-data metadata sidecar/)
+    })
+
+    it('accepts a valid sidecar with a null title', async () => {
+      const mdPath = join(testDir, 'null-title.md')
+      await writeFile(
+        generateMetaJsonPath(mdPath),
+        JSON.stringify({ title: null, source: 's', format: 'text' })
+      )
+
+      await expect(loadMetaJson(mdPath)).resolves.toEqual({
+        title: null,
+        source: 's',
+        format: 'text',
+      })
     })
   })
 })

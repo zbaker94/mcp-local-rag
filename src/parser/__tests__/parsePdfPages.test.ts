@@ -80,7 +80,7 @@ describe('parsePdfPages return shape', () => {
     await mkdir(testDir, { recursive: true })
 
     parser = new DocumentParser({
-      baseDir: testDir,
+      baseDirs: [testDir],
       maxFileSize,
     })
 

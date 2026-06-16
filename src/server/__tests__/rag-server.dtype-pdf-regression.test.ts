@@ -160,7 +160,7 @@ describe('AC-009: dtype×PDF protocol regression (mock-based, no real model/Hub/
         dbPath: testDbPath,
         modelName: modelPath,
         cacheDir: testModelCacheDir(),
-        baseDir: testDataDir,
+        baseDirs: [testDataDir],
         maxFileSize: 100 * 1024 * 1024,
         // Explicit dtype gates the enrichment path (TD-5): only an explicitly-set
         // dtype triggers `enrichDtypeFailureMessage`.

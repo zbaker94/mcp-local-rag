@@ -142,7 +142,7 @@ describe('parsePdf destroy lifecycle (AC-013)', () => {
     await mkdir(testDir, { recursive: true })
 
     parser = new DocumentParser({
-      baseDir: testDir,
+      baseDirs: [testDir],
       maxFileSize,
     })
 

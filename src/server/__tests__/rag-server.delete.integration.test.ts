@@ -21,7 +21,7 @@ describe('AC-010: File Deletion', () => {
         dbPath: localTestDbPath,
         modelName: 'Xenova/all-MiniLM-L6-v2',
         cacheDir: testModelCacheDir(),
-        baseDir: localTestDataDir,
+        baseDirs: [localTestDataDir],
         maxFileSize: 100 * 1024 * 1024,
       })
     )

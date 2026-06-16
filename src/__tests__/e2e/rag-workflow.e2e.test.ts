@@ -33,7 +33,7 @@ describe('RAG MCP Server E2E Test', () => {
           dbPath: testDbPath,
           modelName: 'Xenova/all-MiniLM-L6-v2',
           cacheDir: testModelCacheDir(),
-          baseDir: testDataDir,
+          baseDirs: [testDataDir],
           maxFileSize: 100 * 1024 * 1024,
         })
       )
@@ -102,7 +102,7 @@ describe('RAG MCP Server E2E Test', () => {
           dbPath: testDbPath,
           modelName: 'Xenova/all-MiniLM-L6-v2',
           cacheDir: testModelCacheDir(),
-          baseDir: testDataDir,
+          baseDirs: [testDataDir],
           maxFileSize: 100 * 1024 * 1024,
         })
       )
@@ -154,7 +154,7 @@ describe('RAG MCP Server E2E Test', () => {
           dbPath: testDbPath,
           modelName: 'Xenova/all-MiniLM-L6-v2',
           cacheDir: testModelCacheDir(),
-          baseDir: testDataDir,
+          baseDirs: [testDataDir],
           maxFileSize: 100 * 1024 * 1024,
         })
       )

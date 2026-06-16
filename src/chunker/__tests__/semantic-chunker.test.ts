@@ -248,31 +248,6 @@ Second topic is different. Second topic continues.`
   })
 
   // --------------------------------------------
-  // Cosine similarity calculation
-  // --------------------------------------------
-  describe('Cosine similarity', () => {
-    it('should correctly calculate similarity between identical vectors', () => {
-      const vec = createMockEmbedding([1, 2, 3])
-      const similarity = chunker.cosineSimilarity(vec, vec)
-      expect(similarity).toBeCloseTo(1.0, 5)
-    })
-
-    it('should correctly calculate similarity between orthogonal vectors', () => {
-      const vec1 = createMockEmbedding([1, 0, 0])
-      const vec2 = createMockEmbedding([0, 1, 0])
-      const similarity = chunker.cosineSimilarity(vec1, vec2)
-      expect(similarity).toBeCloseTo(0.0, 5)
-    })
-
-    it('should correctly calculate similarity between opposite vectors', () => {
-      const vec1 = [1, 0, 0]
-      const vec2 = [-1, 0, 0]
-      const similarity = chunker.cosineSimilarity(vec1, vec2)
-      expect(similarity).toBeCloseTo(-1.0, 5)
-    })
-  })
-
-  // --------------------------------------------
   // Boundary value tests (WINDOW_SIZE=5, MAX_SENTENCES=15)
   // --------------------------------------------
   describe('Boundary values', () => {

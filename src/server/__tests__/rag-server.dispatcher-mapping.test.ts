@@ -70,7 +70,7 @@ describe('Central dispatcher error mapping (AC-004/005/006/008)', () => {
         dbPath: testDbPath,
         modelName: 'Xenova/all-MiniLM-L6-v2',
         cacheDir: testModelCacheDir(),
-        baseDir: testDataDir,
+        baseDirs: [testDataDir],
         maxFileSize: 100 * 1024 * 1024,
       })
     )
@@ -290,7 +290,7 @@ describe('Handler identity preservation + local rollback (AC-004)', () => {
         dbPath: testDbPath,
         modelName: 'Xenova/all-MiniLM-L6-v2',
         cacheDir: testModelCacheDir(),
-        baseDir: testDataDir,
+        baseDirs: [testDataDir],
         maxFileSize: 100 * 1024 * 1024,
       })
     )

@@ -19,7 +19,7 @@ const testConfig = {
   dbPath: './tmp/test-security-db',
   modelName: 'Xenova/all-MiniLM-L6-v2',
   cacheDir: testModelCacheDir(),
-  baseDir: resolve('./'), // Project root (accessible to both tests/fixtures and tmp)
+  baseDirs: [resolve('./')], // Project root (accessible to both tests/fixtures and tmp)
   maxFileSize: 100 * 1024 * 1024, // 100MB
 }
 
@@ -184,7 +184,7 @@ This approach provides accurate search results for natural language queries.`
     // Validation: Calling ingest_file with invalid file path (e.g., `../../etc/passwd`) returns ValidationError
     it('Path traversal attack (e.g., ../../etc/passwd) rejected with ValidationError', async () => {
       const parser = new DocumentParser({
-        baseDir: fixturesDir,
+        baseDirs: [fixturesDir],
         maxFileSize: 100 * 1024 * 1024,
       })
 
@@ -195,7 +195,7 @@ This approach provides accurate search results for natural language queries.`
     // Validation: Calling ingest_file with absolute path outside baseDir (e.g., `/etc/passwd`) returns ValidationError
     it('Absolute path outside baseDir (e.g., /etc/passwd) rejected with ValidationError', async () => {
       const parser = new DocumentParser({
-        baseDir: fixturesDir,
+        baseDirs: [fixturesDir],
         maxFileSize: 100 * 1024 * 1024,
       })
 
@@ -210,7 +210,7 @@ This approach provides accurate search results for natural language queries.`
       // Symlinks require Developer Mode on Windows; skip if unavailable
       if (process.platform === 'win32') return
       const parser = new DocumentParser({
-        baseDir: fixturesDir,
+        baseDirs: [fixturesDir],
         maxFileSize: 100 * 1024 * 1024,
       })
 

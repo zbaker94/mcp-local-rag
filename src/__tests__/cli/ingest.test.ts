@@ -36,6 +36,11 @@ const mocks = vi.hoisted(() => {
     chunkText: vi.fn(),
     embedBatch: vi.fn(),
     initialize: vi.fn(),
+    // Backup read performed by `replaceFileChunks` before the destructive
+    // delete+insert. Default: no prior chunks, so the happy path is a plain
+    // delete→insert with no rollback (matching the pre-rollback behavior the
+    // call-count assertions below expect).
+    getChunksByFilePath: vi.fn().mockResolvedValue([]),
     deleteChunks: vi.fn(),
     insertChunks: vi.fn().mockImplementation((chunks: unknown[]) => {
       // Log chunk key fields to stderr for verification
@@ -92,6 +97,7 @@ const cliCommonFactory = () => ({
   })),
   createVectorStore: vi.fn().mockImplementation(() => ({
     initialize: mocks.initialize,
+    getChunksByFilePath: mocks.getChunksByFilePath,
     deleteChunks: mocks.deleteChunks,
     insertChunks: mocks.insertChunks,
     optimize: mocks.optimize,
@@ -188,13 +194,22 @@ function mockDirent(
 }
 
 /**
- * Drive the `readdir({ withFileTypes: true })` mock from a directory map.
- * dirMap: maps directory paths to their Dirent entries. `readdir(dirPath)`
- * resolves to the Dirent[] array for that directory (empty when absent),
- * mirroring the shared `bfsCollectSupportedFiles` scan helper.
+ * Drive the `readdir({ withFileTypes: true })` mock from a directory map AND
+ * configure a path-keyed `stat` mock from the same map. dirMap maps directory
+ * paths to their Dirent entries; `readdir(dirPath)` resolves to that array
+ * (empty when absent), mirroring the shared `bfsCollectSupportedFiles` scan.
+ *
+ * The `stat` mock is keyed by path — every directory in the map stats as a
+ * directory, every other path stats as a file — so it is independent of the
+ * order or count of `stat` calls. This keeps the directory tests robust to
+ * benign refactors of the validation/collection sequence (they previously
+ * coupled to a fixed `mockResolvedValueOnce(dir).mockResolvedValueOnce(dir)`
+ * call order).
  */
 function setupMockReaddir(dirMap: Record<string, ReturnType<typeof mockDirent>[]>) {
   mocks.readdir.mockImplementation(async (dirPath: string) => dirMap[dirPath] ?? [])
+  const dirs = new Set(Object.keys(dirMap))
+  mocks.stat.mockImplementation(async (p: string) => (dirs.has(p) ? mockDirStat() : mockFileStat()))
 }
 
 /**
@@ -265,6 +280,13 @@ describe('CLI ingest', () => {
   it('should parse, chunk, embed, delete, insert, and optimize once for a single file', async () => {
     // Arrange
     const filePath = resolve('/tmp/test/document.md')
+    // A positional file must resolve inside a configured base directory, so
+    // root the resolver at the file's parent (the directory tests root at the
+    // ingested path the same way).
+    mocks.resolveCliBaseDirs.mockResolvedValue({
+      config: { baseDirs: [resolve('/tmp/test')] },
+      warnings: [],
+    })
     mocks.stat.mockResolvedValue(mockFileStat())
     setupSuccessfulIngestion()
 
@@ -310,9 +332,6 @@ describe('CLI ingest', () => {
     // `config.baseDirs.baseDirs` rather than the positional path, so the
     // resolver mock must echo `dirPath` as the effective root.
     const dirPath = resolve('/tmp/test/docs')
-    mocks.stat
-      .mockResolvedValueOnce(mockDirStat()) // path validation in runIngest
-      .mockResolvedValueOnce(mockDirStat()) // stat in collectFiles
     mocks.resolveCliBaseDirs.mockResolvedValue({ config: { baseDirs: [dirPath] }, warnings: [] })
 
     setupMockReaddir({
@@ -353,7 +372,6 @@ describe('CLI ingest', () => {
     // when the user only asked for `rootA`.
     const rootA = resolve('/tmp/test/rootA')
     const rootB = resolve('/tmp/test/rootB')
-    mocks.stat.mockResolvedValueOnce(mockDirStat()).mockResolvedValueOnce(mockDirStat())
     mocks.resolveCliBaseDirs.mockResolvedValue({
       config: { baseDirs: [rootA, rootB] },
       warnings: [],
@@ -412,7 +430,6 @@ describe('CLI ingest', () => {
     const rootA = resolve('/tmp/test/dbA')
     const dbPath = resolve('/tmp/test/dbA/lancedb')
     const cacheDir = resolve('/tmp/test/dbA/cache')
-    mocks.stat.mockResolvedValueOnce(mockDirStat()).mockResolvedValueOnce(mockDirStat())
     mocks.resolveCliBaseDirs.mockResolvedValue({
       config: { baseDirs: [rootA] },
       warnings: [],
@@ -447,7 +464,6 @@ describe('CLI ingest', () => {
     // print the warning on stderr so the user sees it in the same stream
     // as the scan output.
     const root = resolve('/tmp/test/parent')
-    mocks.stat.mockResolvedValueOnce(mockDirStat()).mockResolvedValueOnce(mockDirStat())
     mocks.resolveCliBaseDirs.mockResolvedValue({
       config: { baseDirs: [root] },
       warnings: [
@@ -478,7 +494,6 @@ describe('CLI ingest', () => {
   it('should include files within max depth and skip directories beyond it', async () => {
     // Arrange: nested directories, depth 10 directory is not entered
     const dirPath = resolve('/tmp/test/docs')
-    mocks.stat.mockResolvedValueOnce(mockDirStat()).mockResolvedValueOnce(mockDirStat())
     mocks.resolveCliBaseDirs.mockResolvedValue({ config: { baseDirs: [dirPath] }, warnings: [] })
 
     // Build a chain of 10 nested directories (depth 0..9), plus one at depth 10
@@ -522,7 +537,6 @@ describe('CLI ingest', () => {
   it('should include files at exactly depth 9 boundary', async () => {
     // Arrange: single file at depth 9 (deepest allowed)
     const dirPath = resolve('/tmp/test/docs')
-    mocks.stat.mockResolvedValueOnce(mockDirStat()).mockResolvedValueOnce(mockDirStat())
     mocks.resolveCliBaseDirs.mockResolvedValue({ config: { baseDirs: [dirPath] }, warnings: [] })
 
     const dirMap: Record<string, ReturnType<typeof mockDirent>[]> = {
@@ -552,7 +566,6 @@ describe('CLI ingest', () => {
   it('should skip directories at exactly depth 10 and show warning', async () => {
     // Arrange: all files are beyond depth 10
     const dirPath = resolve('/tmp/test/docs')
-    mocks.stat.mockResolvedValueOnce(mockDirStat()).mockResolvedValueOnce(mockDirStat())
     mocks.resolveCliBaseDirs.mockResolvedValue({ config: { baseDirs: [dirPath] }, warnings: [] })
 
     // Build 10 levels of directories so depth 10 is skipped
@@ -588,7 +601,6 @@ describe('CLI ingest', () => {
   it('should skip symbolic links and not include them in file list', async () => {
     // Arrange
     const dirPath = resolve('/tmp/test/docs')
-    mocks.stat.mockResolvedValueOnce(mockDirStat()).mockResolvedValueOnce(mockDirStat())
     mocks.resolveCliBaseDirs.mockResolvedValue({ config: { baseDirs: [dirPath] }, warnings: [] })
 
     setupMockReaddir({
@@ -619,7 +631,6 @@ describe('CLI ingest', () => {
     const dirPath = resolve('/tmp/test/docs')
     const restrictedPath = resolve('/tmp/test/docs/restricted')
     const subPath = resolve('/tmp/test/docs/sub')
-    mocks.stat.mockResolvedValueOnce(mockDirStat()).mockResolvedValueOnce(mockDirStat())
     mocks.resolveCliBaseDirs.mockResolvedValue({ config: { baseDirs: [dirPath] }, warnings: [] })
 
     mocks.readdir.mockImplementation(async (path: string) => {
@@ -676,7 +687,6 @@ describe('CLI ingest', () => {
   it('should skip failed files and continue processing remaining files', async () => {
     // Arrange
     const dirPath = resolve('/tmp/test/docs')
-    mocks.stat.mockResolvedValueOnce(mockDirStat()).mockResolvedValueOnce(mockDirStat())
     mocks.resolveCliBaseDirs.mockResolvedValue({ config: { baseDirs: [dirPath] }, warnings: [] })
 
     setupMockReaddir({
@@ -724,7 +734,6 @@ describe('CLI ingest', () => {
   it('should exit gracefully with message when directory has no supported files', async () => {
     // Arrange
     const dirPath = resolve('/tmp/test/empty')
-    mocks.stat.mockResolvedValueOnce(mockDirStat()).mockResolvedValueOnce(mockDirStat())
     mocks.resolveCliBaseDirs.mockResolvedValue({ config: { baseDirs: [dirPath] }, warnings: [] })
 
     setupMockReaddir({
@@ -768,7 +777,6 @@ describe('CLI ingest', () => {
   it('should output progress in [N/Total] format to stderr', async () => {
     // Arrange
     const dirPath = resolve('/tmp/test/docs')
-    mocks.stat.mockResolvedValueOnce(mockDirStat()).mockResolvedValueOnce(mockDirStat())
     mocks.resolveCliBaseDirs.mockResolvedValue({ config: { baseDirs: [dirPath] }, warnings: [] })
 
     setupMockReaddir({
@@ -837,7 +845,9 @@ describe('CLI ingest', () => {
     delete process.env['MODEL_NAME']
     delete process.env['MAX_FILE_SIZE']
 
-    const filePath = resolve('/tmp/test/document.md')
+    // Positional file lives under the configured `--base-dir` root so it
+    // passes the containment check; this test asserts global-option precedence.
+    const filePath = resolve('/cli/base/document.md')
     mocks.stat.mockResolvedValue(mockFileStat())
     setupSuccessfulIngestion()
 
@@ -890,7 +900,11 @@ describe('CLI ingest', () => {
     process.env['CACHE_DIR'] = '/env/cache'
     process.env['MODEL_NAME'] = 'env-model'
 
-    const filePath = '/tmp/test/document.md'
+    const filePath = resolve('/tmp/test/document.md')
+    mocks.resolveCliBaseDirs.mockResolvedValue({
+      config: { baseDirs: [resolve('/tmp/test')] },
+      warnings: [],
+    })
     mocks.stat.mockResolvedValue(mockFileStat())
     setupSuccessfulIngestion()
 
@@ -929,7 +943,11 @@ describe('CLI ingest', () => {
     process.env['CACHE_DIR'] = '/env/cache'
     process.env['MODEL_NAME'] = 'env-model'
 
-    const filePath = '/tmp/test/document.md'
+    const filePath = resolve('/tmp/test/document.md')
+    mocks.resolveCliBaseDirs.mockResolvedValue({
+      config: { baseDirs: [resolve('/tmp/test')] },
+      warnings: [],
+    })
     mocks.stat.mockResolvedValue(mockFileStat())
     setupSuccessfulIngestion()
 
@@ -1380,7 +1398,6 @@ describe('CLI ingest', () => {
       process.env['BASE_DIRS'] = '["/env/multi/a","/env/multi/b"]'
       const cliRootA = resolve('/cli/precedence/a')
       const cliRootB = resolve('/cli/precedence/b')
-      mocks.stat.mockResolvedValueOnce(mockDirStat()).mockResolvedValueOnce(mockDirStat())
       mocks.resolveCliBaseDirs.mockResolvedValue({
         config: { baseDirs: [cliRootA, cliRootB] },
         warnings: [],
@@ -1416,7 +1433,6 @@ describe('CLI ingest', () => {
       // "empty cliRoots when --base-dir is absent".
       const envRootA = resolve('/env/multi/a')
       const envRootB = resolve('/env/multi/b')
-      mocks.stat.mockResolvedValueOnce(mockDirStat()).mockResolvedValueOnce(mockDirStat())
       mocks.resolveCliBaseDirs.mockResolvedValue({
         config: { baseDirs: [envRootA, envRootB] },
         warnings: [],
@@ -1442,7 +1458,6 @@ describe('CLI ingest', () => {
       // Arrange: resolver yields the precedence warning. The CLI prints
       // every resolver warning to stderr before the scan output begins.
       const root = resolve('/env/multi/only')
-      mocks.stat.mockResolvedValueOnce(mockDirStat()).mockResolvedValueOnce(mockDirStat())
       mocks.resolveCliBaseDirs.mockResolvedValue({
         config: { baseDirs: [root] },
         warnings: [
@@ -1490,7 +1505,6 @@ describe('CLI ingest', () => {
       // Arrange: resolver returns cwd as the only effective root (final
       // fallback). The ingest scan walks cwd as the sole effective root.
       const cwd = process.cwd()
-      mocks.stat.mockResolvedValueOnce(mockDirStat()).mockResolvedValueOnce(mockDirStat())
       mocks.resolveCliBaseDirs.mockResolvedValue({
         config: { baseDirs: [cwd] },
         warnings: [],

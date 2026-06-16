@@ -194,7 +194,7 @@ describe('VLM PDF Enrichment - Phase 0 Equivalence (AC-008)', () => {
         dbPath: serverDbPath,
         modelName: 'Xenova/all-MiniLM-L6-v2',
         cacheDir,
-        baseDir,
+        baseDirs: [baseDir],
         maxFileSize: 10 * 1024 * 1024,
       })
     )
@@ -203,7 +203,7 @@ describe('VLM PDF Enrichment - Phase 0 Equivalence (AC-008)', () => {
     // Real CLI-side components (independent VectorStore at a separate dbPath
     // so the two callers' insertChunks are recorded on distinct instances)
     cliParser = new DocumentParser({
-      baseDir,
+      baseDirs: [baseDir],
       maxFileSize: 10 * 1024 * 1024,
     })
     cliChunker = new SemanticChunker({})

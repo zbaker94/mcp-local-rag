@@ -23,7 +23,7 @@ describe('AC-006: Additional Format Support (Phase 2)', () => {
         dbPath: localTestDbPath,
         modelName: 'Xenova/all-MiniLM-L6-v2',
         cacheDir: testModelCacheDir(localCacheDir),
-        baseDir: localTestDataDir,
+        baseDirs: [localTestDataDir],
         maxFileSize: 100 * 1024 * 1024,
       })
     )
@@ -42,7 +42,7 @@ describe('AC-006: Additional Format Support (Phase 2)', () => {
   it('DocumentParser.parseFile dispatches each format (TXT/MD extracted, DOCX routed, PDF rejected as unsupported)', async () => {
     const { DocumentParser } = await import('../../parser/index.js')
     const parser = new DocumentParser({
-      baseDir: localTestDataDir,
+      baseDirs: [localTestDataDir],
       maxFileSize: 100 * 1024 * 1024,
     })
 
@@ -98,7 +98,7 @@ describe('AC-007: File Management', () => {
         dbPath: localTestDbPath,
         modelName: 'Xenova/all-MiniLM-L6-v2',
         cacheDir: testModelCacheDir(localCacheDir),
-        baseDir: localTestDataDir,
+        baseDirs: [localTestDataDir],
         maxFileSize: 100 * 1024 * 1024,
       })
     )
@@ -236,7 +236,7 @@ describe('AC-007: File Management', () => {
           dbPath: excludeTestDb,
           modelName: 'Xenova/all-MiniLM-L6-v2',
           cacheDir: testModelCacheDir(excludeTestCache),
-          baseDir: excludeTestBase,
+          baseDirs: [excludeTestBase],
           maxFileSize: 100 * 1024 * 1024,
         })
       )
@@ -306,7 +306,7 @@ describe('AC-007: File Management', () => {
             dbPath: siblingDb,
             modelName: 'Xenova/all-MiniLM-L6-v2',
             cacheDir: testModelCacheDir(siblingCache),
-            baseDir: siblingData,
+            baseDirs: [siblingData],
             maxFileSize: 100 * 1024 * 1024,
           })
         )
@@ -512,7 +512,7 @@ describe('AC-008: list_files single-root regression (legacy shape preserved)', (
         dbPath: singleDb,
         modelName: 'Xenova/all-MiniLM-L6-v2',
         cacheDir: testModelCacheDir(singleCache),
-        baseDir: singleData,
+        baseDirs: [singleData],
         maxFileSize: 100 * 1024 * 1024,
       })
     )

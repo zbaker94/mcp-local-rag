@@ -10,8 +10,8 @@ import {
   resolveGlobalConfig,
   validateMaxFileSize,
   validateModelName,
-  validatePath,
 } from '../../cli/options.js'
+import { checkSensitivePath } from '../../utils/sensitive-path.js'
 
 describe('CLI global options', () => {
   let exitSpy: ReturnType<typeof vi.spyOn>
@@ -286,46 +286,46 @@ describe('CLI global options', () => {
   })
 
   // ============================================
-  // validatePath
+  // checkSensitivePath (shared CLI path policy)
   // ============================================
-  describe('validatePath', () => {
+  describe('checkSensitivePath', () => {
     it('should reject /etc paths', () => {
-      expect(validatePath('/etc/config', '--db-path')).toContain('sensitive system path')
+      expect(checkSensitivePath('/etc/config', '--db-path')).toContain('sensitive system path')
     })
 
     it('should reject /usr paths', () => {
-      expect(validatePath('/usr/local/data', '--db-path')).toContain('sensitive system path')
+      expect(checkSensitivePath('/usr/local/data', '--db-path')).toContain('sensitive system path')
     })
 
     it('should reject /sys paths', () => {
-      expect(validatePath('/sys/block', '--cache-dir')).toContain('sensitive system path')
+      expect(checkSensitivePath('/sys/block', '--cache-dir')).toContain('sensitive system path')
     })
 
     it('should reject /proc paths', () => {
-      expect(validatePath('/proc/self', '--cache-dir')).toContain('sensitive system path')
+      expect(checkSensitivePath('/proc/self', '--cache-dir')).toContain('sensitive system path')
     })
 
     it('should reject /var paths', () => {
-      expect(validatePath('/var/log', '--db-path')).toContain('sensitive system path')
+      expect(checkSensitivePath('/var/log', '--db-path')).toContain('sensitive system path')
     })
 
     it('should reject ~/.ssh paths', () => {
-      expect(validatePath('~/.ssh/keys', '--db-path')).toContain('sensitive system path')
+      expect(checkSensitivePath('~/.ssh/keys', '--db-path')).toContain('sensitive system path')
     })
 
     it('should reject ~/.gnupg paths', () => {
-      expect(validatePath('~/.gnupg/data', '--cache-dir')).toContain('sensitive system path')
+      expect(checkSensitivePath('~/.gnupg/data', '--cache-dir')).toContain('sensitive system path')
     })
 
     it('should accept normal paths', () => {
-      expect(validatePath('./data', '--db-path')).toBeUndefined()
-      expect(validatePath('/home/user/project', '--db-path')).toBeUndefined()
-      expect(validatePath('./lancedb/', '--db-path')).toBeUndefined()
+      expect(checkSensitivePath('./data', '--db-path')).toBeUndefined()
+      expect(checkSensitivePath('/home/user/project', '--db-path')).toBeUndefined()
+      expect(checkSensitivePath('./lancedb/', '--db-path')).toBeUndefined()
     })
 
     it('should not reject paths that merely contain sensitive names as substrings', () => {
-      expect(validatePath('/home/user/etc-backup', '--db-path')).toBeUndefined()
-      expect(validatePath('/home/user/myvar', '--db-path')).toBeUndefined()
+      expect(checkSensitivePath('/home/user/etc-backup', '--db-path')).toBeUndefined()
+      expect(checkSensitivePath('/home/user/myvar', '--db-path')).toBeUndefined()
     })
   })
 

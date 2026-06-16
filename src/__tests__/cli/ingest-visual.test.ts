@@ -46,6 +46,9 @@ const mocks = vi.hoisted(() => {
   return {
     // ---------------- fs/promises ----------------
     stat: vi.fn(),
+    // Identity realpath (no symlinks) so `collectFiles`' positional-path
+    // resolution stays in-memory instead of hitting the real filesystem.
+    realpath: vi.fn().mockImplementation((p: string) => Promise.resolve(p)),
 
     // ---------------- Parser ----------------
     parseFile: vi.fn(),
@@ -58,6 +61,9 @@ const mocks = vi.hoisted(() => {
     // ---------------- Embedder + VectorStore (via cli/common.js) ----------------
     embedBatch: vi.fn(),
     initialize: vi.fn(),
+    // Backup read by `replaceFileChunks` before its delete+insert; default to
+    // no prior chunks so the happy path is a plain delete→insert.
+    getChunksByFilePath: vi.fn().mockResolvedValue([]),
     deleteChunks: vi.fn(),
     insertChunks: vi.fn(),
     optimize: vi.fn(),
@@ -77,6 +83,7 @@ const fsPromisesFactory = async (
   return {
     ...actual,
     stat: mocks.stat,
+    realpath: mocks.realpath,
   }
 }
 
@@ -102,6 +109,7 @@ const cliCommonFactory = () => ({
   })),
   createVectorStore: vi.fn().mockImplementation(() => ({
     initialize: mocks.initialize,
+    getChunksByFilePath: mocks.getChunksByFilePath,
     deleteChunks: mocks.deleteChunks,
     insertChunks: mocks.insertChunks,
     optimize: mocks.optimize,
@@ -109,11 +117,12 @@ const cliCommonFactory = () => ({
   })),
   // Stub the shared CLI base-dirs resolver so visual-mode tests skip the
   // realpath I/O the production resolver performs. The visual tests do not
-  // exercise base-dir precedence — they only need a valid config so the
-  // `DocumentParser` constructor receives a `baseDirs` array.
+  // exercise base-dir precedence — they only need a valid config whose root
+  // contains the positional `/tmp/test/*` fixtures so the containment check in
+  // `collectFiles` passes and `DocumentParser` receives a `baseDirs` array.
   resolveCliBaseDirsOrExit: vi.fn().mockImplementation((cliRoots: string[]) =>
     Promise.resolve({
-      config: { baseDirs: cliRoots.length > 0 ? cliRoots : ['/mock/cwd/'] },
+      config: { baseDirs: cliRoots.length > 0 ? cliRoots : [resolve('/tmp/test')] },
       warnings: [],
     })
   ),

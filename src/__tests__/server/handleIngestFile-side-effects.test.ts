@@ -178,7 +178,7 @@ function buildServer(): InstanceType<RAGServerCtor> {
     dbPath: '/tmp/test/side-effects-db',
     modelName: 'mock-model',
     cacheDir: '/tmp/test/side-effects-cache',
-    baseDir: '/tmp/test',
+    baseDirs: ['/tmp/test'],
     maxFileSize: 1024 * 1024,
     device: 'cpu',
   })

@@ -21,7 +21,7 @@ const testConfig = {
   // resolves roots to absolute). A relative '.' would make the scan emit
   // relative paths that never match the absolute excludePaths, so the raw-data
   // dir would leak into the scan instead of being excluded.
-  baseDir: resolve('.'),
+  baseDirs: [resolve('.')],
   maxFileSize: 10 * 1024 * 1024,
 }
 

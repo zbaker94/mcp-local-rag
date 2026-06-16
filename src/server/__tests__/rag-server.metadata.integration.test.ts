@@ -23,7 +23,7 @@ describe('File Title Extraction Pipeline', () => {
         dbPath: localTestDbPath,
         modelName: 'Xenova/all-MiniLM-L6-v2',
         cacheDir: testModelCacheDir(),
-        baseDir: localTestDataDir,
+        baseDirs: [localTestDataDir],
         maxFileSize: 100 * 1024 * 1024,
       })
     )
@@ -97,7 +97,7 @@ describe('Meta JSON Sidecar Pipeline', () => {
         dbPath: localTestDbPath,
         modelName: 'Xenova/all-MiniLM-L6-v2',
         cacheDir: testModelCacheDir(),
-        baseDir: localTestDataDir,
+        baseDirs: [localTestDataDir],
         maxFileSize: 100 * 1024 * 1024,
       })
     )

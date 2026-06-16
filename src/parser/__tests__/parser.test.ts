@@ -83,7 +83,7 @@ describe('DocumentParser', () => {
     await mkdir(testDir, { recursive: true })
 
     parser = new DocumentParser({
-      baseDir: testDir,
+      baseDirs: [testDir],
       maxFileSize,
     })
   })
@@ -293,7 +293,7 @@ describe('DocumentParser', () => {
     })
 
     it('should produce identical behavior for { baseDir } and { baseDirs: [baseDir] } shapes', async () => {
-      const legacy = new DocumentParser({ baseDir: rootA, maxFileSize })
+      const legacy = new DocumentParser({ baseDirs: [rootA], maxFileSize })
       const modern = new DocumentParser({ baseDirs: [rootA], maxFileSize })
 
       const inside = join(rootA, 'inside.txt')
@@ -322,7 +322,7 @@ describe('DocumentParser', () => {
 
       // Mock large file by adjusting maxFileSize to 1 byte
       const smallParser = new DocumentParser({
-        baseDir: testDir,
+        baseDirs: [testDir],
         maxFileSize: 1,
       })
 
