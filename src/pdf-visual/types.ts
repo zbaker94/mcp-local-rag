@@ -1,29 +1,14 @@
 // Shared types for the `pdf-visual` package.
 //
-// `VlmError` is the package-wide named error for the visual ingest path.
-// `renderer.ts`, `captioner.ts`, and the orchestrator (`index.ts`) import it
-// from this single source. It joins the shared `AppError` taxonomy (taxonomy
-// only — name/message/cause behavior is unchanged) and additionally carries
-// the offending page number.
+// `VlmError` is the package-wide named error for the visual ingest path. It
+// lives in `./errors.js` (the per-package error module, mirroring
+// `parser/errors.ts`) and is re-exported here so `renderer.ts`, `captioner.ts`,
+// and the orchestrator (`index.ts`) keep importing it from this single source.
 //
 // `CaptionerConfig` / `Captioner` are the captioner's public interface,
 // shared across the visual ingest modules.
 
-import { AppError } from '../utils/errors.js'
-
-/**
- * Error raised by any module on the visual ingest path. Carries the offending
- * 1-based page number so callers can correlate it with the page list.
- */
-export class VlmError extends AppError {
-  public readonly pageNum: number
-
-  constructor(message: string, options: { cause?: Error; pageNum: number }) {
-    super(message, 'pdf-visual', 'internal', options.cause)
-    this.name = 'VlmError'
-    this.pageNum = options.pageNum
-  }
-}
+export { VlmError } from './errors.js'
 
 /**
  * Visual-quality profile selector. Each profile resolves to a self-contained

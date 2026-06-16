@@ -1,6 +1,6 @@
 // VectorDB type definitions, constants, type guards, and error classes
 
-import { AppError } from '../utils/errors.js'
+import { DatabaseError } from './errors.js'
 
 // ============================================
 // Constants
@@ -48,9 +48,10 @@ export interface VectorStoreConfig {
 }
 
 /**
- * Document metadata
+ * Document metadata. Module-private — only consumed internally by the row
+ * shapes and `isDocumentMetadata` guard in this file.
  */
-export interface DocumentMetadata {
+interface DocumentMetadata {
   /** File name */
   fileName: string
   /** File size in bytes */
@@ -265,12 +266,7 @@ export function toChunkRow(raw: unknown): ChunkRow {
 // Error Classes
 // ============================================
 
-/**
- * Database error
- */
-export class DatabaseError extends AppError {
-  constructor(message: string, cause?: Error) {
-    super(message, 'vectordb', 'internal', cause)
-    this.name = 'DatabaseError'
-  }
-}
+// `DatabaseError` lives in `./errors.js` (the per-package error module, mirroring
+// `parser/errors.ts`); re-exported here (and imported above for the type guards
+// that throw it) so existing `../vectordb/types.js` import sites keep working.
+export { DatabaseError }

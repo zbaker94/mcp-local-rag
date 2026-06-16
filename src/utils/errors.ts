@@ -60,3 +60,24 @@ export function getCauseChain(error: Error): Error[] {
   }
   return chain
 }
+
+/**
+ * Render the full `.cause` chain of `error` as a diagnostic string: each link's
+ * stack (falling back to `name: message` when no stack is present) joined by
+ * newlines, with deeper links prefixed `Caused by: ` and the outermost link
+ * unprefixed.
+ *
+ * This is the shared rendering primitive for operator-facing diagnostics — the
+ * CLI failure renderer (`formatCliError`) and the MCP log formatter
+ * (`formatErrorForLog`) both delegate here. It is deliberately NOT used on the
+ * MCP client boundary, which must never leak the cause chain or stacks; those
+ * callers own the decision of whether the full chain is appropriate.
+ */
+export function renderCauseChain(error: Error): string {
+  return getCauseChain(error)
+    .map((link, index) => {
+      const header = index === 0 ? '' : 'Caused by: '
+      return `${header}${link.stack || `${link.name}: ${link.message}`}`
+    })
+    .join('\n')
+}

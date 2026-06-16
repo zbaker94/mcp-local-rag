@@ -1,6 +1,6 @@
 import type { Annotations } from '@modelcontextprotocol/sdk/types.js'
 import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js'
-import { getCauseChain, isAppError } from '../utils/errors.js'
+import { isAppError, renderCauseChain } from '../utils/errors.js'
 
 /**
  * Shape of a single MCP content block used by RAG server handlers. Mirrors
@@ -132,18 +132,12 @@ export function formatErrorForClient(error: unknown): string {
 
 /**
  * Build the full diagnostic string for stderr logging: every link of the
- * `.cause` chain (via {@link getCauseChain}) followed by its stack. Never sent
- * to the client — this is the log-side counterpart of
+ * `.cause` chain (via {@link renderCauseChain}) followed by its stack. Never
+ * sent to the client — this is the log-side counterpart of
  * {@link formatErrorForClient}.
  */
 export function formatErrorForLog(error: unknown): string {
-  const err = toError(error)
-  return getCauseChain(err)
-    .map((link, index) => {
-      const header = index === 0 ? '' : 'Caused by: '
-      return `${header}${link.stack || `${link.name}: ${link.message}`}`
-    })
-    .join('\n')
+  return renderCauseChain(toError(error))
 }
 
 /**

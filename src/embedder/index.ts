@@ -7,7 +7,7 @@ import {
   ModelRegistry,
   pipeline,
 } from '@huggingface/transformers'
-import { AppError } from '../utils/errors.js'
+import { EmbeddingError } from './errors.js'
 
 // ============================================
 // Type Definitions
@@ -48,15 +48,11 @@ export interface EmbedderConfig {
 // Error Classes
 // ============================================
 
-/**
- * Embedding generation error
- */
-export class EmbeddingError extends AppError {
-  constructor(message: string, cause?: Error) {
-    super(message, 'embedder', 'internal', cause)
-    this.name = 'EmbeddingError'
-  }
-}
+// `EmbeddingError` lives in `./errors.js` (the per-package error module,
+// mirroring `parser/errors.ts`); re-exported here (and imported above for the
+// throw sites below) so existing `../embedder/index.js` import sites keep
+// working unchanged.
+export { EmbeddingError }
 
 // ============================================
 // Embedder Class
