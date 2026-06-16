@@ -12,9 +12,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 vi.mock('node:fs/promises', () => ({
   readdir: vi.fn(),
   realpath: vi.fn(),
+  stat: vi.fn(),
 }))
 
-import { readdir } from 'node:fs/promises'
+import { readdir, realpath, stat } from 'node:fs/promises'
+import { MAX_SCAN_DEPTH } from '../limits.js'
 import { bfsCollectSupportedFiles } from '../scan.js'
 
 type EntryType = 'file' | 'directory' | 'symlink'
@@ -44,6 +46,38 @@ function setReaddir(map: Record<string, ReturnType<typeof dirent>[] | typeof UNR
     }
     return entry ?? []
   }) as unknown as typeof readdir)
+}
+
+/**
+ * Drive the mocked `stat` (target classification for followed symlinks) from a
+ * path→type map. A path mapped to `BROKEN` throws ENOENT to exercise the
+ * broken-link skip branch; unmapped paths default to a regular file.
+ */
+const BROKEN = Symbol('broken')
+function setStat(map: Record<string, 'file' | 'directory' | typeof BROKEN>) {
+  vi.mocked(stat).mockImplementation((async (p: string) => {
+    const type = map[p]
+    if (type === BROKEN) {
+      const err = new Error('no such file') as NodeJS.ErrnoException
+      err.code = 'ENOENT'
+      throw err
+    }
+    return {
+      isFile: () => type === 'file' || type === undefined,
+      isDirectory: () => type === 'directory',
+    }
+  }) as unknown as typeof stat)
+}
+
+/**
+ * Drive the mocked `realpath` (cycle guard for followed directory symlinks)
+ * from a path→canonical map. Unmapped paths resolve to themselves so links
+ * without an explicit alias behave like distinct directories.
+ */
+function setRealpath(map: Record<string, string> = {}) {
+  vi.mocked(realpath).mockImplementation(
+    (async (p: string) => map[p] ?? p) as unknown as typeof realpath
+  )
 }
 
 afterEach(() => {
@@ -100,6 +134,75 @@ describe('bfsCollectSupportedFiles', () => {
     const { files } = await bfsCollectSupportedFiles('/root', [])
 
     expect(files).toEqual(['/root/real.md'])
+  })
+
+  describe('followSymlinks', () => {
+    it('collects symlinked supported files and traverses symlinked directories', async () => {
+      setReaddir({
+        '/root': [
+          dirent('real.md'),
+          dirent('link.md', 'symlink'),
+          dirent('image.png', 'symlink'),
+          dirent('linkdir', 'symlink'),
+        ],
+        '/root/linkdir': [dirent('nested.txt')],
+      })
+      setStat({
+        '/root/link.md': 'file',
+        '/root/image.png': 'file',
+        '/root/linkdir': 'directory',
+      })
+      setRealpath()
+
+      const { files } = await bfsCollectSupportedFiles('/root', [], MAX_SCAN_DEPTH, true)
+
+      // Symlinked .png skipped (unsupported); link path is kept (not its target).
+      expect(files.sort()).toEqual(['/root/link.md', '/root/linkdir/nested.txt', '/root/real.md'])
+    })
+
+    it('skips a broken symlink without aborting the scan', async () => {
+      setReaddir({
+        '/root': [dirent('real.md'), dirent('dead.md', 'symlink')],
+      })
+      setStat({ '/root/dead.md': BROKEN })
+      setRealpath()
+
+      const { files } = await bfsCollectSupportedFiles('/root', [], MAX_SCAN_DEPTH, true)
+
+      expect(files).toEqual(['/root/real.md'])
+    })
+
+    it('breaks symlink cycles via the realpath guard', async () => {
+      // /root/loop -> (realpath) /root, and /root contains loop again. Without
+      // the visited-realpath guard this would recurse until the depth bound.
+      setReaddir({
+        '/root': [dirent('a.md'), dirent('loop', 'symlink')],
+      })
+      setStat({ '/root/loop': 'directory' })
+      // Both the root and the loop link canonicalize to the same realpath.
+      setRealpath({ '/root': '/real', '/root/loop': '/real' })
+
+      const { files, depthLimited } = await bfsCollectSupportedFiles(
+        '/root',
+        [],
+        MAX_SCAN_DEPTH,
+        true
+      )
+
+      expect(files).toEqual(['/root/a.md'])
+      expect(depthLimited).toBe(false)
+    })
+
+    it('still skips symlinks when followSymlinks is false (default)', async () => {
+      setReaddir({
+        '/root': [dirent('real.md'), dirent('link.md', 'symlink')],
+      })
+
+      const { files } = await bfsCollectSupportedFiles('/root', [], MAX_SCAN_DEPTH, false)
+
+      expect(files).toEqual(['/root/real.md'])
+      expect(stat).not.toHaveBeenCalled()
+    })
   })
 
   it('sets depthLimited when a branch reaches maxDepth and prunes deeper files', async () => {

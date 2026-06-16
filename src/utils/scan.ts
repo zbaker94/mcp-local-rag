@@ -9,7 +9,7 @@
 // structured facts (`unreadableDirs`, `depthLimited`) so callers preserve
 // their own, intentionally-different, user-facing messages.
 
-import { readdir, realpath } from 'node:fs/promises'
+import { readdir, realpath, stat } from 'node:fs/promises'
 import { extname, join } from 'node:path'
 import { MAX_SCAN_DEPTH } from './limits.js'
 import { SUPPORTED_EXTENSIONS } from './supported-extensions.js'
@@ -52,9 +52,17 @@ export interface DirScanResult {
 
 /**
  * Bounded BFS scan of a single root, collecting every supported file up to
- * `maxDepth` levels deep. Symlinks are skipped; paths under any `excludePaths`
- * prefix are filtered out. A per-directory `readdir` failure is captured into
- * `unreadableDirs` and does not abort the scan (best-effort per directory).
+ * `maxDepth` levels deep. Paths under any `excludePaths` prefix are filtered
+ * out. A per-directory `readdir` failure is captured into `unreadableDirs` and
+ * does not abort the scan (best-effort per directory).
+ *
+ * Symlinks are skipped by default. When `followSymlinks` is true, a symlink to
+ * a directory is traversed and a symlink to a supported file is collected — the
+ * collected/enqueued path is the symlink's own path (not its target), so DB
+ * keys keep the spelling under `rootPath`; the read-time security boundary in
+ * `DocumentParser` still realpaths each file and rejects any whose target
+ * escapes all configured roots, so following links never widens the boundary.
+ * Followed directory targets are tracked by realpath to break symlink cycles.
  *
  * Does not sort, dedupe, or emit warnings — callers handle those so their
  * existing output contracts are preserved.
@@ -62,11 +70,24 @@ export interface DirScanResult {
 export async function bfsCollectSupportedFiles(
   rootPath: string,
   excludePaths: readonly string[],
-  maxDepth: number = MAX_SCAN_DEPTH
+  maxDepth: number = MAX_SCAN_DEPTH,
+  followSymlinks = false
 ): Promise<DirScanResult> {
   const files: string[] = []
   const unreadableDirs: UnreadableDir[] = []
   let depthLimited = false
+
+  // Realpaths of directories already enqueued via a followed symlink — the
+  // loop guard that stops `a -> b -> a` symlink cycles from looping forever.
+  // Seeded with the root so a child link pointing back to the root is pruned.
+  const visitedDirRealpaths = new Set<string>()
+  if (followSymlinks) {
+    try {
+      visitedDirRealpaths.add(await realpath(rootPath))
+    } catch {
+      // Root unresolvable (e.g. broken link) — readdir below will surface it.
+    }
+  }
 
   const queue: { dirPath: string; depth: number }[] = [{ dirPath: rootPath, depth: 0 }]
 
@@ -98,8 +119,36 @@ export async function bfsCollectSupportedFiles(
 
     for (const entry of entries) {
       const fullPath = join(dirPath, entry.name)
-      if (entry.isSymbolicLink()) continue
       if (excludePaths.some((ep) => fullPath.startsWith(ep))) continue
+
+      if (entry.isSymbolicLink()) {
+        if (!followSymlinks) continue
+        // `stat` (not `lstat`) resolves the link to classify its target. A
+        // broken or unreadable link throws and is skipped — the read boundary
+        // would reject it anyway.
+        let target: import('node:fs').Stats
+        try {
+          target = await stat(fullPath)
+        } catch {
+          continue
+        }
+        if (target.isDirectory()) {
+          // Cycle guard: enqueue a followed directory only once per realpath.
+          let real: string
+          try {
+            real = await realpath(fullPath)
+          } catch {
+            continue
+          }
+          if (visitedDirRealpaths.has(real)) continue
+          visitedDirRealpaths.add(real)
+          queue.push({ dirPath: fullPath, depth: depth + 1 })
+        } else if (target.isFile() && SUPPORTED_EXTENSIONS.has(extname(entry.name).toLowerCase())) {
+          files.push(fullPath)
+        }
+        continue
+      }
+
       if (entry.isDirectory()) {
         queue.push({ dirPath: fullPath, depth: depth + 1 })
       } else if (entry.isFile() && SUPPORTED_EXTENSIONS.has(extname(entry.name).toLowerCase())) {
