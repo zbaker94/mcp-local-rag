@@ -1,6 +1,6 @@
 // DocumentParser Unit Test
 
-import { mkdir, rm, symlink, writeFile } from 'node:fs/promises'
+import { mkdir, realpath, rm, symlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { EmbedderInterface } from '../pdf-filter.js'
@@ -102,12 +102,12 @@ describe('DocumentParser', () => {
 
     it('should accept valid absolute path within baseDir', async () => {
       const validPath = join(testDir, 'test.txt')
-      await expect(parser.validateFilePath(validPath)).resolves.toBeUndefined()
+      await expect(parser.validateFilePath(validPath)).resolves.toEqual(expect.any(String))
     })
 
     it('should accept nested absolute path within baseDir', async () => {
       const validPath = join(testDir, 'subdir', 'test.txt')
-      await expect(parser.validateFilePath(validPath)).resolves.toBeUndefined()
+      await expect(parser.validateFilePath(validPath)).resolves.toEqual(expect.any(String))
     })
 
     it('should reject relative path', async () => {
@@ -180,7 +180,7 @@ describe('DocumentParser', () => {
       await writeFile(filePath, 'real content')
 
       // Should still work after async conversion
-      await expect(parser.validateFilePath(filePath)).resolves.toBeUndefined()
+      await expect(parser.validateFilePath(filePath)).resolves.toEqual(expect.any(String))
     })
   })
 
@@ -207,8 +207,8 @@ describe('DocumentParser', () => {
       await writeFile(fileInA, 'a')
       await writeFile(fileInB, 'b')
 
-      await expect(multi.validateFilePath(fileInA)).resolves.toBeUndefined()
-      await expect(multi.validateFilePath(fileInB)).resolves.toBeUndefined()
+      await expect(multi.validateFilePath(fileInA)).resolves.toEqual(expect.any(String))
+      await expect(multi.validateFilePath(fileInB)).resolves.toEqual(expect.any(String))
     })
 
     it('should reject files outside all configured roots', async () => {
@@ -248,7 +248,10 @@ describe('DocumentParser', () => {
       await symlink(targetInB, linkInA)
 
       const multi = new DocumentParser({ baseDirs: [rootA, rootB], maxFileSize })
-      await expect(multi.validateFilePath(linkInA)).resolves.toBeUndefined()
+      // TOCTOU contract: validateFilePath returns the canonical read target
+      // (the realpath of the symlink's destination), NOT the symlink path, so
+      // callers read the path that was actually validated.
+      await expect(multi.validateFilePath(linkInA)).resolves.toBe(await realpath(targetInB))
     })
 
     it('should reject sibling-prefix path (e.g., /tmp/foo/bar vs /tmp/foo/barista)', async () => {
@@ -296,8 +299,8 @@ describe('DocumentParser', () => {
       const inside = join(rootA, 'inside.txt')
       await writeFile(inside, 'x')
 
-      await expect(legacy.validateFilePath(inside)).resolves.toBeUndefined()
-      await expect(modern.validateFilePath(inside)).resolves.toBeUndefined()
+      await expect(legacy.validateFilePath(inside)).resolves.toEqual(expect.any(String))
+      await expect(modern.validateFilePath(inside)).resolves.toEqual(expect.any(String))
 
       await expect(legacy.validateFilePath('/etc/passwd')).rejects.toThrow(ValidationError)
       await expect(modern.validateFilePath('/etc/passwd')).rejects.toThrow(ValidationError)

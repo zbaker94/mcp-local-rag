@@ -157,9 +157,14 @@ export class DocumentParser {
    * single-root implementation.
    *
    * @param filePath - File path to validate (must be absolute)
+   * @returns The validated path to READ from: the realpath of the file when it
+   *   exists, else the `resolve()`-normalized absolute path. Callers must read
+   *   from THIS value (not the original `filePath`) so a symlink swapped in
+   *   between validation and read cannot redirect the read outside the allowed
+   *   roots (TOCTOU). The original `filePath` stays the DB key / display path.
    * @throws ValidationError - When path is not absolute or outside all allowed roots
    */
-  async validateFilePath(filePath: string): Promise<void> {
+  async validateFilePath(filePath: string): Promise<string> {
     // Fail-closed in degraded mode: when the parser was constructed with an
     // empty allow-list (only legitimate when the MCP server is in degraded
     // mode with a configError set), reject every path with a structured
@@ -229,6 +234,11 @@ export class DocumentParser {
         `File path must be within a configured base directory (BASE_DIR/BASE_DIRS/--base-dir). Allowed roots: ${rootsDisplay}. Received path outside all configured roots: ${filePath}`
       )
     }
+
+    // Return the canonical read target so callers read the path we validated,
+    // not the (possibly symlinked) original. See the @returns note for the
+    // TOCTOU rationale.
+    return resolvedPath
   }
 
   /**
@@ -267,19 +277,21 @@ export class DocumentParser {
    * @throws FileOperationError - File read failed, parse failed
    */
   async parseFile(filePath: string): Promise<ParseResult> {
-    // Validation
-    await this.validateFilePath(filePath)
-    this.validateFileSize(filePath)
+    // Validation. `readPath` is the canonical target to read from (realpath),
+    // closing the symlink-swap window; `filePath` stays the display/title path.
+    const readPath = await this.validateFilePath(filePath)
+    this.validateFileSize(readPath)
 
-    // Format detection (PDF uses parsePdf directly)
+    // Format detection (PDF uses parsePdf directly). Extension is taken from the
+    // original path so display/format detection is unaffected by realpath.
     const ext = extname(filePath).toLowerCase()
     switch (ext) {
       case '.docx':
-        return await this.parseDocx(filePath)
+        return await this.parseDocx(filePath, readPath)
       case '.txt':
-        return await this.parseTxt(filePath)
+        return await this.parseTxt(filePath, readPath)
       case '.md':
-        return await this.parseMd(filePath)
+        return await this.parseMd(filePath, readPath)
       default:
         throw new ValidationError(`Unsupported file format: ${ext}`)
     }
@@ -300,9 +312,10 @@ export class DocumentParser {
    * @throws FileOperationError - File read failed, parse failed
    */
   async parsePdf(filePath: string, embedder: EmbedderInterface): Promise<ParseResult> {
-    // Validation
-    await this.validateFilePath(filePath)
-    this.validateFileSize(filePath)
+    // Validation. Read from the canonical realpath (`readPath`) to close the
+    // symlink-swap window; `filePath` remains the display/title path.
+    const readPath = await this.validateFilePath(filePath)
+    this.validateFileSize(readPath)
 
     // Hold `doc` outside the try so the `finally` block can dispose it after
     // either a successful return or an error from `extractPdfPages` / the
@@ -310,7 +323,7 @@ export class DocumentParser {
     // throws — in that case there is no handle to destroy.
     let doc: MupdfDocument | undefined
     try {
-      const buffer = await readFile(filePath)
+      const buffer = await readFile(readPath)
       const mupdf = await import('mupdf')
       doc = mupdf.Document.openDocument(buffer, 'application/pdf') as MupdfDocument
 
@@ -422,9 +435,9 @@ export class DocumentParser {
     }>
   }> {
     // Validation (mirrors parsePdf's entry-point contract so the visual path
-    // does not bypass BASE_DIR / size checks).
-    await this.validateFilePath(filePath)
-    this.validateFileSize(filePath)
+    // does not bypass BASE_DIR / size checks). Read from the canonical realpath.
+    const readPath = await this.validateFilePath(filePath)
+    this.validateFileSize(readPath)
 
     // Open the doc and run per-page extraction. Success-path disposal of
     // `doc` stays with the caller.
@@ -433,7 +446,7 @@ export class DocumentParser {
     // (or any future pre-return step) does not leak the mupdf WASM handle.
     let doc: MupdfDocument | undefined
     try {
-      const buffer = await readFile(filePath)
+      const buffer = await readFile(readPath)
       const mupdf = await import('mupdf')
       doc = mupdf.Document.openDocument(buffer, 'application/pdf') as MupdfDocument
       const extracted = await extractPdfPages(doc, embedder, 'preserve-whitespace,preserve-images')
@@ -487,10 +500,11 @@ export class DocumentParser {
    * @returns ParseResult with content and extracted title
    * @throws FileOperationError - File read failed, parse failed
    */
-  private async parseDocx(filePath: string): Promise<ParseResult> {
+  private async parseDocx(filePath: string, readPath: string = filePath): Promise<ParseResult> {
     try {
-      // Read file once and pass buffer to both mammoth calls
-      const buffer = await readFile(filePath)
+      // Read file once and pass buffer to both mammoth calls. `readPath` is the
+      // validated realpath; `filePath` is used only for the display filename.
+      const buffer = await readFile(readPath)
 
       // Use extractRawText for content (unchanged behavior)
       const result = await mammoth.extractRawText({ buffer })
@@ -515,9 +529,9 @@ export class DocumentParser {
    * @returns ParseResult with content and extracted title
    * @throws FileOperationError - File read failed
    */
-  private async parseTxt(filePath: string): Promise<ParseResult> {
+  private async parseTxt(filePath: string, readPath: string = filePath): Promise<ParseResult> {
     try {
-      const text = await readFile(filePath, 'utf-8')
+      const text = await readFile(readPath, 'utf-8')
       const fileName = basename(filePath)
       const titleResult = extractTxtTitle(text, fileName)
       console.error(`Parsed TXT: ${filePath} (${text.length} characters)`)
@@ -534,9 +548,9 @@ export class DocumentParser {
    * @returns ParseResult with content and extracted title
    * @throws FileOperationError - File read failed
    */
-  private async parseMd(filePath: string): Promise<ParseResult> {
+  private async parseMd(filePath: string, readPath: string = filePath): Promise<ParseResult> {
     try {
-      const text = await readFile(filePath, 'utf-8')
+      const text = await readFile(readPath, 'utf-8')
       const fileName = basename(filePath)
       const titleResult = extractMarkdownTitle(text, fileName)
       console.error(`Parsed MD: ${filePath} (${text.length} characters)`)
