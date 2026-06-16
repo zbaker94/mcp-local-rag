@@ -1035,6 +1035,25 @@ describe('CLI ingest', () => {
       expect(result.options.baseDirs).toBeUndefined()
     })
 
+    it('should parse the --follow-symlinks boolean toggle', () => {
+      const result = parseArgs(['--follow-symlinks', '/target'])
+      expect(result.positional).toBe('/target')
+      expect(result.options.followSymlinks).toBe(true)
+    })
+
+    it('should accumulate repeated --trusted-dir into trustedDirs array in CLI order', () => {
+      const result = parseArgs([
+        '--follow-symlinks',
+        '--trusted-dir',
+        '/a',
+        '--trusted-dir',
+        '/b',
+        '/target',
+      ])
+      expect(result.positional).toBe('/target')
+      expect(result.options.trustedDirs).toEqual(['/a', '/b'])
+    })
+
     it('should keep single --base-dir backward-compatible (array of one)', () => {
       const result = parseArgs(['--base-dir', '/only', '/target'])
       expect(result.options.baseDirs).toEqual(['/only'])
@@ -1250,6 +1269,38 @@ describe('CLI ingest', () => {
       } finally {
         errorSpy.mockRestore()
       }
+    })
+
+    it('should error when --trusted-dir is supplied without --follow-symlinks', async () => {
+      mocks.resolveCliBaseDirs.mockResolvedValue({ config: { baseDirs: ['/root/'] }, warnings: [] })
+      const globalConfig = resolveGlobalConfig({})
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+      try {
+        await expect(resolveConfig(globalConfig, { trustedDirs: ['/trusted'] })).rejects.toThrow(
+          'process.exit(1)'
+        )
+        expect(errorSpy).toHaveBeenCalledWith(
+          expect.stringContaining('--trusted-dir requires --follow-symlinks')
+        )
+      } finally {
+        errorSpy.mockRestore()
+      }
+    })
+
+    it('normalizes --trusted-dir into trailing-separator read-boundary roots', async () => {
+      mocks.resolveCliBaseDirs.mockResolvedValue({ config: { baseDirs: ['/root/'] }, warnings: [] })
+      // Identity realpath so normalizeRealpath only appends the trailing sep;
+      // stat as a directory so the trusted root passes the is-directory gate.
+      mocks.realpath.mockImplementation(async (p: string) => p)
+      mocks.stat.mockResolvedValue(mockDirStat())
+      const globalConfig = resolveGlobalConfig({})
+
+      const config = await resolveConfig(globalConfig, {
+        followSymlinks: true,
+        trustedDirs: ['/trusted'],
+      })
+
+      expect(config.trustedDirs).toEqual(['/trusted/'])
     })
 
     it('should error when MAX_FILE_SIZE env var is zero', async () => {

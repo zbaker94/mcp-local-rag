@@ -5,6 +5,10 @@
 // confirms the path is inside a configured root and delegates the bounded
 // BFS walk to `bfsCollectSupportedFiles`. Out-of-root directory targets exit
 // the process (preserved from the original inline implementation).
+//
+// `followSymlinks` (default false) is forwarded to the directory walk so the
+// `ingest --follow-symlinks` flag can traverse symlinked trees; the read-time
+// root boundary in `DocumentParser` still gates every resolved target.
 
 import { realpath, stat } from 'node:fs/promises'
 import { extname, resolve, sep } from 'node:path'
@@ -16,7 +20,8 @@ import { bfsCollectSupportedFiles } from '../utils/scan.js'
 export async function collectFiles(
   targetPath: string,
   baseDirs: readonly string[],
-  excludePaths: string[]
+  excludePaths: string[],
+  followSymlinks = false
 ): Promise<string[]> {
   const resolved = resolve(targetPath)
   const info = await stat(resolved)
@@ -76,7 +81,7 @@ export async function collectFiles(
       files: collected,
       unreadableDirs,
       depthLimited,
-    } = await bfsCollectSupportedFiles(resolved, excludePaths)
+    } = await bfsCollectSupportedFiles(resolved, excludePaths, MAX_SCAN_DEPTH, followSymlinks)
 
     for (const { dirPath } of unreadableDirs) {
       console.error(`Warning: cannot read directory: ${dirPath}`)

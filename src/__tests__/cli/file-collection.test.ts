@@ -88,6 +88,31 @@ describe('collectFiles', () => {
       expect(result).toEqual(['/root/docs/a.md', '/root/docs/b.md'])
     })
 
+    it('forwards followSymlinks to the directory scan (default false, opt-in true)', async () => {
+      vi.mocked(stat).mockResolvedValue(dirStat as never)
+      vi.mocked(bfsCollectSupportedFiles).mockResolvedValue({
+        files: [],
+        unreadableDirs: [],
+        depthLimited: false,
+      })
+
+      await collectFiles('/root/docs', ['/root/docs/'], [])
+      expect(bfsCollectSupportedFiles).toHaveBeenLastCalledWith(
+        '/root/docs',
+        [],
+        expect.any(Number),
+        false
+      )
+
+      await collectFiles('/root/docs', ['/root/docs/'], [], true)
+      expect(bfsCollectSupportedFiles).toHaveBeenLastCalledWith(
+        '/root/docs',
+        [],
+        expect.any(Number),
+        true
+      )
+    })
+
     it('exits when the directory is outside every configured root', async () => {
       vi.mocked(stat).mockResolvedValue(dirStat as never)
 

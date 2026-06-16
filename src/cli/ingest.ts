@@ -11,6 +11,7 @@ import { prepareVisualPdfChunks } from '../ingest/visual.js'
 import { DocumentParser } from '../parser/index.js'
 import type { QualityProfile } from '../pdf-visual/types.js'
 import type { BaseDirsConfig, BaseDirsConfigWarning } from '../utils/base-dirs.js'
+import { BaseDirsConfigError, normalizeRealpath } from '../utils/base-dirs.js'
 import { DEFAULT_MAX_FILE_SIZE } from '../utils/limits.js'
 import { checkSensitivePath } from '../utils/sensitive-path.js'
 import type { VectorStore } from '../vectordb/index.js'
@@ -38,6 +39,12 @@ import {
 interface IngestConfig {
   baseDirs: BaseDirsConfig
   baseDirsWarnings: BaseDirsConfigWarning[]
+  /**
+   * Read-boundary-only roots (realpath-normalized, trailing separator), merged
+   * with `baseDirs` when constructing the parser but never scanned. Empty
+   * unless `--trusted-dir` was supplied with `--follow-symlinks`.
+   */
+  trustedDirs: string[]
   dbPath: string
   cacheDir: string
   modelName: string
@@ -67,6 +74,24 @@ interface IngestCliOptions {
    * of silently coercing for non-PDF files). Defaults to `'fast'`.
    */
   visualQuality?: QualityProfile | undefined
+  /**
+   * Follow symlinks during directory traversal. Off by default (symlinks are
+   * skipped) to preserve the hardened scan behavior. When on, symlinked
+   * directories are walked and symlinked supported files are collected — but
+   * each target is still realpath-checked against the configured roots at read
+   * time, so a link whose target escapes every root is rejected. To ingest a
+   * tree of links, include the link targets' real root via `--base-dir`.
+   */
+  followSymlinks?: boolean | undefined
+  /**
+   * Extra roots that authorize symlink *targets* at read time without being
+   * scanned or accepted for the positional path. Repeatable. Only valid
+   * together with `followSymlinks`: a curated directory of links can stay the
+   * sole `--base-dir` (the scan root) while the real trees its links point
+   * into are named here so their realpaths pass the read boundary. Subject to
+   * the same sensitive-path policy and realpath normalization as `--base-dir`.
+   */
+  trustedDirs?: string[] | undefined
 }
 
 interface IngestArgs {
@@ -97,6 +122,8 @@ Options:
   --chunk-min-length <n>     Minimum chunk length in characters (default: 50, range: 1-10000)
   --visual                   Enable VLM captioning for PDF figure pages (PDFs only; no effect on other types)
   --visual-quality <profile> VLM profile when --visual is set: fast (default, lightweight) or quality (Qwen2.5-VL-3B, ~10x cache, ~2x inference)
+  --follow-symlinks          Follow symlinks when scanning a directory (default: off). Link targets must still resolve under a configured --base-dir or --trusted-dir root.
+  --trusted-dir <path>       Extra root that authorizes symlink targets at read time (repeatable; requires --follow-symlinks). Not scanned and not valid for the positional path.
   -h, --help                 Show this help
 
 Global options (must appear before "ingest"):
@@ -166,6 +193,22 @@ export function parseArgs(args: string[]): IngestArgs {
         options.visual = true
         i++
         break
+      case '--follow-symlinks':
+        // Boolean toggle: opt into symlink traversal during directory scan.
+        options.followSymlinks = true
+        i++
+        break
+      case '--trusted-dir': {
+        // Repeatable: read-boundary-only root authorizing symlink targets.
+        // Coupling to --follow-symlinks is enforced in resolveConfig.
+        const value = requireFlagValue(args, i, '--trusted-dir')
+        if (options.trustedDirs === undefined) {
+          options.trustedDirs = []
+        }
+        options.trustedDirs.push(value)
+        i += 2
+        break
+      }
       case '--visual-quality': {
         const value = requireFlagValue(args, i, '--visual-quality')
         if (value !== 'fast' && value !== 'quality') {
@@ -238,6 +281,39 @@ export async function resolveConfig(
   const { config: baseDirs, warnings: baseDirsWarnings } =
     await resolveCliBaseDirsOrExit(cliBaseDirs)
 
+  // Trusted dirs widen ONLY the read boundary (symlink targets), never the
+  // scan set. They are meaningless — and a likely mistake — without symlink
+  // following, so reject that combination instead of silently ignoring them.
+  const cliTrustedDirs = ingestOptions.trustedDirs ?? []
+  if (cliTrustedDirs.length > 0 && !ingestOptions.followSymlinks) {
+    console.error(
+      '--trusted-dir requires --follow-symlinks (trusted roots only authorize symlink targets, which are skipped without it).'
+    )
+    process.exit(1)
+  }
+  // Same sensitive-path policy as --base-dir, attributed to --trusted-dir, then
+  // realpath-normalize with a trailing separator so the parser's prefix check
+  // is symlink- and sibling-prefix-safe. A missing/unresolvable trusted root is
+  // a hard error (no silent drop).
+  const trustedDirs: string[] = []
+  for (const root of cliTrustedDirs) {
+    const trustedError = checkSensitivePath(root, '--trusted-dir')
+    if (trustedError) {
+      console.error(trustedError)
+      process.exit(1)
+    }
+    try {
+      trustedDirs.push(await normalizeRealpath(root))
+    } catch (error) {
+      console.error(
+        error instanceof BaseDirsConfigError
+          ? error.message
+          : `Invalid --trusted-dir: ${root} could not be resolved.`
+      )
+      process.exit(1)
+    }
+  }
+
   const maxFileSize =
     ingestOptions.maxFileSize ??
     (process.env['MAX_FILE_SIZE']
@@ -271,6 +347,7 @@ export async function resolveConfig(
     modelName: globalConfig.modelName,
     baseDirs,
     baseDirsWarnings,
+    trustedDirs,
     maxFileSize,
   }
   if (chunkMinLength !== undefined) {
@@ -449,7 +526,12 @@ export async function runIngest(args: string[], globalOptions: GlobalOptions = {
   // effective root in `config.baseDirs.baseDirs`; the positional directory
   // only triggers directory mode and is no longer the scan target.
   // Single-file mode is unchanged. See `collectFiles` for the full rationale.
-  const files = await collectFiles(targetPath, config.baseDirs.baseDirs, excludePaths)
+  const files = await collectFiles(
+    targetPath,
+    config.baseDirs.baseDirs,
+    excludePaths,
+    options.followSymlinks ?? false
+  )
   if (files.length === 0) {
     console.error('No supported files found.')
     process.exit(1)
@@ -461,8 +543,11 @@ export async function runIngest(args: string[], globalOptions: GlobalOptions = {
   // The parser receives the full multi-root config. The directory-scan loop
   // (`collectFiles`) iterates every effective root in `config.baseDirs.baseDirs`
   // and dedupes overlap.
+  // Read boundary = scan roots ∪ trusted roots. Trusted roots authorize
+  // symlink targets that physically live outside the scanned tree; they are
+  // never scanned (see `collectFiles`, which only walks `config.baseDirs`).
   const parser = new DocumentParser({
-    baseDirs: config.baseDirs.baseDirs,
+    baseDirs: [...config.baseDirs.baseDirs, ...config.trustedDirs],
     maxFileSize: config.maxFileSize,
   })
   const chunker = new SemanticChunker(

@@ -246,6 +246,19 @@ npx mcp-local-rag list --base-dir ./docs --base-dir ./specs
 
 The positional path to `ingest` must sit inside one of the configured roots. When at least one `--base-dir` is supplied, CLI roots replace any env-var roots (no merge).
 
+**Following symlinks** — `ingest` skips symbolic links during a directory scan by default. Pass `--follow-symlinks` to walk symlinked directories and ingest symlinked files (e.g. a curated folder of links into a larger tree).
+
+A followed link's **target** is still realpath-checked at read time and rejected if it escapes every configured root. When your links point *outside* the scanned tree, authorize those real locations with `--trusted-dir` (repeatable). A trusted dir widens the read boundary only — it is **not** scanned and is **not** a valid location for the positional path:
+
+```bash
+npx mcp-local-rag ingest \
+  --base-dir /path/to/curated-links \      # scanned (and holds the positional path)
+  --trusted-dir /path/to/real-tree \       # link targets allowed here; not scanned
+  --follow-symlinks  /path/to/curated-links
+```
+
+`--trusted-dir` requires `--follow-symlinks` (it is meaningless without it) and is subject to the same sensitive-path policy and realpath normalization as `--base-dir`. Followed directories are cycle-guarded by realpath, and the depth limit still applies. These flags affect `ingest` only — `list` and the MCP `list_files` tool still skip symlinks.
+
 **Environment variables** — set in your shell:
 
 ```bash
@@ -521,7 +534,7 @@ The embedding model (~90MB) downloads on first use. Takes 1-2 minutes, then work
 
 ### Security
 
-- **Path restriction**: Only files within a configured root (`BASE_DIR` or any `BASE_DIRS` / `--base-dir` entry) are accessible. Symlinks resolving outside all configured roots, and sibling-prefix paths (e.g. `/foo/barista` for root `/foo/bar`), are rejected.
+- **Path restriction**: Only files within a configured root (`BASE_DIR` or any `BASE_DIRS` / `--base-dir` entry) are accessible. Symlinks resolving outside all configured roots, and sibling-prefix paths (e.g. `/foo/barista` for root `/foo/bar`), are rejected. The CLI `ingest --follow-symlinks` flag only changes directory *discovery* (whether links are walked); it does **not** relax this read-time check, so a followed link whose target escapes every root is still rejected. `--trusted-dir` can add roots that authorize symlink targets without making them scan targets, but those roots are held to the same sensitive-path policy as `--base-dir`.
 - **Local only**: No network requests after model download
 - **Model sources** (all official HuggingFace repositories):
   - Embedder: [`Xenova/all-MiniLM-L6-v2`](https://huggingface.co/Xenova/all-MiniLM-L6-v2)
