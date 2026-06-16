@@ -380,7 +380,8 @@ The MCP server is configured by environment variables only — pass them through
 | `DB_PATH` | `--db-path` | `./lancedb/` | Vector database location |
 | `CACHE_DIR` | `--cache-dir` | `./models/` | Model cache directory |
 | `MODEL_NAME` | `--model-name` | `Xenova/all-MiniLM-L6-v2` | HuggingFace model ID ([available models](https://huggingface.co/models?library=transformers.js&pipeline_tag=feature-extraction)) |
-| `MAX_FILE_SIZE` | `--max-file-size` | `104857600` (100MB) | Maximum file size in bytes |
+| `MAX_FILE_SIZE` | `--max-file-size` | `104857600` (100MB) | Maximum file size in bytes (1 to 524288000 / 500MB). A non-numeric or out-of-range value is rejected and the default is used (a warning is surfaced). |
+| `RAG_ALLOW_REMOTE_MODELS` | — | (unset → downloads allowed) | Set to `false` to run transformers.js offline: models are loaded only from the local cache and no HuggingFace Hub download is attempted (applies to embedding and visual-caption models). Useful for air-gapped or locked-down deployments. |
 | `CHUNK_MIN_LENGTH` | `--chunk-min-length` | `50` | Minimum chunk length in characters (1–10000) |
 | `RAG_DEVICE` | — | `cpu` | Execution device. Passed straight to ONNX Runtime. See the [Transformers.js device source code](https://github.com/huggingface/transformers.js/blob/main/packages/transformers/src/utils/devices.js) for the live list of supported backend names. If initialization fails, the server throws an error. |
 | `RAG_DTYPE` | — | `fp32` | Embedding quantization dtype. Opt-in and passed straight through; accepts any dtype the chosen model provides (`fp32`, `fp16`, `q8`, `int8`, …). If the model lacks the requested variant, the server throws an error naming the dtypes it does provide. Changing `RAG_DEVICE`/`RAG_DTYPE` changes the embedding space — re-ingest existing data. |
@@ -395,6 +396,8 @@ The MCP server is configured by environment variables only — pass them through
 ### Document Roots (`BASE_DIR` and `BASE_DIRS`)
 
 mcp-local-rag enforces a security boundary: only files under a configured root are accessible to ingest, list, delete, or read-neighbor operations.
+
+> **Scope the root narrowly.** Every supported file under a configured root is readable by the agent — and its contents become searchable and are returned in `query_documents` results. The default root is the current working directory, so launching the server from a directory that also contains secrets (`.env`, private keys, credentials, `.git`) exposes them. Point `BASE_DIR`/`BASE_DIRS` at a dedicated documents directory; do not use a repository root or home directory that holds secrets. The sensitive-path policy blocks system/credential directories (`/etc`, `~/.ssh`, …) from being used as roots, but it does not filter secret files that live *inside* an otherwise-legitimate root.
 
 **Single root** — use `BASE_DIR`:
 
