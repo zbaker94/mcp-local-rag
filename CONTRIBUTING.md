@@ -97,12 +97,19 @@ We share this upfront so you know what to expect in review, not after. You don't
 
 ```
 src/
-  index.ts        # Entry point
+  index.ts        # Executable entry point (bin) — routes subcommands / starts the server
+  cli-main.ts     # CLI subcommand dispatcher
+  server-main.ts  # MCP server bootstrap
   server/         # MCP tool handlers
+  cli/            # CLI subcommands (ingest, query, list, delete, read-neighbors, etc.)
+  ingest/         # Shared chunk+embed compute and visual-PDF ingest pipeline
   parser/         # Document parsing (PDF, DOCX, TXT, Markdown, HTML)
+  pdf-visual/     # VLM page-captioning subsystem for figure-heavy PDFs
   chunker/        # Semantic text chunking
   embedder/       # Transformers.js embeddings
   vectordb/       # LanceDB operations
+  utils/          # Shared kernel (base-dirs, errors, limits, scan, sensitive-path)
+  bin/            # Skills installer
   __tests__/      # Test suites
 ```
 

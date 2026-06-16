@@ -653,14 +653,20 @@ pnpm run check:all     # Full quality check
 
 ```
 src/
-  index.ts      # Entry point
-  server/       # MCP tool handlers
-  cli/          # CLI subcommands (ingest, query, list, delete, read-neighbors, etc.)
-  parser/       # PDF, DOCX, TXT, MD parsing
-  chunker/      # Text splitting
-  embedder/     # Transformers.js embeddings
-  vectordb/     # LanceDB operations
-  __tests__/    # Test suites
+  index.ts        # Executable entry point (bin) — routes subcommands / starts the server
+  cli-main.ts     # CLI subcommand dispatcher
+  server-main.ts  # MCP server bootstrap
+  server/         # MCP tool handlers
+  cli/            # CLI subcommands (ingest, query, list, delete, read-neighbors, etc.)
+  ingest/         # Shared chunk+embed compute and visual-PDF ingest pipeline
+  parser/         # PDF, DOCX, TXT, MD, HTML parsing
+  pdf-visual/     # VLM page-captioning subsystem for figure-heavy PDFs
+  chunker/        # Text splitting
+  embedder/       # Transformers.js embeddings
+  vectordb/       # LanceDB operations
+  utils/          # Shared kernel (base-dirs, errors, limits, scan, sensitive-path)
+  bin/            # Skills installer
+  __tests__/      # Test suites
 ```
 
 </details>
