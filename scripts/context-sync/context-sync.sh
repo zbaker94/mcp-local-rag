@@ -138,6 +138,22 @@ slug() { printf '%s' "${1//\//__}"; }
 nm() { local r="$1"; if [[ -z "$r" || "$r" == "." ]]; then printf '%s' "$CUR_LABEL"; else printf '%s__%s' "$CUR_LABEL" "$(slug "$r")"; fi; }
 log() { printf '  %s\n' "$*"; }
 
+# safe_name <filename> -> filename capped to a filesystem-safe length. Deeply
+# nested paths slug into names exceeding the 255-byte limit (ln fails, file is
+# lost). When too long, keep any extension, truncate the stem, and append a
+# checksum of the full name to preserve uniqueness + language detection.
+MAX_NAME=200
+safe_name() {
+  local n="$1"
+  [[ ${#n} -le $MAX_NAME ]] && { printf '%s' "$n"; return; }
+  local ext="" stem="$n"
+  case "$n" in *.*) ext=".${n##*.}"; stem="${n%.*}";; esac
+  local h; h=$(printf '%s' "$n" | cksum | cut -d' ' -f1)
+  local keep=$(( MAX_NAME - ${#ext} - 12 ))
+  (( keep < 1 )) && keep=1
+  printf '%s-%s%s' "${stem:0:$keep}" "$h" "$ext"
+}
+
 sanitize_label() { printf '%s' "${1//[^A-Za-z0-9._-]/-}"; }
 
 # --- clean output (once) ---------------------------------------------------
@@ -146,11 +162,11 @@ for sub in README Docs Code Manifests Structure; do rm -rf "${OUTPUT:?}/$sub"; m
 declare -A SEEN_LABELS=()
 readme_n=0 docs_n=0 code_n=0 man_n=0 struct_n=0
 
-link_doc() { local f="$1" r name; r=$(rel "$f"); name="$(nm "$r")"
+link_doc() { local f="$1" r name; r=$(rel "$f"); name="$(safe_name "$(nm "$r")")"
   # preserve original extension
   ln -sf "$f" "$OUTPUT/Docs/${name}"; docs_n=$((docs_n+1)); }
 
-link_code() { local f="$1" r name; r=$(rel "$f"); name="$(nm "$r")"
+link_code() { local f="$1" r name; r=$(rel "$f"); name="$(safe_name "$(nm "$r")")"
   # preserve original extension so local-rag detects the language
   ln -sf "$f" "$OUTPUT/Code/${name}"; code_n=$((code_n+1)); }
 
@@ -176,11 +192,11 @@ digest_pkg_json() {  # $1 = abs path to package.json
     jq -r 'if (.devDependencies|type=="object" and (.devDependencies|length>0)) then
              "## Dev dependencies\n" + ([.devDependencies|keys[]|"- " + .]|join("\n"))
            else empty end' "$f" 2>/dev/null || true
-  } > "$OUTPUT/Manifests/$(nm "$(rel "$f")").md"
+  } > "$OUTPUT/Manifests/$(safe_name "$(nm "$(rel "$f")").md")"
 }
 
 digest_pyproject() {  # $1 = abs path to pyproject.toml
-  python3 "$SCRIPT_DIR/_pyproject_digest.py" "$1" "$CUR_ROOT" > "$OUTPUT/Manifests/$(nm "$(rel "$1")").md"
+  python3 "$SCRIPT_DIR/_pyproject_digest.py" "$1" "$CUR_ROOT" > "$OUTPUT/Manifests/$(safe_name "$(nm "$(rel "$1")").md")"
 }
 
 # --- sweep each root -------------------------------------------------------
@@ -198,7 +214,7 @@ for spec in "${ROOT_SPECS[@]}"; do
   # README symlink farm: name = parent DIR path; root README -> just the label.
   while IFS= read -r f; do
     d=$(dirname "$f"); r=$(rel "$d")
-    ln -sf "$f" "$OUTPUT/README/$(nm "$r").md"; readme_n=$((readme_n+1))
+    ln -sf "$f" "$OUTPUT/README/$(safe_name "$(nm "$r").md")"; readme_n=$((readme_n+1))
   done < <(find "$CUR_ROOT" \( "${prune_expr[@]}" \) -prune -o -type f -iname 'readme*.md' -print)
 
   # Docs symlink farm: non-README .md (no restriction) + .txt (data-pruned, size-capped).
@@ -233,7 +249,7 @@ for spec in "${ROOT_SPECS[@]}"; do
       find "$proj" -maxdepth 3 \( "${prune_expr[@]}" -o -name .git \) -prune -o -print \
         | sed "s#^$proj#.#" | sort | head -400
       echo '```'
-    } > "$OUTPUT/Structure/$(nm "$r").md"
+    } > "$OUTPUT/Structure/$(safe_name "$(nm "$r").md")"
     struct_n=$((struct_n+1))
   done < <(find "$CUR_ROOT" \( "${prune_expr[@]}" \) -prune -o \
              -type f \( -name 'package.json' -o -name 'pyproject.toml' \) -print \
