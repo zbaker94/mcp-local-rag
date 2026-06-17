@@ -44,6 +44,13 @@
 #                          (env: CONTEXT_SYNC_MAX_CODE_BYTES)
 #       --code-exts "a b"  Space-separated code extensions to link (no dots).
 #                          (env: CONTEXT_SYNC_CODE_EXTS)
+#       --groups "a b c"   Artifact groups to (re)generate: "all" or a subset of
+#                          {readme docs code manifests structure}. Default: all.
+#                          Only the selected groups' output dirs are cleaned, so
+#                          a subset run leaves the others' artifacts in place.
+#                          (env: CONTEXT_SYNC_GROUPS)
+#       --only NAME        Select a single group (repeatable). Sugar for --groups.
+#                          e.g. --only code   or   --only docs --only manifests
 #   -h, --help             Show this help.
 #
 # A root may be given as "LABEL=/abs/path" to set its artifact-name prefix
@@ -77,6 +84,13 @@ CODE_EXTS_STR="${CONTEXT_SYNC_CODE_EXTS:-$DEFAULT_CODE_EXTS}"
 # Filename patterns that mark a code file as generated/minified noise.
 CODE_NAME_SKIP=(-iname '*.min.js' -o -iname '*.bundle.js' -o -iname '*.d.ts')
 
+# Which artifact groups to (re)generate. "all" or a space-separated subset of:
+# readme docs code manifests structure. Only the SELECTED groups' output dirs
+# are cleaned/rebuilt, so `--only code` adds/refreshes Code/ while leaving any
+# existing Docs/, README/, etc. untouched. --only NAME (repeatable) is sugar.
+GROUPS_STR="${CONTEXT_SYNC_GROUPS:-all}"
+ONLY_GROUPS=()
+
 DEFAULT_PRUNE="node_modules .git dist build out .next coverage .venv venv \
 __pycache__ vendor target .gradle .idea .terraform .pytest_cache extjs"
 PRUNE_DIRS_STR="${CONTEXT_SYNC_PRUNE_DIRS:-$DEFAULT_PRUNE}"
@@ -102,6 +116,8 @@ while [[ $# -gt 0 ]]; do
     --max-txt-bytes)  MAX_TXT_BYTES="$2"; shift 2;;
     --max-code-bytes) MAX_CODE_BYTES="$2"; shift 2;;
     --code-exts)      CODE_EXTS_STR="$2"; shift 2;;
+    --groups)         GROUPS_STR="$2"; shift 2;;
+    --only)           ONLY_GROUPS+=("$2"); shift 2;;
     -h|--help)        usage; exit 0;;
     --)               shift; while [[ $# -gt 0 ]]; do ROOT_SPECS+=("$1"); shift; done;;
     -*)               echo "error: unknown flag: $1" >&2; usage >&2; exit 2;;
@@ -111,12 +127,30 @@ done
 
 [[ ${#ROOT_SPECS[@]} -ge 1 ]] || { echo "error: need at least one source root" >&2; usage >&2; exit 2; }
 
+# --- group selection -------------------------------------------------------
+ALL_GROUPS=(readme docs code manifests structure)
+declare -A WANT=()
+if [[ ${#ONLY_GROUPS[@]} -gt 0 ]]; then sel=("${ONLY_GROUPS[@]}")
+elif [[ "$GROUPS_STR" == "all" ]]; then sel=("${ALL_GROUPS[@]}")
+else read -ra sel <<< "$GROUPS_STR"; fi
+for g in "${sel[@]}"; do
+  case "$g" in
+    readme|docs|code|manifests|structure) WANT[$g]=1;;
+    all) for a in "${ALL_GROUPS[@]}"; do WANT[$a]=1; done;;
+    *) echo "error: unknown group: '$g' (valid: ${ALL_GROUPS[*]} all)" >&2; exit 2;;
+  esac
+done
+[[ ${#WANT[@]} -ge 1 ]] || { echo "error: no artifact groups selected" >&2; exit 2; }
+want() { [[ -n "${WANT[$1]:-}" ]]; }
+
 # --- preflight -------------------------------------------------------------
 command -v find >/dev/null || { echo "error: 'find' not found" >&2; exit 1; }
-HAVE_JQ=1; command -v jq >/dev/null || { HAVE_JQ=0; echo "warn: 'jq' not found — package.json digests skipped" >&2; }
-HAVE_PY=1
-if command -v python3 >/dev/null && python3 -c 'import tomllib' 2>/dev/null; then :; else
-  HAVE_PY=0; echo "warn: python3 3.11+ with tomllib not found — pyproject.toml digests skipped" >&2
+HAVE_JQ=1; HAVE_PY=1
+if want manifests; then
+  command -v jq >/dev/null || { HAVE_JQ=0; echo "warn: 'jq' not found — package.json digests skipped" >&2; }
+  if command -v python3 >/dev/null && python3 -c 'import tomllib' 2>/dev/null; then :; else
+    HAVE_PY=0; echo "warn: python3 3.11+ with tomllib not found — pyproject.toml digests skipped" >&2
+  fi
 fi
 
 # --- prune expressions -----------------------------------------------------
@@ -164,8 +198,14 @@ safe_name() {
 
 sanitize_label() { printf '%s' "${1//[^A-Za-z0-9._-]/-}"; }
 
-# --- clean output (once) ---------------------------------------------------
-for sub in README Docs Code Manifests Structure; do rm -rf "${OUTPUT:?}/$sub"; mkdir -p "$OUTPUT/$sub"; done
+# --- clean output (once) — only the SELECTED groups' dirs ------------------
+mkdir -p "$OUTPUT"
+clean_group() { rm -rf "${OUTPUT:?}/$1"; mkdir -p "$OUTPUT/$1"; }
+want readme    && clean_group README
+want docs      && clean_group Docs
+want code      && clean_group Code
+want manifests && clean_group Manifests
+want structure && clean_group Structure
 
 declare -A SEEN_LABELS=()
 readme_n=0 docs_n=0 code_n=0 man_n=0 struct_n=0
@@ -220,62 +260,75 @@ for spec in "${ROOT_SPECS[@]}"; do
   echo "==> sweeping [$CUR_LABEL] $CUR_ROOT"
 
   # README symlink farm: name = parent DIR path; root README -> just the label.
-  while IFS= read -r f; do
-    d=$(dirname "$f"); r=$(rel "$d")
-    ln -sf "$f" "$OUTPUT/README/$(safe_name "$(nm "$r").md")"; readme_n=$((readme_n+1))
-  done < <(find "$CUR_ROOT" \( "${prune_expr[@]}" \) -prune -o -type f -iname 'readme*.md' -print)
+  if want readme; then
+    while IFS= read -r f; do
+      d=$(dirname "$f"); r=$(rel "$d")
+      ln -sf "$f" "$OUTPUT/README/$(safe_name "$(nm "$r").md")"; readme_n=$((readme_n+1))
+    done < <(find "$CUR_ROOT" \( "${prune_expr[@]}" \) -prune -o -type f -iname 'readme*.md' -print)
+  fi
 
   # Docs symlink farm: non-README .md (no restriction) + .txt (data-pruned, size-capped).
-  while IFS= read -r f; do link_doc "$f"; done < <(find "$CUR_ROOT" \( "${prune_expr[@]}" \) -prune -o \
-             -type f -name '*.md' ! -iname 'readme*.md' -print)
-  while IFS= read -r f; do link_doc "$f"; done < <(find "$CUR_ROOT" \( "${txt_prune_expr[@]}" \) -prune -o \
-             -type f -name '*.txt' -size "-${MAX_TXT_BYTES}c" ! \( "${TXT_NAME_SKIP[@]}" \) -print)
+  if want docs; then
+    while IFS= read -r f; do link_doc "$f"; done < <(find "$CUR_ROOT" \( "${prune_expr[@]}" \) -prune -o \
+               -type f -name '*.md' ! -iname 'readme*.md' -print)
+    while IFS= read -r f; do link_doc "$f"; done < <(find "$CUR_ROOT" \( "${txt_prune_expr[@]}" \) -prune -o \
+               -type f -name '*.txt' -size "-${MAX_TXT_BYTES}c" ! \( "${TXT_NAME_SKIP[@]}" \) -print)
+  fi
 
   # Code symlink farm: supported source files (noise dirs pruned, size-capped,
   # minified/declaration files skipped). Chunked at AST boundaries by local-rag.
-  while IFS= read -r f; do link_code "$f"; done < <(find "$CUR_ROOT" \( "${prune_expr[@]}" \) -prune -o \
-             -type f \( "${code_name_expr[@]}" \) -size "-${MAX_CODE_BYTES}c" \
-             ! \( "${CODE_NAME_SKIP[@]}" \) -print)
+  if want code; then
+    while IFS= read -r f; do link_code "$f"; done < <(find "$CUR_ROOT" \( "${prune_expr[@]}" \) -prune -o \
+               -type f \( "${code_name_expr[@]}" \) -size "-${MAX_CODE_BYTES}c" \
+               ! \( "${CODE_NAME_SKIP[@]}" \) -print)
+  fi
 
   # Manifest digests.
-  if [[ $HAVE_JQ -eq 1 ]]; then
-    while IFS= read -r f; do digest_pkg_json "$f"; man_n=$((man_n+1)); done \
-      < <(find "$CUR_ROOT" \( "${prune_expr[@]}" \) -prune -o -type f -name 'package.json' -print)
-  fi
-  if [[ $HAVE_PY -eq 1 ]]; then
-    while IFS= read -r f; do digest_pyproject "$f"; man_n=$((man_n+1)); done \
-      < <(find "$CUR_ROOT" \( "${prune_expr[@]}" \) -prune -o -type f -name 'pyproject.toml' -print)
+  if want manifests; then
+    if [[ $HAVE_JQ -eq 1 ]]; then
+      while IFS= read -r f; do digest_pkg_json "$f"; man_n=$((man_n+1)); done \
+        < <(find "$CUR_ROOT" \( "${prune_expr[@]}" \) -prune -o -type f -name 'package.json' -print)
+    fi
+    if [[ $HAVE_PY -eq 1 ]]; then
+      while IFS= read -r f; do digest_pyproject "$f"; man_n=$((man_n+1)); done \
+        < <(find "$CUR_ROOT" \( "${prune_expr[@]}" \) -prune -o -type f -name 'pyproject.toml' -print)
+    fi
   fi
 
   # Structure maps: one per code project (dir holding package.json or pyproject.toml).
-  while IFS= read -r proj; do
-    r=$(rel "$proj"); disp="$r"; [[ -z "$disp" ]] && disp="(root)"
-    {
-      echo "# Project structure: $CUR_LABEL/$disp"; echo
-      echo "Directory tree (depth 3, noise dirs pruned) of \`$disp\`."; echo
-      echo '```'
-      # `|| true`: head closes the pipe after 400 lines, SIGPIPE-ing find/sort;
-      # under `set -o pipefail` that 141 would otherwise abort the whole script.
-      find "$proj" -maxdepth 3 \( "${prune_expr[@]}" -o -name .git \) -prune -o -print \
-        | sed "s#^$proj#.#" | sort | head -400 || true
-      echo '```'
-    } > "$OUTPUT/Structure/$(safe_name "$(nm "$r").md")"
-    struct_n=$((struct_n+1))
-  done < <(find "$CUR_ROOT" \( "${prune_expr[@]}" \) -prune -o \
-             -type f \( -name 'package.json' -o -name 'pyproject.toml' \) -print \
-             | while IFS= read -r m; do dirname "$m"; done | sort -u)
+  if want structure; then
+    while IFS= read -r proj; do
+      r=$(rel "$proj"); disp="$r"; [[ -z "$disp" ]] && disp="(root)"
+      {
+        echo "# Project structure: $CUR_LABEL/$disp"; echo
+        echo "Directory tree (depth 3, noise dirs pruned) of \`$disp\`."; echo
+        echo '```'
+        # `|| true`: head closes the pipe after 400 lines, SIGPIPE-ing find/sort;
+        # under `set -o pipefail` that 141 would otherwise abort the whole script.
+        find "$proj" -maxdepth 3 \( "${prune_expr[@]}" -o -name .git \) -prune -o -print \
+          | sed "s#^$proj#.#" | sort | head -400 || true
+        echo '```'
+      } > "$OUTPUT/Structure/$(safe_name "$(nm "$r").md")"
+      struct_n=$((struct_n+1))
+    done < <(find "$CUR_ROOT" \( "${prune_expr[@]}" \) -prune -o \
+               -type f \( -name 'package.json' -o -name 'pyproject.toml' \) -print \
+               | while IFS= read -r m; do dirname "$m"; done | sort -u)
+  fi
 done
 
 log "$readme_n READMEs, $docs_n docs, $code_n code, $man_n manifests, $struct_n structure maps"
 
 # --- summary + ingest hint -------------------------------------------------
 echo
-echo "Done. Artifact counts under $OUTPUT:"
-printf '  README/    %s\n' "$(find "$OUTPUT/README" -type l | wc -l | tr -d ' ')"
-printf '  Docs/      %s\n' "$(find "$OUTPUT/Docs" -type l | wc -l | tr -d ' ')"
-printf '  Code/      %s\n' "$(find "$OUTPUT/Code" -type l | wc -l | tr -d ' ')"
-printf '  Manifests/ %s\n' "$(find "$OUTPUT/Manifests" -type f | wc -l | tr -d ' ')"
-printf '  Structure/ %s\n' "$(find "$OUTPUT/Structure" -type f | wc -l | tr -d ' ')"
+echo "Done. Artifact counts under $OUTPUT (* = regenerated this run):"
+count_dir() { # $1=dir $2=find-type ; prints count or "-" if dir absent
+  [[ -d "$OUTPUT/$1" ]] && find "$OUTPUT/$1" -type "$2" | wc -l | tr -d ' ' || printf -- '-'; }
+mark() { want "$1" && printf '*' || printf ' '; }
+printf '  README/    %s %s\n' "$(count_dir README l)" "$(mark readme)"
+printf '  Docs/      %s %s\n' "$(count_dir Docs l)" "$(mark docs)"
+printf '  Code/      %s %s\n' "$(count_dir Code l)" "$(mark code)"
+printf '  Manifests/ %s %s\n' "$(count_dir Manifests f)" "$(mark manifests)"
+printf '  Structure/ %s %s\n' "$(count_dir Structure f)" "$(mark structure)"
 
 # Locate the local-rag CLI relative to this script (scripts/context-sync -> repo root).
 DIST="$(cd "$SCRIPT_DIR/../.." 2>/dev/null && pwd)/dist/index.js"
