@@ -682,6 +682,10 @@ src/
   __tests__/      # Test suites
 ```
 
+### Syncing source trees into the index
+
+`scripts/context-sync/context-sync.sh` sweeps one or more source roots (repos, wikis, doc trees) and emits ingestible markdown/text artifacts — READMEs, docs, manifest digests, and file-tree maps — then prints the exact `ingest` command to run. Useful for indexing whole codebases, not just individual files. See [`scripts/context-sync/README.md`](scripts/context-sync/README.md) for usage, options, and requirements.
+
 </details>
 
 ## Contributing
