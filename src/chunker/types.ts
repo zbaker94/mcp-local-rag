@@ -15,3 +15,23 @@ export interface TextChunk {
   /** Chunk index (zero-based) */
   index: number
 }
+
+/**
+ * Minimal embedder contract a chunker may need. The semantic chunker uses
+ * `embedBatch` to measure sentence similarity; the code chunker ignores it
+ * (AST boundaries are deterministic) but keeps the parameter for interface
+ * parity. Defined here (the dependency-free leaf) so both `Chunker` and the
+ * concrete chunkers can reference it without a barrel import cycle.
+ */
+export interface EmbedderInterface {
+  embedBatch(texts: string[]): Promise<number[][]>
+}
+
+/**
+ * A chunker turns already-extracted document text into ordered {@link TextChunk}s.
+ * Implementations: SemanticChunker (sentence similarity) and CodeChunker (AST
+ * boundaries). The ingest path selects one per file via `selectChunker`.
+ */
+export interface Chunker {
+  chunkText(text: string, embedder: EmbedderInterface): Promise<TextChunk[]>
+}

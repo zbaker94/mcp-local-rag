@@ -3,7 +3,13 @@
 
 import { cosineSimilarity } from '../utils/vector-math.js'
 import { splitIntoSentences } from './sentence-splitter.js'
-import type { TextChunk } from './types.js'
+import type { Chunker, EmbedderInterface, TextChunk } from './types.js'
+
+// `EmbedderInterface` now lives in the dependency-free `./types.js` leaf so the
+// `Chunker` contract and `CodeChunker` can share it without a barrel cycle.
+// Re-exported here so the many `../chunker/semantic-chunker.js` import sites
+// keep working unchanged.
+export type { EmbedderInterface }
 
 // ============================================
 // Type Definitions
@@ -22,13 +28,6 @@ export interface SemanticChunkerConfig {
   c: number
   /** Minimum chunk length in characters (default: 50) */
   minChunkLength: number
-}
-
-/**
- * Embedder interface for generating embeddings
- */
-export interface EmbedderInterface {
-  embedBatch(texts: string[]): Promise<number[][]>
 }
 
 // ============================================
@@ -114,7 +113,7 @@ const DEFAULT_SEMANTIC_CHUNKER_CONFIG: SemanticChunkerConfig = {
  * Key insight: A sentence belongs to a chunk if its maximum similarity to any chunk member
  * is greater than the minimum similarity between existing chunk members (with threshold adjustment)
  */
-export class SemanticChunker {
+export class SemanticChunker implements Chunker {
   private readonly config: SemanticChunkerConfig
 
   constructor(config: Partial<SemanticChunkerConfig> = {}) {

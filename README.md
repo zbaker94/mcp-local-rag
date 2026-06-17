@@ -337,7 +337,7 @@ Keyword boost is applied *after* semantic filtering, so it improves precision wi
 
 ### Details
 
-When you ingest a document, the parser extracts text based on file type (PDF via `mupdf`, DOCX via `mammoth`, text files directly).
+When you ingest a document, the parser extracts text based on file type (PDF via `mupdf`, DOCX via `mammoth`, text and source-code files directly). Source code (TS/JS/Python/Java) is then chunked at AST boundaries via tree-sitter; other text is chunked semantically.
 
 The semantic chunker splits text into sentences, then groups them using embedding similarity. It finds natural topic boundaries where the meaning shifts—keeping related content together instead of cutting at arbitrary character limits. This produces chunks that are coherent units of meaning, typically 500-1000 characters. Markdown code blocks are kept intact—never split mid-block—preserving copy-pastable code in search results.
 
@@ -625,7 +625,7 @@ Yes, after the required models are cached locally. Text ingest/search needs the 
 Cloud services offer better accuracy at scale but require sending data externally. This trades some accuracy for complete privacy and zero runtime cost.
 
 **What file formats are supported?**
-PDF, DOCX, TXT, Markdown, and HTML (via `ingest_data`). Not yet: Excel, PowerPoint, images.
+PDF, DOCX, TXT, Markdown, HTML (via `ingest_data`), and source code: TypeScript/TSX, JavaScript/JSX, Python, and Java (`.ts .tsx .mts .cts .js .jsx .mjs .cjs .py .java`). Code files are chunked at AST boundaries (functions, classes, methods, imports) via tree-sitter rather than by prose-style windows; large classes are split into per-method chunks. Not yet: Excel, PowerPoint, images.
 
 **Can I change the embedding model?**
 Yes, but you must delete your database and re-ingest all documents. Different models produce incompatible vector dimensions.

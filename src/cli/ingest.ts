@@ -1,8 +1,9 @@
 // CLI ingest subcommand — bulk file ingestion with single optimize() at end
 
 import { stat } from 'node:fs/promises'
-import { resolve, sep } from 'node:path'
+import { extname, resolve, sep } from 'node:path'
 
+import { CodeChunker, codeLanguageForExtension } from '../chunker/code-chunker.js'
 import { SemanticChunker } from '../chunker/index.js'
 import type { Embedder } from '../embedder/index.js'
 import { buildChunksAndEmbeddings, buildVectorChunks } from '../ingest/compute.js'
@@ -373,12 +374,13 @@ export async function resolveConfig(
  * accidental misuse at compile time, which was the original goal.
  */
 export type IngestSingleFileOptions =
-  | { visual?: false | undefined }
+  | { visual?: false | undefined; minChunkLength?: number | undefined }
   | {
       visual: true
       profile: QualityProfile
       cacheDir: string
       device?: string | undefined
+      minChunkLength?: number | undefined
     }
 
 /**
@@ -452,8 +454,18 @@ export async function ingestSingleFile(
     title = result.title || null
   }
 
-  // Chunk text + generate embeddings via the shared computation layer.
-  const { chunks, embeddings } = await buildChunksAndEmbeddings(text, title, chunker, embedder)
+  // Chunk text + generate embeddings via the shared computation layer. Code
+  // files (ts/js/py/java/...) get the AST-based chunker; prose/PDFs keep the
+  // passed semantic chunker.
+  const codeLanguage = isPdf ? null : codeLanguageForExtension(extname(filePath).toLowerCase())
+  const fileChunker = codeLanguage
+    ? new CodeChunker(
+        options?.minChunkLength !== undefined
+          ? { language: codeLanguage, minChunkLength: options.minChunkLength }
+          : { language: codeLanguage }
+      )
+    : chunker
+  const { chunks, embeddings } = await buildChunksAndEmbeddings(text, title, fileChunker, embedder)
   if (chunks.length === 0) {
     console.error(`  Warning: 0 chunks generated (file may be empty or too short)`)
     return 0
@@ -586,8 +598,16 @@ export async function runIngest(args: string[], globalOptions: GlobalOptions = {
               profile: options.visualQuality ?? 'fast',
               cacheDir: globalConfig.cacheDir,
               device: resolveDevice(process.env['RAG_DEVICE']),
+              ...(config.chunkMinLength !== undefined
+                ? { minChunkLength: config.chunkMinLength }
+                : {}),
             }
-          : { visual: false }
+          : {
+              visual: false,
+              ...(config.chunkMinLength !== undefined
+                ? { minChunkLength: config.chunkMinLength }
+                : {}),
+            }
         const chunkCount = await ingestSingleFile(
           filePath,
           parser,

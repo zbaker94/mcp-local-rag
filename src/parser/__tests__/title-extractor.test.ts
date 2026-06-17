@@ -3,6 +3,7 @@
 
 import { describe, expect, it } from 'vitest'
 import {
+  extractCodeTitle,
   extractDocxTitle,
   extractHtmlTitle,
   extractMarkdownTitle,
@@ -16,6 +17,31 @@ import {
 // ============================================
 
 describe('Title Extractor', () => {
+  // --------------------------------------------
+  // extractCodeTitle
+  // --------------------------------------------
+  describe('extractCodeTitle', () => {
+    it('uses the first exported function name', () => {
+      const r = extractCodeTitle('import x from "y"\nexport function doThing() {}\n', 'mod.ts')
+      expect(r).toEqual({ title: 'doThing', source: 'content' })
+    })
+
+    it('uses a class name', () => {
+      expect(extractCodeTitle('class Widget {}\n', 'w.ts').title).toBe('Widget')
+    })
+
+    it('uses a Python def name', () => {
+      expect(extractCodeTitle('import os\ndef main():\n    pass\n', 'app.py').title).toBe('main')
+    })
+
+    it('falls back to the file name when no definition is found', () => {
+      expect(extractCodeTitle('const a = 1\n', 'my-script.ts')).toEqual({
+        title: 'my script',
+        source: 'filename',
+      })
+    })
+  })
+
   // --------------------------------------------
   // fileNameToTitle helper
   // --------------------------------------------

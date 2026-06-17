@@ -366,6 +366,26 @@ describe('DocumentParser', () => {
       expect(result.title).toBe('Markdown Test')
     })
 
+    it('should parse a TS code file as raw content with a symbol title', async () => {
+      const filePath = join(testDir, 'mod.ts')
+      const content = 'import x from "y"\nexport function doThing() {\n  return 1\n}\n'
+      await writeFile(filePath, content, 'utf-8')
+
+      const result = await parser.parseFile(filePath)
+      expect(result.content).toBe(content)
+      expect(result.title).toBe('doThing')
+    })
+
+    it('should parse a Python code file', async () => {
+      const filePath = join(testDir, 'app.py')
+      const content = 'import os\n\ndef main():\n    return 1\n'
+      await writeFile(filePath, content, 'utf-8')
+
+      const result = await parser.parseFile(filePath)
+      expect(result.content).toBe(content)
+      expect(result.title).toBe('main')
+    })
+
     it('should throw ValidationError for unsupported file format', async () => {
       const filePath = join(testDir, 'test.xyz')
       await writeFile(filePath, 'fake xyz content')

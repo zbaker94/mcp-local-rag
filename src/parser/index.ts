@@ -12,6 +12,7 @@ import { FileOperationError, ValidationError } from './errors.js'
 import { extractPdfPages } from './pdf-extract.js'
 import type { EmbedderInterface } from './pdf-filter.js'
 import {
+  extractCodeTitle,
   extractDocxTitle,
   extractMarkdownTitle,
   extractPdfTitle,
@@ -253,6 +254,17 @@ export class DocumentParser {
         return await this.parseTxt(filePath, readPath)
       case '.md':
         return await this.parseMd(filePath, readPath)
+      case '.ts':
+      case '.tsx':
+      case '.mts':
+      case '.cts':
+      case '.js':
+      case '.jsx':
+      case '.mjs':
+      case '.cjs':
+      case '.py':
+      case '.java':
+        return await this.parseCode(filePath, readPath)
       default:
         throw new ValidationError(`Unsupported file format: ${ext}`)
     }
@@ -518,6 +530,27 @@ export class DocumentParser {
       return { content: text, title: titleResult.title }
     } catch (error) {
       throw new FileOperationError(`Failed to parse MD: ${filePath}`, error as Error)
+    }
+  }
+
+  /**
+   * Source-code parsing (raw read). The content is chunked at AST boundaries
+   * downstream by the CodeChunker (see `selectChunker`); the parser only reads
+   * the text and derives a display title.
+   *
+   * @param filePath - Code file path (ts/tsx/js/jsx/mjs/cjs/py)
+   * @returns ParseResult with raw content and extracted title
+   * @throws FileOperationError - File read failed
+   */
+  private async parseCode(filePath: string, readPath: string = filePath): Promise<ParseResult> {
+    try {
+      const text = await readFile(readPath, 'utf-8')
+      const fileName = basename(filePath)
+      const titleResult = extractCodeTitle(text, fileName)
+      console.error(`Parsed code: ${filePath} (${text.length} characters)`)
+      return { content: text, title: titleResult.title }
+    } catch (error) {
+      throw new FileOperationError(`Failed to parse code file: ${filePath}`, error as Error)
     }
   }
 }

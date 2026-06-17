@@ -112,6 +112,26 @@ export function extractTxtTitle(text: string, fileName: string): TitleExtraction
 }
 
 /**
+ * Extract title from source code.
+ * Priority: first top-level definition name (function/class/interface/type/
+ * enum/def) -> file name. Display-only, so a light line-anchored regex is
+ * sufficient (no full parse needed just for the title).
+ *
+ * @param text - Source code
+ * @param fileName - File name for fallback
+ * @returns Title extraction result
+ */
+export function extractCodeTitle(text: string, fileName: string): TitleExtractionResult {
+  const symbol = text.match(
+    /^[ \t]*(?:export[ \t]+(?:default[ \t]+)?)?(?:async[ \t]+)?(?:function\*?|class|interface|type|enum|def)[ \t]+([A-Za-z_$][\w$]*)/m
+  )
+  if (symbol?.[1]) {
+    return { title: symbol[1], source: 'content' }
+  }
+  return { title: fileNameToTitle(fileName), source: 'filename' }
+}
+
+/**
  * Extract title from HTML content (using Readability title)
  * Priority: readability title -> file name
  *

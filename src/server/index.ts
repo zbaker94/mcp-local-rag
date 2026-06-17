@@ -2,7 +2,7 @@
 
 import { readFile, unlink } from 'node:fs/promises'
 import { createRequire } from 'node:module'
-import { resolve, sep } from 'node:path'
+import { extname, resolve, sep } from 'node:path'
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import {
@@ -11,6 +11,7 @@ import {
   ListToolsRequestSchema,
   McpError,
 } from '@modelcontextprotocol/sdk/types.js'
+import { CodeChunker, codeLanguageForExtension } from '../chunker/code-chunker.js'
 import { DEFAULT_MIN_CHUNK_LENGTH, SemanticChunker } from '../chunker/index.js'
 import { Embedder } from '../embedder/index.js'
 import { buildChunksAndEmbeddings, buildVectorChunks } from '../ingest/compute.js'
@@ -494,10 +495,16 @@ export class RAGServer {
       const result = await this.parser.parseFile(args.filePath)
       text = result.content
       title = result.title || null
+      // Code files (ts/js/py/java/...) get the AST-based chunker; prose keeps the
+      // shared semantic chunker (`this.chunker`).
+      const codeLanguage = codeLanguageForExtension(extname(args.filePath).toLowerCase())
+      const chunker = codeLanguage
+        ? new CodeChunker({ language: codeLanguage, minChunkLength: this.minChunkLength })
+        : this.chunker
       ;({ chunks, embeddings } = await buildChunksAndEmbeddings(
         text,
         title,
-        this.chunker,
+        chunker,
         this.embedder
       ))
     }
