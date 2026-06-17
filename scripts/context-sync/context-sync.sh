@@ -6,15 +6,17 @@
 # an OUTPUT directory with markdown/text artifacts so the local-rag index covers
 # more than just top-level READMEs.
 #
-# Produces four artifact groups under OUTPUT/:
+# Produces five artifact groups under OUTPUT/:
 #   README/     symlinks -> every README*.md   (named by parent-dir path)
 #   Docs/       symlinks -> every other .md/.txt (named by full file path)
+#   Code/       symlinks -> every supported source file (named by full file path)
 #   Manifests/  generated digests of package.json / pyproject.toml (real files)
 #   Structure/  generated file-tree maps per code project (real files)
 #
-# Every artifact is .md/.txt because local-rag ingest only accepts .pdf/.docx/
-# .txt/.md. This script does NOT ingest — it prints the ingest command to run
-# afterwards.
+# local-rag ingest accepts .pdf/.docx/.txt/.md plus source code
+# (.ts/.tsx/.mts/.cts/.js/.jsx/.mjs/.cjs/.py/.java), which is chunked at AST
+# boundaries. Docs/ keeps prose; Code/ links source files directly. This script
+# does NOT ingest — it prints the ingest command to run afterwards.
 #
 # Idempotent: all four output dirs are rebuilt from scratch on every run, so
 # stale or broken links are pruned automatically.
@@ -38,6 +40,10 @@
 #                          (env: CONTEXT_SYNC_TXT_PRUNE_DIRS)
 #       --max-txt-bytes N  Max .txt size to include. Default: 65536
 #                          (env: CONTEXT_SYNC_MAX_TXT_BYTES)
+#       --max-code-bytes N Max source file size to include. Default: 262144
+#                          (env: CONTEXT_SYNC_MAX_CODE_BYTES)
+#       --code-exts "a b"  Space-separated code extensions to link (no dots).
+#                          (env: CONTEXT_SYNC_CODE_EXTS)
 #   -h, --help             Show this help.
 #
 # A root may be given as "LABEL=/abs/path" to set its artifact-name prefix
@@ -53,6 +59,15 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # --- defaults (env-overridable) --------------------------------------------
 OUTPUT="${CONTEXT_SYNC_OUTPUT:-$PWD/context}"
 MAX_TXT_BYTES="${CONTEXT_SYNC_MAX_TXT_BYTES:-65536}"
+MAX_CODE_BYTES="${CONTEXT_SYNC_MAX_CODE_BYTES:-262144}"
+
+# Source extensions local-rag chunks at AST boundaries (must match its
+# SUPPORTED_EXTENSIONS). Override via CONTEXT_SYNC_CODE_EXTS.
+DEFAULT_CODE_EXTS="ts tsx mts cts js jsx mjs cjs py java"
+CODE_EXTS_STR="${CONTEXT_SYNC_CODE_EXTS:-$DEFAULT_CODE_EXTS}"
+
+# Filename patterns that mark a code file as generated/minified noise.
+CODE_NAME_SKIP=(-iname '*.min.js' -o -iname '*.bundle.js' -o -iname '*.d.ts')
 
 DEFAULT_PRUNE="node_modules .git dist build out .next coverage .venv venv \
 __pycache__ vendor target .gradle .idea .terraform .pytest_cache extjs"
@@ -77,6 +92,8 @@ while [[ $# -gt 0 ]]; do
     --prune)          PRUNE_DIRS_STR="$2"; shift 2;;
     --txt-prune)      TXT_PRUNE_STR="$2"; shift 2;;
     --max-txt-bytes)  MAX_TXT_BYTES="$2"; shift 2;;
+    --max-code-bytes) MAX_CODE_BYTES="$2"; shift 2;;
+    --code-exts)      CODE_EXTS_STR="$2"; shift 2;;
     -h|--help)        usage; exit 0;;
     --)               shift; while [[ $# -gt 0 ]]; do ROOT_SPECS+=("$1"); shift; done;;
     -*)               echo "error: unknown flag: $1" >&2; usage >&2; exit 2;;
@@ -105,6 +122,12 @@ unset 'prune_expr[${#prune_expr[@]}-1]'   # drop trailing -o
 txt_prune_expr=("${prune_expr[@]}")
 for d in "${TXT_PRUNE_DIRS[@]}"; do txt_prune_expr+=(-o -path "*/$d/*"); done
 
+# --- code extension match expr ---------------------------------------------
+read -ra CODE_EXTS <<< "$CODE_EXTS_STR"
+code_name_expr=()
+for e in "${CODE_EXTS[@]}"; do code_name_expr+=(-name "*.$e" -o); done
+unset 'code_name_expr[${#code_name_expr[@]}-1]'   # drop trailing -o
+
 # --- per-root helpers ------------------------------------------------------
 CUR_ROOT=""; CUR_LABEL=""
 # rel <abspath> -> path relative to CUR_ROOT (empty string if abspath == root)
@@ -118,14 +141,18 @@ log() { printf '  %s\n' "$*"; }
 sanitize_label() { printf '%s' "${1//[^A-Za-z0-9._-]/-}"; }
 
 # --- clean output (once) ---------------------------------------------------
-for sub in README Docs Manifests Structure; do rm -rf "${OUTPUT:?}/$sub"; mkdir -p "$OUTPUT/$sub"; done
+for sub in README Docs Code Manifests Structure; do rm -rf "${OUTPUT:?}/$sub"; mkdir -p "$OUTPUT/$sub"; done
 
 declare -A SEEN_LABELS=()
-readme_n=0 docs_n=0 man_n=0 struct_n=0
+readme_n=0 docs_n=0 code_n=0 man_n=0 struct_n=0
 
 link_doc() { local f="$1" r name; r=$(rel "$f"); name="$(nm "$r")"
   # preserve original extension
   ln -sf "$f" "$OUTPUT/Docs/${name}"; docs_n=$((docs_n+1)); }
+
+link_code() { local f="$1" r name; r=$(rel "$f"); name="$(nm "$r")"
+  # preserve original extension so local-rag detects the language
+  ln -sf "$f" "$OUTPUT/Code/${name}"; code_n=$((code_n+1)); }
 
 digest_pkg_json() {  # $1 = abs path to package.json
   local f="$1" r name; r=$(rel "$(dirname "$f")"); [[ -z "$r" ]] && r="(root)"
@@ -180,6 +207,12 @@ for spec in "${ROOT_SPECS[@]}"; do
   while IFS= read -r f; do link_doc "$f"; done < <(find "$CUR_ROOT" \( "${txt_prune_expr[@]}" \) -prune -o \
              -type f -name '*.txt' -size "-${MAX_TXT_BYTES}c" ! \( "${TXT_NAME_SKIP[@]}" \) -print)
 
+  # Code symlink farm: supported source files (noise dirs pruned, size-capped,
+  # minified/declaration files skipped). Chunked at AST boundaries by local-rag.
+  while IFS= read -r f; do link_code "$f"; done < <(find "$CUR_ROOT" \( "${prune_expr[@]}" \) -prune -o \
+             -type f \( "${code_name_expr[@]}" \) -size "-${MAX_CODE_BYTES}c" \
+             ! \( "${CODE_NAME_SKIP[@]}" \) -print)
+
   # Manifest digests.
   if [[ $HAVE_JQ -eq 1 ]]; then
     while IFS= read -r f; do digest_pkg_json "$f"; man_n=$((man_n+1)); done \
@@ -207,13 +240,14 @@ for spec in "${ROOT_SPECS[@]}"; do
              | while IFS= read -r m; do dirname "$m"; done | sort -u)
 done
 
-log "$readme_n READMEs, $docs_n docs, $man_n manifests, $struct_n structure maps"
+log "$readme_n READMEs, $docs_n docs, $code_n code, $man_n manifests, $struct_n structure maps"
 
 # --- summary + ingest hint -------------------------------------------------
 echo
 echo "Done. Artifact counts under $OUTPUT:"
 printf '  README/    %s\n' "$(find "$OUTPUT/README" -type l | wc -l | tr -d ' ')"
 printf '  Docs/      %s\n' "$(find "$OUTPUT/Docs" -type l | wc -l | tr -d ' ')"
+printf '  Code/      %s\n' "$(find "$OUTPUT/Code" -type l | wc -l | tr -d ' ')"
 printf '  Manifests/ %s\n' "$(find "$OUTPUT/Manifests" -type f | wc -l | tr -d ' ')"
 printf '  Structure/ %s\n' "$(find "$OUTPUT/Structure" -type f | wc -l | tr -d ' ')"
 
