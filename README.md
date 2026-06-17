@@ -299,10 +299,17 @@ Adjust these for your use case:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `RAG_HYBRID_WEIGHT` | `0.6` | Keyword boost factor. 0 = semantic only, higher = stronger keyword boost. |
+| `RAG_HYBRID_WEIGHT` | `0.6` | RRF fusion blend: keyword (FTS) weight. 0 = semantic only, 1 = keyword only. |
+| `RAG_RERANK` | (off) | `1`/`true` enables the cross-encoder reranker (re-scores top candidates for precision). Loads a ~80MB model lazily on first query. |
+| `RAG_RERANK_MODEL` | `Xenova/ms-marco-MiniLM-L-6-v2` | Override the reranker model. Only used when `RAG_RERANK` is on. |
 | `RAG_GROUPING` | (not set) | `similar` for top group only, `related` for top 2 groups. |
 | `RAG_MAX_DISTANCE` | (not set) | Filter out low-relevance results (e.g., `0.5`). |
 | `RAG_MAX_FILES` | (not set) | Limit results to top N files (e.g., `1` for single best file). |
+
+Search is **hybrid** by default: semantic (vector) and keyword (BM25) results are
+fused with Reciprocal Rank Fusion. Enabling `RAG_RERANK` adds a second-stage
+cross-encoder that re-scores the fused top candidates — higher precision at the
+cost of extra per-query latency on CPU.
 
 ### Code-focused tuning
 
@@ -398,6 +405,8 @@ The MCP server is configured by environment variables only — pass them through
 | `CHUNK_MIN_LENGTH` | `--chunk-min-length` | `50` | Minimum chunk length in characters (1–10000) |
 | `RAG_DEVICE` | — | `cpu` | Execution device. Passed straight to ONNX Runtime. See the [Transformers.js device source code](https://github.com/huggingface/transformers.js/blob/main/packages/transformers/src/utils/devices.js) for the live list of supported backend names. If initialization fails, the server throws an error. |
 | `RAG_DTYPE` | — | `fp32` | Embedding quantization dtype. Opt-in and passed straight through; accepts any dtype the chosen model provides (`fp32`, `fp16`, `q8`, `int8`, …). If the model lacks the requested variant, the server throws an error naming the dtypes it does provide. Changing `RAG_DEVICE`/`RAG_DTYPE` changes the embedding space — re-ingest existing data. |
+| `RAG_RERANK` | — | (off) | Enable the cross-encoder reranker (`1`/`true`). Re-scores the fused top candidates for higher precision; loads a ~80MB model lazily on first query (uses `RAG_DEVICE`/`RAG_DTYPE`). |
+| `RAG_RERANK_MODEL` | — | `Xenova/ms-marco-MiniLM-L-6-v2` | Override the reranker model (sequence-classification cross-encoder). Only used when `RAG_RERANK` is on. |
 
 **Model choice tips:**
 - Multilingual docs → e.g., `onnx-community/embeddinggemma-300m-ONNX` (100+ languages)

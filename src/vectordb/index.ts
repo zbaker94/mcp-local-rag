@@ -329,9 +329,17 @@ export class VectorStore {
    * @param queryVector - Query vector (dimension depends on model)
    * @param queryText - Optional query text for the FTS ranking (BM25)
    * @param limit - Number of results to return (1-20, default 10)
+   * @param candidateCount - When set, return up to this many results instead of
+   *   `limit` (validated 1-100). Used by the reranker to pull a larger candidate
+   *   pool that it then re-sorts and slices down to `limit`.
    * @returns Array of search results, sorted ascending by score (lower = better)
    */
-  async search(queryVector: number[], queryText?: string, limit = 10): Promise<SearchResult[]> {
+  async search(
+    queryVector: number[],
+    queryText?: string,
+    limit = 10,
+    candidateCount?: number
+  ): Promise<SearchResult[]> {
     if (!this.table) {
       console.error('VectorStore: Returning empty results as table does not exist')
       return []
@@ -340,10 +348,16 @@ export class VectorStore {
     if (limit < 1 || limit > 20) {
       throw new DatabaseError(`Invalid limit: expected 1-20, got ${limit}`)
     }
+    if (candidateCount !== undefined && (candidateCount < 1 || candidateCount > 100)) {
+      throw new DatabaseError(`Invalid candidateCount: expected 1-100, got ${candidateCount}`)
+    }
+
+    // How many results to return: the larger reranker pool when requested, else `limit`.
+    const returnCount = candidateCount ?? limit
 
     try {
       // Candidate pool fetched from each ranked list, with headroom for fusion.
-      const candidateLimit = Math.max(limit * 4, RRF_CANDIDATES)
+      const candidateLimit = Math.max(returnCount * 2, RRF_CANDIDATES)
 
       // Step 1: Semantic (vector) search - always the primary ranking.
       let query = this.table.vectorSearch(queryVector).distanceType('dot').limit(candidateLimit)
@@ -396,7 +410,7 @@ export class VectorStore {
       }
 
       // Return top results after all filtering and fusion.
-      return results.slice(0, limit)
+      return results.slice(0, returnCount)
     } catch (error) {
       throw new DatabaseError('Failed to search vectors', error as Error)
     }

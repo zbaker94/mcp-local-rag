@@ -19,6 +19,7 @@ import { prepareVisualPdfChunks } from '../ingest/visual.js'
 import { parseHtml } from '../parser/html-parser.js'
 import { DocumentParser } from '../parser/index.js'
 import { extractMarkdownTitle, extractTxtTitle } from '../parser/title-extractor.js'
+import { DEFAULT_RERANK_MODEL, RERANK_CANDIDATES, Reranker } from '../reranker/index.js'
 import type { BaseDirsConfigError } from '../utils/base-dirs.js'
 import {
   type ContentFormat,
@@ -35,7 +36,7 @@ import {
   saveRawData,
 } from '../utils/raw-data-utils.js'
 import { realpathForMatch } from '../utils/scan.js'
-import { VectorStore } from '../vectordb/index.js'
+import { type SearchResult, VectorStore } from '../vectordb/index.js'
 import {
   appendConfigWarnings,
   buildConfigErrorBlock,
@@ -113,6 +114,8 @@ export class RAGServer {
   private readonly server: Server
   private readonly vectorStore: VectorStore
   private readonly embedder: Embedder
+  /** Cross-encoder reranker, or null when reranking is disabled (the default). */
+  private readonly reranker: Reranker | null
   private readonly chunker: SemanticChunker
   private readonly parser: DocumentParser
   private readonly dbPath: string
@@ -203,6 +206,27 @@ export class RAGServer {
       embedderConfig.allowRemoteModels = config.allowRemoteModels
     }
     this.embedder = new Embedder(embedderConfig)
+    // Reranker is opt-in: only constructed when enabled, and even then the model
+    // loads lazily on first use, so a disabled (or idle) server pays nothing.
+    if (config.rerank) {
+      const rerankerConfig: ConstructorParameters<typeof Reranker>[0] = {
+        modelPath: config.rerankModel ?? DEFAULT_RERANK_MODEL,
+        batchSize: 16,
+        cacheDir: config.cacheDir,
+      }
+      if (config.device !== undefined) {
+        rerankerConfig.device = config.device
+      }
+      if (config.dtype !== undefined) {
+        rerankerConfig.dtype = config.dtype
+      }
+      if (config.allowRemoteModels !== undefined) {
+        rerankerConfig.allowRemoteModels = config.allowRemoteModels
+      }
+      this.reranker = new Reranker(rerankerConfig)
+    } else {
+      this.reranker = null
+    }
     this.chunker = new SemanticChunker(
       config.chunkMinLength !== undefined ? { minChunkLength: config.chunkMinLength } : {}
     )
@@ -320,8 +344,24 @@ export class RAGServer {
     // Generate query embedding
     const queryVector = await this.embedder.embed(args.query)
 
-    // Hybrid search (vector + BM25 keyword matching)
-    const searchResults = await this.vectorStore.search(queryVector, args.query, args.limit || 10)
+    const limit = args.limit || 10
+
+    // Hybrid search (vector + FTS, fused with RRF). When reranking is enabled,
+    // pull a larger candidate pool, re-score it with the cross-encoder, and slice
+    // back to `limit`; otherwise return the fused top-`limit` directly.
+    let searchResults: SearchResult[]
+    if (this.reranker) {
+      const candidates = await this.vectorStore.search(
+        queryVector,
+        args.query,
+        limit,
+        RERANK_CANDIDATES
+      )
+      const reranked = await this.reranker.rerank(args.query, candidates)
+      searchResults = reranked.slice(0, limit)
+    } else {
+      searchResults = await this.vectorStore.search(queryVector, args.query, limit)
+    }
 
     // Format results with source restoration for raw-data files
     const results: QueryResult[] = searchResults.map((result) => {
@@ -331,6 +371,9 @@ export class RAGServer {
         text: result.text,
         score: result.score,
         fileTitle: result.fileTitle ?? null,
+      }
+      if (result.rerankerScore !== undefined) {
+        queryResult.rerankerScore = result.rerankerScore
       }
 
       if (looksLikeRawDataPath(result.filePath)) {
@@ -922,6 +965,9 @@ export class RAGServer {
     await this.server.close()
     await this.vectorStore.close()
     await this.embedder.dispose()
+    if (this.reranker) {
+      await this.reranker.dispose()
+    }
     console.error('RAGServer stopped')
   }
 }

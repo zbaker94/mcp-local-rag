@@ -119,6 +119,12 @@ export interface SearchResult {
   metadata: DocumentMetadata
   /** Document title extracted from file content (display-only, not used for scoring) */
   fileTitle: string | null
+  /**
+   * Cross-encoder relevance in (0,1), higher = more relevant. Present only when
+   * reranking ran (opt-in, see Reranker). When set, `score` is `1 - rerankerScore`
+   * so the lower-is-better convention still holds.
+   */
+  rerankerScore?: number
 }
 
 /**

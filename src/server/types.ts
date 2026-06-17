@@ -38,6 +38,14 @@ interface RAGServerConfigBase {
   /** Minimum chunk length in characters (optional, default: 50) */
   chunkMinLength?: number
   /**
+   * Enable the cross-encoder reranker (opt-in, default off). When true, search
+   * fetches a larger candidate pool and re-sorts it with a cross-encoder before
+   * returning the top `limit`. Off → the reranker model is never loaded.
+   */
+  rerank?: boolean
+  /** Override the reranker model (default: DEFAULT_RERANK_MODEL). Only used when rerank is true. */
+  rerankModel?: string
+  /**
    * Normal-path (resolve()) roots, index-aligned with the realpath'd `baseDirs`
    * security boundary; used for user-facing `list_files` scan/display so paths
    * match the resolve()-stored DB keys. From `BaseDirsConfig.rawBaseDirs` (see
@@ -226,8 +234,10 @@ export interface QueryResult {
   chunkIndex: number
   /** Text */
   text: string
-  /** Similarity score */
+  /** Relevance score, lower = better (see SearchResult.score) */
   score: number
+  /** Cross-encoder relevance in (0,1), higher = better. Present only when reranking ran. */
+  rerankerScore?: number
   /** Original source (only for raw-data files, e.g., URLs ingested via ingest_data) */
   source?: string
   /** Document title extracted from file content (display-only, not used for scoring) */

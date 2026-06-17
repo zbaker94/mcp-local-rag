@@ -95,6 +95,22 @@ export function parseAllowRemoteModels(value: string | undefined): ParseResult<b
 }
 
 /**
+ * Parse the RAG_RERANK opt-in flag (boolean). Unset/blank → undefined (off).
+ */
+export function parseRerank(value: string | undefined): ParseResult<boolean> {
+  if (value === undefined || value.trim().length === 0) return { value: undefined }
+  const normalized = value.toLowerCase().trim()
+  if (normalized === 'false' || normalized === '0' || normalized === 'no' || normalized === 'off') {
+    return { value: false }
+  }
+  if (normalized === 'true' || normalized === '1' || normalized === 'yes' || normalized === 'on') {
+    return { value: true }
+  }
+  const warning = `Invalid RAG_RERANK value: "${value.slice(0, 100)}". Expected a boolean (true/false). Ignoring.`
+  return { value: undefined, warning }
+}
+
+/**
  * Parse chunk minimum length from environment variable
  */
 export function parseChunkMinLength(value: string | undefined): ParseResult<number> {
@@ -235,6 +251,16 @@ export async function resolveServerConfig(
   if (hybridWeight.warning) configWarnings.push(hybridWeight.warning)
   if (chunkMinLength.value !== undefined) config.chunkMinLength = chunkMinLength.value
   if (chunkMinLength.warning) configWarnings.push(chunkMinLength.warning)
+
+  // Reranker (opt-in, default off). RAG_RERANK toggles it; RAG_RERANK_MODEL is an
+  // optional model override applied only when reranking is on.
+  const rerank = parseRerank(env['RAG_RERANK'])
+  if (rerank.value !== undefined) config.rerank = rerank.value
+  if (rerank.warning) configWarnings.push(rerank.warning)
+  const rerankModel = env['RAG_RERANK_MODEL']
+  if (rerankModel !== undefined && rerankModel.trim().length > 0) {
+    config.rerankModel = rerankModel.trim()
+  }
 
   // Set dtype only when defined, so config.dtype === undefined keeps meaning
   // "RAG_DTYPE unset" (the embedder then applies its fp32 default).

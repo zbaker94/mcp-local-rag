@@ -10,7 +10,13 @@
 // their existing names, messages, and `cause` semantics.
 
 /** Architectural layer that raised the error. */
-export type AppErrorLayer = 'embedder' | 'parser' | 'vectordb' | 'config' | 'pdf-visual'
+export type AppErrorLayer =
+  | 'embedder'
+  | 'reranker'
+  | 'parser'
+  | 'vectordb'
+  | 'config'
+  | 'pdf-visual'
 
 /** Nature of the failure, independent of layer. */
 export type AppErrorKind = 'validation' | 'io' | 'config' | 'internal'

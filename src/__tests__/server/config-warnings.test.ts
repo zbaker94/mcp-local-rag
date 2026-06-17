@@ -11,6 +11,7 @@ import {
   parseHybridWeight,
   parseMaxDistance,
   parseMaxFiles,
+  parseRerank,
   resolveServerConfig,
 } from '../../server-main.js'
 import { DEFAULT_MAX_FILE_SIZE } from '../../utils/limits.js'
@@ -172,6 +173,29 @@ describe('parseAllowRemoteModels', () => {
     expect(result.value).toBeUndefined()
     expect(result.warning).toContain('Invalid RAG_ALLOW_REMOTE_MODELS')
     expect(result.warning).toContain('"maybe"')
+  })
+})
+
+describe('parseRerank', () => {
+  it('returns undefined with no warning for empty input (off by default)', () => {
+    expect(parseRerank(undefined)).toEqual({ value: undefined })
+    expect(parseRerank('')).toEqual({ value: undefined })
+    expect(parseRerank('   ')).toEqual({ value: undefined })
+  })
+
+  it('parses truthy/falsey spellings', () => {
+    for (const v of ['true', '1', 'yes', 'on']) {
+      expect(parseRerank(v)).toEqual({ value: true })
+    }
+    for (const v of ['false', '0', 'no', 'off']) {
+      expect(parseRerank(v)).toEqual({ value: false })
+    }
+  })
+
+  it('returns warning for unrecognized values', () => {
+    const result = parseRerank('sometimes')
+    expect(result.value).toBeUndefined()
+    expect(result.warning).toContain('Invalid RAG_RERANK')
   })
 })
 
