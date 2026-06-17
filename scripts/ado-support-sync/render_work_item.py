@@ -102,6 +102,24 @@ for k in sorted(k for k in f if k.startswith("Custom.")):
         lines.append(f"- **{k.split('.', 1)[1]}:** {v}")
 lines.append("")
 
+# Links to other work items / PRs / attachments (needs $expand=relations|all).
+# Work-item links resolve to "#<id>"; other links emit their URL.
+def rel_label(rel, attrs):
+    name = (attrs or {}).get("name")
+    if name:
+        return name
+    return rel.rsplit(".", 1)[-1] if rel else "Link"
+
+
+link_lines = []
+for r in wi.get("relations", []) or []:
+    url = r.get("url", "") or ""
+    label = rel_label(r.get("rel", ""), r.get("attributes"))
+    m = re.search(r"/workItems/(\d+)$", url)
+    link_lines.append(f"- **{label}:** #{m.group(1)}" if m else f"- **{label}:** {url}")
+if link_lines:
+    lines += ["## Links", ""] + link_lines + [""]
+
 for label, ref in (("Description", "System.Description"),
                    ("Acceptance criteria", "Microsoft.VSTS.Common.AcceptanceCriteria"),
                    ("Repro steps", "Microsoft.VSTS.TCM.ReproSteps")):

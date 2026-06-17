@@ -81,7 +81,6 @@ fi
 
 API="https://dev.azure.com/$ORG"
 PROJ_ENC="${PROJECT// /%20}"
-OUT_FIELDS='["System.Title","System.WorkItemType","System.State","System.Reason","System.AreaPath","System.IterationPath","System.AssignedTo","System.CreatedBy","System.CreatedDate","System.ChangedDate","System.Tags","System.Description","Microsoft.VSTS.Common.AcceptanceCriteria","Microsoft.VSTS.Common.ClosedDate","Microsoft.VSTS.Common.Priority","Microsoft.VSTS.Common.Severity","Microsoft.VSTS.TCM.ReproSteps"]'
 
 WORK="$(mktemp -d)"; WI="$WORK/wi"; CM="$WORK/cm"; mkdir -p "$WI" "$CM" "$OUTPUT"
 trap 'rm -rf "$WORK"' EXIT
@@ -105,7 +104,9 @@ i=0
 while [[ $i -lt ${#IDS[@]} ]]; do
   chunk=("${IDS[@]:$i:200}")
   idjson=$(printf '%s\n' "${chunk[@]}" | jq -R 'tonumber' | jq -s '.')
-  body=$(jq -n --argjson ids "$idjson" --argjson fields "$OUT_FIELDS" '{ids:$ids,fields:$fields,"$expand":"none"}')
+  # NB: ADO workitemsbatch rejects `fields` together with `$expand`; we need
+  # relations, so expand "all" (fields + relations) and let the renderer pick.
+  body=$(jq -n --argjson ids "$idjson" '{ids:$ids,"$expand":"all"}')
   curl -sf -H "$AUTH" -H "Content-Type: application/json" -d "$body" \
     "$API/$PROJ_ENC/_apis/wit/workitemsbatch?api-version=7.1" \
     | jq -c '.value[]' | while IFS= read -r line; do
