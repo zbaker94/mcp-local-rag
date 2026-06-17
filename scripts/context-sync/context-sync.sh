@@ -1,0 +1,236 @@
+#!/usr/bin/env bash
+#
+# context-sync.sh — Generate & collect ingestible artifacts for the local-rag MCP.
+#
+# Sweeps one or more SOURCE ROOTS (your repos / monorepos / wikis) and populates
+# an OUTPUT directory with markdown/text artifacts so the local-rag index covers
+# more than just top-level READMEs.
+#
+# Produces four artifact groups under OUTPUT/:
+#   README/     symlinks -> every README*.md   (named by parent-dir path)
+#   Docs/       symlinks -> every other .md/.txt (named by full file path)
+#   Manifests/  generated digests of package.json / pyproject.toml (real files)
+#   Structure/  generated file-tree maps per code project (real files)
+#
+# Every artifact is .md/.txt because local-rag ingest only accepts .pdf/.docx/
+# .txt/.md. This script does NOT ingest — it prints the ingest command to run
+# afterwards.
+#
+# Idempotent: all four output dirs are rebuilt from scratch on every run, so
+# stale or broken links are pruned automatically.
+#
+# Artifact names are namespaced by a per-root LABEL (default: the root's
+# basename) so multiple roots never collide. Override a root's label with
+# "label=/abs/path".
+#
+# Usage:
+#   context-sync.sh [options] <source-root> [<source-root> ...]
+#   context-sync.sh [options] --base-dir <root> [--base-dir <root> ...]
+#
+# Options:
+#   -o, --output DIR       Output dir for artifacts. Default: $PWD/context
+#                          (env: CONTEXT_SYNC_OUTPUT)
+#       --base-dir ROOT    A source root to sweep (repeatable). Bare positional
+#                          args are also treated as source roots.
+#       --prune "a b c"    Space-separated dir names to prune everywhere.
+#                          (env: CONTEXT_SYNC_PRUNE_DIRS)
+#       --txt-prune "a b"  Extra dir names to prune for .txt only (data trees).
+#                          (env: CONTEXT_SYNC_TXT_PRUNE_DIRS)
+#       --max-txt-bytes N  Max .txt size to include. Default: 65536
+#                          (env: CONTEXT_SYNC_MAX_TXT_BYTES)
+#   -h, --help             Show this help.
+#
+# A root may be given as "LABEL=/abs/path" to set its artifact-name prefix
+# explicitly (useful when two roots share a basename).
+#
+# Requires: bash 4+, find, jq (for package.json digests), python3 3.11+
+# (for pyproject.toml digests; degrades gracefully if absent).
+#
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# --- defaults (env-overridable) --------------------------------------------
+OUTPUT="${CONTEXT_SYNC_OUTPUT:-$PWD/context}"
+MAX_TXT_BYTES="${CONTEXT_SYNC_MAX_TXT_BYTES:-65536}"
+
+DEFAULT_PRUNE="node_modules .git dist build out .next coverage .venv venv \
+__pycache__ vendor target .gradle .idea .terraform .pytest_cache extjs"
+PRUNE_DIRS_STR="${CONTEXT_SYNC_PRUNE_DIRS:-$DEFAULT_PRUNE}"
+
+DEFAULT_TXT_PRUNE="resources test tests fixtures vault samples sbsamples \
+__data__ testdata data JUnitTestCode"
+TXT_PRUNE_STR="${CONTEXT_SYNC_TXT_PRUNE_DIRS:-$DEFAULT_TXT_PRUNE}"
+
+# Filename patterns that mark a .txt as generated data rather than prose.
+TXT_NAME_SKIP=(-iname '*result*' -o -iname '*whatif*' -o -iname '*output*' \
+               -o -iname '*_dump*' -o -iname '*.placeholder.txt' -o -iname '*changelog*')
+
+usage() { sed -n '2,/^set -euo/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//; s/^#$//'; }
+
+# --- arg parse -------------------------------------------------------------
+ROOT_SPECS=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -o|--output)      OUTPUT="$2"; shift 2;;
+    --base-dir)       ROOT_SPECS+=("$2"); shift 2;;
+    --prune)          PRUNE_DIRS_STR="$2"; shift 2;;
+    --txt-prune)      TXT_PRUNE_STR="$2"; shift 2;;
+    --max-txt-bytes)  MAX_TXT_BYTES="$2"; shift 2;;
+    -h|--help)        usage; exit 0;;
+    --)               shift; while [[ $# -gt 0 ]]; do ROOT_SPECS+=("$1"); shift; done;;
+    -*)               echo "error: unknown flag: $1" >&2; usage >&2; exit 2;;
+    *)                ROOT_SPECS+=("$1"); shift;;
+  esac
+done
+
+[[ ${#ROOT_SPECS[@]} -ge 1 ]] || { echo "error: need at least one source root" >&2; usage >&2; exit 2; }
+
+# --- preflight -------------------------------------------------------------
+command -v find >/dev/null || { echo "error: 'find' not found" >&2; exit 1; }
+HAVE_JQ=1; command -v jq >/dev/null || { HAVE_JQ=0; echo "warn: 'jq' not found — package.json digests skipped" >&2; }
+HAVE_PY=1
+if command -v python3 >/dev/null && python3 -c 'import tomllib' 2>/dev/null; then :; else
+  HAVE_PY=0; echo "warn: python3 3.11+ with tomllib not found — pyproject.toml digests skipped" >&2
+fi
+
+# --- prune expressions -----------------------------------------------------
+read -ra PRUNE_DIRS <<< "$PRUNE_DIRS_STR"
+read -ra TXT_PRUNE_DIRS <<< "$TXT_PRUNE_STR"
+
+prune_expr=()
+for d in "${PRUNE_DIRS[@]}"; do prune_expr+=(-path "*/$d/*" -o); done
+unset 'prune_expr[${#prune_expr[@]}-1]'   # drop trailing -o
+
+txt_prune_expr=("${prune_expr[@]}")
+for d in "${TXT_PRUNE_DIRS[@]}"; do txt_prune_expr+=(-o -path "*/$d/*"); done
+
+# --- per-root helpers ------------------------------------------------------
+CUR_ROOT=""; CUR_LABEL=""
+# rel <abspath> -> path relative to CUR_ROOT (empty string if abspath == root)
+rel() { local p="${1#"$CUR_ROOT"}"; printf '%s' "${p#/}"; }
+# slug <relpath> -> '/' replaced by '__'
+slug() { printf '%s' "${1//\//__}"; }
+# nm <relpath> -> label-prefixed slug; root-level rel -> just the label
+nm() { local r="$1"; if [[ -z "$r" || "$r" == "." ]]; then printf '%s' "$CUR_LABEL"; else printf '%s__%s' "$CUR_LABEL" "$(slug "$r")"; fi; }
+log() { printf '  %s\n' "$*"; }
+
+sanitize_label() { printf '%s' "${1//[^A-Za-z0-9._-]/-}"; }
+
+# --- clean output (once) ---------------------------------------------------
+for sub in README Docs Manifests Structure; do rm -rf "${OUTPUT:?}/$sub"; mkdir -p "$OUTPUT/$sub"; done
+
+declare -A SEEN_LABELS=()
+readme_n=0 docs_n=0 man_n=0 struct_n=0
+
+link_doc() { local f="$1" r name; r=$(rel "$f"); name="$(nm "$r")"
+  # preserve original extension
+  ln -sf "$f" "$OUTPUT/Docs/${name}"; docs_n=$((docs_n+1)); }
+
+digest_pkg_json() {  # $1 = abs path to package.json
+  local f="$1" r name; r=$(rel "$(dirname "$f")"); [[ -z "$r" ]] && r="(root)"
+  name=$(jq -r '.name // "(unnamed)"' "$f" 2>/dev/null || echo "(unparseable)")
+  {
+    echo "# npm package: $name"; echo
+    echo "- **Project path:** \`$r\`"
+    echo "- **Source:** \`package.json\`"
+    jq -r '"- **Version:** " + (.version // "n/a")' "$f" 2>/dev/null || true
+    jq -r 'if (.description // "") != "" then "- **Description:** " + .description else empty end' "$f" 2>/dev/null || true
+    jq -r 'if (.main // "") != "" then "- **Entry (main):** `" + .main + "`" else empty end' "$f" 2>/dev/null || true
+    echo
+    jq -r 'if (.scripts|type=="object" and (.scripts|length>0)) then
+             "## Scripts\n" + ([.scripts|to_entries[]|"- `" + .key + "`: `" + (.value|tostring) + "`"]|join("\n"))
+           else empty end' "$f" 2>/dev/null || true
+    echo
+    jq -r 'if (.dependencies|type=="object" and (.dependencies|length>0)) then
+             "## Dependencies\n" + ([.dependencies|to_entries[]|"- " + .key + " " + (.value|tostring)]|join("\n"))
+           else empty end' "$f" 2>/dev/null || true
+    echo
+    jq -r 'if (.devDependencies|type=="object" and (.devDependencies|length>0)) then
+             "## Dev dependencies\n" + ([.devDependencies|keys[]|"- " + .]|join("\n"))
+           else empty end' "$f" 2>/dev/null || true
+  } > "$OUTPUT/Manifests/$(nm "$(rel "$f")").md"
+}
+
+digest_pyproject() {  # $1 = abs path to pyproject.toml
+  python3 "$SCRIPT_DIR/_pyproject_digest.py" "$1" "$CUR_ROOT" > "$OUTPUT/Manifests/$(nm "$(rel "$1")").md"
+}
+
+# --- sweep each root -------------------------------------------------------
+for spec in "${ROOT_SPECS[@]}"; do
+  if [[ "$spec" == *=* ]]; then CUR_LABEL="${spec%%=*}"; CUR_ROOT="${spec#*=}"; else CUR_ROOT="$spec"; CUR_LABEL="$(basename "$CUR_ROOT")"; fi
+  CUR_ROOT="$(cd "$CUR_ROOT" 2>/dev/null && pwd)" || { echo "error: source root not found: $spec" >&2; exit 1; }
+  CUR_LABEL="$(sanitize_label "$CUR_LABEL")"
+  # de-collide labels
+  if [[ -n "${SEEN_LABELS[$CUR_LABEL]:-}" ]]; then
+    SEEN_LABELS[$CUR_LABEL]=$(( SEEN_LABELS[$CUR_LABEL] + 1 )); CUR_LABEL="${CUR_LABEL}-${SEEN_LABELS[$CUR_LABEL]}"
+  else SEEN_LABELS[$CUR_LABEL]=1; fi
+
+  echo "==> sweeping [$CUR_LABEL] $CUR_ROOT"
+
+  # README symlink farm: name = parent DIR path; root README -> just the label.
+  while IFS= read -r f; do
+    d=$(dirname "$f"); r=$(rel "$d")
+    ln -sf "$f" "$OUTPUT/README/$(nm "$r").md"; readme_n=$((readme_n+1))
+  done < <(find "$CUR_ROOT" \( "${prune_expr[@]}" \) -prune -o -type f -iname 'readme*.md' -print)
+
+  # Docs symlink farm: non-README .md (no restriction) + .txt (data-pruned, size-capped).
+  while IFS= read -r f; do link_doc "$f"; done < <(find "$CUR_ROOT" \( "${prune_expr[@]}" \) -prune -o \
+             -type f -name '*.md' ! -iname 'readme*.md' -print)
+  while IFS= read -r f; do link_doc "$f"; done < <(find "$CUR_ROOT" \( "${txt_prune_expr[@]}" \) -prune -o \
+             -type f -name '*.txt' -size "-${MAX_TXT_BYTES}c" ! \( "${TXT_NAME_SKIP[@]}" \) -print)
+
+  # Manifest digests.
+  if [[ $HAVE_JQ -eq 1 ]]; then
+    while IFS= read -r f; do digest_pkg_json "$f"; man_n=$((man_n+1)); done \
+      < <(find "$CUR_ROOT" \( "${prune_expr[@]}" \) -prune -o -type f -name 'package.json' -print)
+  fi
+  if [[ $HAVE_PY -eq 1 ]]; then
+    while IFS= read -r f; do digest_pyproject "$f"; man_n=$((man_n+1)); done \
+      < <(find "$CUR_ROOT" \( "${prune_expr[@]}" \) -prune -o -type f -name 'pyproject.toml' -print)
+  fi
+
+  # Structure maps: one per code project (dir holding package.json or pyproject.toml).
+  while IFS= read -r proj; do
+    r=$(rel "$proj"); disp="$r"; [[ -z "$disp" ]] && disp="(root)"
+    {
+      echo "# Project structure: $CUR_LABEL/$disp"; echo
+      echo "Directory tree (depth 3, noise dirs pruned) of \`$disp\`."; echo
+      echo '```'
+      find "$proj" -maxdepth 3 \( "${prune_expr[@]}" -o -name .git \) -prune -o -print \
+        | sed "s#^$proj#.#" | sort | head -400
+      echo '```'
+    } > "$OUTPUT/Structure/$(nm "$r").md"
+    struct_n=$((struct_n+1))
+  done < <(find "$CUR_ROOT" \( "${prune_expr[@]}" \) -prune -o \
+             -type f \( -name 'package.json' -o -name 'pyproject.toml' \) -print \
+             | while IFS= read -r m; do dirname "$m"; done | sort -u)
+done
+
+log "$readme_n READMEs, $docs_n docs, $man_n manifests, $struct_n structure maps"
+
+# --- summary + ingest hint -------------------------------------------------
+echo
+echo "Done. Artifact counts under $OUTPUT:"
+printf '  README/    %s\n' "$(find "$OUTPUT/README" -type l | wc -l | tr -d ' ')"
+printf '  Docs/      %s\n' "$(find "$OUTPUT/Docs" -type l | wc -l | tr -d ' ')"
+printf '  Manifests/ %s\n' "$(find "$OUTPUT/Manifests" -type f | wc -l | tr -d ' ')"
+printf '  Structure/ %s\n' "$(find "$OUTPUT/Structure" -type f | wc -l | tr -d ' ')"
+
+# Locate the local-rag CLI relative to this script (scripts/context-sync -> repo root).
+DIST="$(cd "$SCRIPT_DIR/../.." 2>/dev/null && pwd)/dist/index.js"
+[[ -f "$DIST" ]] || DIST="<path-to-mcp-local-rag>/dist/index.js"
+
+echo
+echo "Next: ingest the artifacts (symlink targets must resolve under a --base-dir):"
+echo
+{
+  echo "  node \"$DIST\" \\"
+  echo "    --db-path ~/.mcp-local-rag/lancedb --cache-dir ~/.mcp-local-rag/models \\"
+  echo "    ingest \"$OUTPUT\" \\"
+  echo "    --base-dir \"$OUTPUT\" \\"
+  for spec in "${ROOT_SPECS[@]}"; do
+    p="${spec#*=}"; printf '    --base-dir "%s" \\\n' "$p"
+  done
+  echo "    --follow-symlinks"
+} | sed '$ s/ \\$//'
