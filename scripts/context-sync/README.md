@@ -57,6 +57,17 @@ reads better.
 - `python3` 3.11+ with stdlib `tomllib` — for `pyproject.toml` digests
   (skipped with a warning if absent)
 
+### Portability notes
+
+- **macOS ships bash 3.2.** The script needs bash 4+ (associative arrays) and
+  exits with a hint if run under an older bash. Install a current one with
+  `brew install bash` and invoke it explicitly, e.g.
+  `/opt/homebrew/bin/bash context-sync.sh ...` (Intel: `/usr/local/bin/bash`).
+- Uses only POSIX/BSD-portable `find`/`sed` idioms — no GNU-only flags — so it
+  runs the same on macOS and Linux.
+- Produces a **symlink farm**. On Linux/macOS/WSL this is fine; native Windows
+  (non-WSL) needs Developer Mode or admin for symlinks — run under WSL there.
+
 ## Ingesting
 
 The script ends by printing a ready-to-run ingest command. Symlinked targets

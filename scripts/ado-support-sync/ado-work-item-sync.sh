@@ -33,6 +33,14 @@
 # Requires: bash 4+, curl, jq, python3 3.11+, and either ADO_PAT or `az`.
 #
 set -euo pipefail
+
+# bash 4+ required (mapfile). Stock macOS ships bash 3.2 — fail fast with a hint.
+if (( ${BASH_VERSINFO[0]:-0} < 4 )); then
+  echo "error: bash 4+ required (this is ${BASH_VERSION:-unknown})." >&2
+  echo "  macOS: 'brew install bash', then run via that bash (e.g. /opt/homebrew/bin/bash $0 ...)." >&2
+  exit 1
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # --- defaults (env-overridable) --------------------------------------------

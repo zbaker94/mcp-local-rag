@@ -54,6 +54,14 @@
 #
 set -euo pipefail
 
+# bash 4+ required (associative arrays). Stock macOS ships bash 3.2 — fail fast
+# with a fix hint rather than a cryptic mid-run error.
+if (( ${BASH_VERSINFO[0]:-0} < 4 )); then
+  echo "error: bash 4+ required (this is ${BASH_VERSION:-unknown})." >&2
+  echo "  macOS: 'brew install bash', then run via that bash (e.g. /opt/homebrew/bin/bash $0 ...)." >&2
+  exit 1
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # --- defaults (env-overridable) --------------------------------------------
@@ -246,8 +254,10 @@ for spec in "${ROOT_SPECS[@]}"; do
       echo "# Project structure: $CUR_LABEL/$disp"; echo
       echo "Directory tree (depth 3, noise dirs pruned) of \`$disp\`."; echo
       echo '```'
+      # `|| true`: head closes the pipe after 400 lines, SIGPIPE-ing find/sort;
+      # under `set -o pipefail` that 141 would otherwise abort the whole script.
       find "$proj" -maxdepth 3 \( "${prune_expr[@]}" -o -name .git \) -prune -o -print \
-        | sed "s#^$proj#.#" | sort | head -400
+        | sed "s#^$proj#.#" | sort | head -400 || true
       echo '```'
     } > "$OUTPUT/Structure/$(safe_name "$(nm "$r").md")"
     struct_n=$((struct_n+1))
