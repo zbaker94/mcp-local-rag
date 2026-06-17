@@ -101,56 +101,65 @@ export function applyFileFilter(results: SearchResult[], maxFiles: number): Sear
 }
 
 /**
- * Apply keyword boost to rerank vector search results
- * Uses multiplicative formula: final_distance = distance / (1 + keyword_normalized * weight)
+ * Fuse two independently-ranked result lists with Reciprocal Rank Fusion (RRF).
  *
- * This proportional boost ensures:
- * - Keyword matches improve ranking without dominating semantic similarity
- * - Documents without keyword matches keep their original vector distance
- * - Higher weight = stronger influence of keyword matching
+ * RRF combines rankings, not raw scores, which sidesteps the incomparable
+ * scales of vector dot-distance and FTS BM25. Each list contributes
+ * `weight / (k + rank)` to a document's fused score (rank is the 0-based
+ * position in that list). A document present in only one list gets only that
+ * list's term, so keyword-only hits (absent from the vector list) can surface.
  *
- * @param vectorResults - Results from vector search (already filtered by maxDistance/grouping)
- * @param ftsResults - Raw FTS results with BM25 scores
- * @param weight - Boost weight (0-1, from hybridWeight config)
+ * Input ordering IS the rank: `vectorRanked` must be ascending by distance
+ * (best first) and `ftsRanked` descending by BM25 (best first) — i.e. both
+ * already best-first, as returned by their queries.
+ *
+ * Output preserves the codebase's lower-is-better convention: the fused score
+ * is normalized to (0, 1] and stored as `score = 1 - normalized`, so the top
+ * fused hit is ~0 and the list is sorted ascending. When a document appears in
+ * both lists, the vector result's row data is kept (it carries the richer
+ * fields); only the score is recomputed.
+ *
+ * `weight` is the **keyword (FTS) influence**, matching the `hybridWeight`
+ * config: the FTS list contributes `weight`, the vector list `1 - weight`. So
+ * `weight = 1` is keyword-only, `weight = 0` is vector-only.
+ *
+ * @param vectorRanked - Vector results, best-first
+ * @param ftsRanked - FTS results, best-first
+ * @param options.k - RRF rank constant (see RRF_K)
+ * @param options.weight - Keyword/FTS weight in [0,1]; vector gets `1 - weight`
  */
-export function applyKeywordBoost(
-  vectorResults: SearchResult[],
-  ftsResults: Record<string, unknown>[],
-  weight: number
+export function reciprocalRankFusion(
+  vectorRanked: SearchResult[],
+  ftsRanked: SearchResult[],
+  options: { k: number; weight: number }
 ): SearchResult[] {
-  // Build FTS score map with normalized scores (0-1)
-  let maxBm25Score = 0
-  for (const result of ftsResults) {
-    if (!result) continue
-    const score = (result['_score'] as number) ?? 0
-    if (score > maxBm25Score) maxBm25Score = score
+  const { k, weight } = options
+  const fused = new Map<string, { result: SearchResult; score: number }>()
+
+  const accumulate = (list: SearchResult[], listWeight: number) => {
+    list.forEach((result, rank) => {
+      const key = `${result.filePath}:${result.chunkIndex}`
+      const contribution = listWeight / (k + rank)
+      const existing = fused.get(key)
+      if (existing) {
+        existing.score += contribution
+      } else {
+        // Vector list is accumulated first, so its richer row data wins on ties.
+        fused.set(key, { result, score: contribution })
+      }
+    })
   }
 
-  const ftsScoreMap = new Map<string, number>()
-  for (const result of ftsResults) {
-    if (!result) continue
-    const key = `${result['filePath']}:${result['chunkIndex']}`
-    const rawScore = (result['_score'] as number) ?? 0
-    const normalized = maxBm25Score > 0 ? rawScore / maxBm25Score : 0
-    ftsScoreMap.set(key, normalized)
-  }
+  accumulate(vectorRanked, 1 - weight)
+  accumulate(ftsRanked, weight)
 
-  // Apply multiplicative boost to vector results
-  const boostedResults = vectorResults.map((result) => {
-    const key = `${result.filePath}:${result.chunkIndex}`
-    const keywordScore = ftsScoreMap.get(key) ?? 0
+  const entries = [...fused.values()]
+  if (entries.length === 0) return []
 
-    // Multiplicative boost: distance / (1 + keyword * weight)
-    // - If keyword matches (score=1) and weight=1: distance halved
-    // - If no keyword match (score=0): distance unchanged
-    const boostedDistance = result.score / (1 + keywordScore * weight)
+  // Normalize to (0, 1] then invert so lower = better (top hit ~0).
+  const maxScore = entries.reduce((max, e) => (e.score > max ? e.score : max), 0) || 1
 
-    return {
-      ...result,
-      score: boostedDistance,
-    }
-  })
-
-  // Re-sort by boosted distance (ascending = better)
-  return boostedResults.sort((a, b) => a.score - b.score)
+  return entries
+    .map((e) => ({ ...e.result, score: 1 - e.score / maxScore }))
+    .sort((a, b) => a.score - b.score)
 }

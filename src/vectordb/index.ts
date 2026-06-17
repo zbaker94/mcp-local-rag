@@ -1,14 +1,15 @@
 // VectorStore implementation with LanceDB integration
 
 import { type Connection, connect, Index, type Table } from '@lancedb/lancedb'
-import { applyFileFilter, applyGrouping, applyKeywordBoost } from './search-filters.js'
+import { applyFileFilter, applyGrouping, reciprocalRankFusion } from './search-filters.js'
 import {
   type ChunkRow,
   DatabaseError,
   DEFAULT_HYBRID_WEIGHT,
   FTS_CLEANUP_THRESHOLD_MS,
   FTS_INDEX_NAME,
-  HYBRID_SEARCH_CANDIDATE_MULTIPLIER,
+  RRF_CANDIDATES,
+  RRF_K,
   type SearchResult,
   toChunkRow,
   toSearchResult,
@@ -315,17 +316,20 @@ export class VectorStore {
   }
 
   /**
-   * Execute vector search with quality filtering
-   * Architecture: Semantic search → Filter (maxDistance, grouping) → Keyword boost → File filter (maxFiles)
+   * Execute hybrid search with quality filtering.
+   * Architecture: vector search → grouping (on distances) → RRF fusion with an
+   * independent FTS ranking → file filter (maxFiles) → slice.
    *
-   * This "prefetch then rerank" approach ensures:
-   * - maxDistance and grouping work on meaningful vector distances
-   * - Keyword matching acts as a boost, not a replacement for semantic similarity
+   * Vector search is the primary ranking; an independent full-corpus FTS query
+   * is fused in via Reciprocal Rank Fusion so keyword-only hits can surface.
+   * Both `maxDistance` and `grouping` act only on the vector list (they need
+   * real dot distances) — FTS-only hits are not gated by them, only bounded by
+   * the FTS candidate pool. `maxFiles` runs after fusion on the fused ranking.
    *
    * @param queryVector - Query vector (dimension depends on model)
-   * @param queryText - Optional query text for keyword boost (BM25)
-   * @param limit - Number of results to retrieve (default 10)
-   * @returns Array of search results (sorted by distance ascending, filtered by quality settings)
+   * @param queryText - Optional query text for the FTS ranking (BM25)
+   * @param limit - Number of results to return (1-20, default 10)
+   * @returns Array of search results, sorted ascending by score (lower = better)
    */
   async search(queryVector: number[], queryText?: string, limit = 10): Promise<SearchResult[]> {
     if (!this.table) {
@@ -338,63 +342,60 @@ export class VectorStore {
     }
 
     try {
-      // Step 1: Semantic (vector) search - always the primary search
-      const candidateLimit = limit * HYBRID_SEARCH_CANDIDATE_MULTIPLIER
+      // Candidate pool fetched from each ranked list, with headroom for fusion.
+      const candidateLimit = Math.max(limit * 4, RRF_CANDIDATES)
+
+      // Step 1: Semantic (vector) search - always the primary ranking.
       let query = this.table.vectorSearch(queryVector).distanceType('dot').limit(candidateLimit)
 
-      // Apply distance threshold at query level
+      // Apply distance threshold at query level (vector list only).
       if (this.config.maxDistance !== undefined) {
         query = query.distanceRange(undefined, this.config.maxDistance)
       }
 
-      const vectorResults = await query.toArray()
+      const vectorRaw = await query.toArray()
+      let vectorRanked: SearchResult[] = vectorRaw.map((result) => toSearchResult(result))
 
-      // Convert to SearchResult format with type validation
-      let results: SearchResult[] = vectorResults.map((result) => toSearchResult(result))
-
-      // Step 2: Apply grouping filter on vector distances (before keyword boost)
-      // Grouping is meaningful only on semantic distances, not after keyword boost
-      if (this.config.grouping && results.length > 1) {
-        results = applyGrouping(results, this.config.grouping)
+      // Step 2: Grouping on raw vector distances (before fusion). Its gap
+      // statistics are meaningful only on real distances, so it must run here.
+      if (this.config.grouping && vectorRanked.length > 1) {
+        vectorRanked = applyGrouping(vectorRanked, this.config.grouping)
       }
 
-      // Step 3: Apply keyword boost if enabled
+      // Step 3: Independent FTS ranking + RRF fusion.
       const hybridWeight = this.config.hybridWeight ?? DEFAULT_HYBRID_WEIGHT
+      let results: SearchResult[] = vectorRanked
       if (this.ftsEnabled && queryText && queryText.trim().length > 0 && hybridWeight > 0) {
         try {
-          // Get unique filePaths from vector results to filter FTS search
-          const uniqueFilePaths = [...new Set(results.map((r) => r.filePath))]
-
-          // Build WHERE clause with IN for targeted FTS search
-          // Use backticks for column name (required for camelCase in LanceDB)
-          const escapedPaths = uniqueFilePaths.map((p) => `'${p.replace(/'/g, "''")}'`)
-          const whereClause = `\`filePath\` IN (${escapedPaths.join(', ')})`
-
-          const ftsResults = await this.table
+          // Full-corpus FTS top-K (NOT restricted to vector-result files), so
+          // keyword-only hits can rank in via fusion.
+          const ftsRaw = await this.table
             .search(queryText, 'fts', 'text')
-            .where(whereClause)
-            .select(['filePath', 'chunkIndex', 'text', 'metadata', '_score'])
-            .limit(results.length * 2) // Enough to cover all vector results
+            .select(['filePath', 'chunkIndex', 'text', 'metadata', 'fileTitle', '_score'])
+            .limit(candidateLimit)
             .toArray()
+          const ftsRanked: SearchResult[] = ftsRaw.map((result) => toSearchResult(result))
 
-          results = applyKeywordBoost(results, ftsResults, hybridWeight)
+          results = reciprocalRankFusion(vectorRanked, ftsRanked, {
+            k: RRF_K,
+            weight: hybridWeight,
+          })
         } catch (ftsError) {
           // Per-request degrade only: fall back to vector-only results for THIS
           // query without disabling FTS on the instance. A transient FTS error
           // (e.g. a momentary index issue) must not permanently drop the server
           // to vector-only until restart — the next query retries hybrid search.
           console.error('VectorStore: FTS search failed, using vector-only results:', ftsError)
+          results = vectorRanked
         }
       }
 
-      // Step 4: Apply file filter after keyword boost
-      // Unlike grouping (which depends on raw semantic distance gaps), maxFiles selects
-      // the "most relevant files" — this should respect the final ranking including keyword boost
+      // Step 4: Apply file filter after fusion, on the final ranking.
       if (this.config.maxFiles !== undefined && results.length > 0) {
         results = applyFileFilter(results, this.config.maxFiles)
       }
 
-      // Return top results after all filtering and boosting
+      // Return top results after all filtering and fusion.
       return results.slice(0, limit)
     } catch (error) {
       throw new DatabaseError('Failed to search vectors', error as Error)

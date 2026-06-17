@@ -6,17 +6,32 @@ import { DatabaseError } from './errors.js'
 // Constants
 // ============================================
 
-/** Multiplier for candidate count in hybrid search (to allow reranking) */
-export const HYBRID_SEARCH_CANDIDATE_MULTIPLIER = 2
-
 /** FTS index name (bump version when changing tokenizer settings) */
 export const FTS_INDEX_NAME = 'fts_index_v3'
 
 /** Threshold for cleaning up old index versions (1 minute) */
 export const FTS_CLEANUP_THRESHOLD_MS = 60 * 1000
 
-/** Default hybrid-search weight (vector vs FTS blend) when not configured */
+/**
+ * Default hybrid-search weight (vector vs FTS blend) when not configured.
+ * In RRF this is the fusion blend: `weight` on the vector ranking and
+ * `1 - weight` on the FTS ranking (0.6 = vector-favoring).
+ */
 export const DEFAULT_HYBRID_WEIGHT = 0.6
+
+/**
+ * RRF rank constant (`k`). Dampens the contribution of low-ranked items:
+ * `contribution = weight / (k + rank)`. 60 is the value from the original
+ * Cormack et al. RRF paper and the common default.
+ */
+export const RRF_K = 60
+
+/**
+ * Candidate pool size fetched from EACH ranked list (vector and FTS) before
+ * fusion, so keyword-only hits have room to rank in. The effective pool is
+ * `max(limit * 4, RRF_CANDIDATES)`.
+ */
+export const RRF_CANDIDATES = 30
 
 // ============================================
 // Type Definitions
@@ -92,7 +107,13 @@ export interface SearchResult {
   chunkIndex: number
   /** Chunk text */
   text: string
-  /** Distance score using dot product (0 = identical, 1 = orthogonal, 2 = opposite) */
+  /**
+   * Relevance score — **lower is better** in every path. Vector-only: raw dot
+   * distance (0 = identical, 1 = orthogonal, 2 = opposite). Hybrid (RRF):
+   * `1 - normalizedFusedScore`, so the top fused hit is ~0. Downstream filters
+   * (applyGrouping, applyFileFilter) and the MCP `QueryResult.score` all rely on
+   * this lower-is-better convention.
+   */
   score: number
   /** Metadata */
   metadata: DocumentMetadata
@@ -170,13 +191,12 @@ export function toSearchResult(raw: unknown): SearchResult {
   if (!isLanceDBRawResult(raw)) {
     throw new DatabaseError('Invalid search result format from LanceDB')
   }
-  // Score source: vector search rows carry `_distance` (dot distance, the
-  // normal path). `_score` is a defensive fallback for any FTS-shaped row that
-  // reaches here (the live FTS path consumes `_score` directly in
-  // applyKeywordBoost, not via this mapper). The final `?? 0` is an
-  // effectively-unreachable guard: vectorSearch always returns `_distance`. It
-  // is kept defensive rather than throwing, since a missing score is not worth
-  // failing a whole search over.
+  // Score source: vector rows carry `_distance` (dot distance); FTS rows carry
+  // `_score` (BM25). Both paths now flow through this mapper — vector results
+  // and the independent FTS ranking fed to reciprocalRankFusion. RRF uses each
+  // list's ORDER (rank), not this score value, so the exact number here only
+  // matters for the vector-only path. The final `?? 0` is a defensive guard for
+  // a row missing both fields; not worth failing a whole search over.
   return {
     filePath: raw.filePath,
     chunkIndex: raw.chunkIndex,

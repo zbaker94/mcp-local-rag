@@ -1,6 +1,6 @@
 import { basename } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { applyFileFilter, applyGrouping, applyKeywordBoost } from '../search-filters.js'
+import { applyFileFilter, applyGrouping, reciprocalRankFusion } from '../search-filters.js'
 import type { SearchResult } from '../types.js'
 
 /**
@@ -167,81 +167,65 @@ describe('applyFileFilter', () => {
 })
 
 // ============================================
-// applyKeywordBoost
+// reciprocalRankFusion
 // ============================================
 
-describe('applyKeywordBoost', () => {
-  it('should leave scores unchanged when no FTS results', () => {
-    const results = [mockResult('/a.txt', 0, 0.5), mockResult('/b.txt', 0, 0.8)]
-    const boosted = applyKeywordBoost(results, [], 0.6)
-    expect(boosted[0]!.score).toBeCloseTo(0.5)
-    expect(boosted[1]!.score).toBeCloseTo(0.8)
+describe('reciprocalRankFusion', () => {
+  const opts = { k: 60, weight: 0.6 }
+
+  it('returns [] when both lists are empty', () => {
+    expect(reciprocalRankFusion([], [], opts)).toEqual([])
   })
 
-  it('should reduce score for keyword-matching chunks', () => {
-    const results = [mockResult('/a.txt', 0, 0.5), mockResult('/b.txt', 0, 0.8)]
-    const ftsResults = [{ filePath: '/a.txt', chunkIndex: 0, _score: 10.0 }]
-    const boosted = applyKeywordBoost(results, ftsResults, 0.6)
-    // /a.txt:0 normalized = 10/10 = 1.0, boosted = 0.5 / (1 + 1.0 * 0.6) = 0.5/1.6 ≈ 0.3125
-    // /b.txt:0 no match, stays 0.8
-    expect(boosted[0]!.filePath).toBe('/a.txt')
-    expect(boosted[0]!.score).toBeCloseTo(0.3125)
-    expect(boosted[1]!.score).toBeCloseTo(0.8)
+  it('fuses both rankings and surfaces a keyword-only hit (absent from vector)', () => {
+    // vector: a, b ; fts: b, c  → c appears only via FTS and must surface.
+    const vectorRanked = [mockResult('/a.txt', 0, 0.1), mockResult('/b.txt', 0, 0.2)]
+    const ftsRanked = [mockResult('/b.txt', 0, 9), mockResult('/c.txt', 0, 5)]
+
+    const fused = reciprocalRankFusion(vectorRanked, ftsRanked, opts)
+
+    // b is in both lists → highest fused score → ranks first (score ~0).
+    expect(fused).toHaveLength(3)
+    expect(fused[0]!.filePath).toBe('/b.txt')
+    expect(fused[0]!.score).toBeCloseTo(0)
+    // c (keyword-only) is present despite never appearing in the vector list.
+    expect(fused.map((r) => r.filePath)).toContain('/c.txt')
+    // Output is sorted ascending (lower = better).
+    expect(fused[0]!.score).toBeLessThanOrEqual(fused[1]!.score)
+    expect(fused[1]!.score).toBeLessThanOrEqual(fused[2]!.score)
   })
 
-  it('should normalize FTS scores relative to max BM25 score', () => {
-    const results = [mockResult('/a.txt', 0, 0.6), mockResult('/b.txt', 0, 0.6)]
-    const ftsResults = [
-      { filePath: '/a.txt', chunkIndex: 0, _score: 10.0 },
-      { filePath: '/b.txt', chunkIndex: 0, _score: 5.0 },
-    ]
-    const boosted = applyKeywordBoost(results, ftsResults, 1.0)
-    // /a.txt:0 normalized = 10/10 = 1.0, boosted = 0.6 / (1 + 1.0) = 0.3
-    // /b.txt:0 normalized = 5/10 = 0.5, boosted = 0.6 / (1 + 0.5) = 0.4
-    expect(boosted[0]!.score).toBeCloseTo(0.3)
-    expect(boosted[1]!.score).toBeCloseTo(0.4)
+  it('ranks a doc present in both lists above a doc in only one', () => {
+    const vectorRanked = [mockResult('/a.txt', 0, 0.1), mockResult('/b.txt', 0, 0.2)]
+    const ftsRanked = [mockResult('/a.txt', 0, 9)]
+
+    const fused = reciprocalRankFusion(vectorRanked, ftsRanked, opts)
+
+    expect(fused[0]!.filePath).toBe('/a.txt')
+    expect(fused[0]!.score).toBeCloseTo(0)
+    expect(fused[1]!.filePath).toBe('/b.txt')
   })
 
-  it('should not boost when weight=0', () => {
-    const results = [mockResult('/a.txt', 0, 0.5), mockResult('/b.txt', 0, 0.8)]
-    const ftsResults = [{ filePath: '/a.txt', chunkIndex: 0, _score: 10.0 }]
-    const boosted = applyKeywordBoost(results, ftsResults, 0)
-    // weight=0: boosted = score / (1 + normalized * 0) = score / 1 = score
-    expect(boosted[0]!.score).toBeCloseTo(0.5)
-    expect(boosted[1]!.score).toBeCloseTo(0.8)
+  it('keeps the vector row data when a doc overlaps both lists', () => {
+    const vectorRanked = [mockResult('/a.txt', 0, 0.1, 'vector-text')]
+    const ftsRanked = [mockResult('/a.txt', 0, 9, 'fts-text')]
+
+    const fused = reciprocalRankFusion(vectorRanked, ftsRanked, opts)
+
+    expect(fused).toHaveLength(1)
+    expect(fused[0]!.text).toBe('vector-text')
   })
 
-  it('should skip null/undefined FTS entries without throwing and still return vector results', () => {
-    const results = [mockResult('/a.txt', 0, 0.5), mockResult('/b.txt', 0, 0.8)]
-    // FTS results array with a null and an undefined hole interspersed with a
-    // real match. The `if (!result) continue` guards in applyKeywordBoost must
-    // skip these defensively (LanceDB raw rows are loosely typed) rather than
-    // dereferencing them.
-    const ftsResults = [
-      { filePath: '/a.txt', chunkIndex: 0, _score: 10.0 },
-      null,
-      undefined,
-    ] as unknown as Record<string, unknown>[]
+  it('weight=1 is keyword-only: FTS ranking wins, vector-only docs rank last', () => {
+    const vectorRanked = [mockResult('/a.txt', 0, 0.1)]
+    const ftsRanked = [mockResult('/b.txt', 0, 9), mockResult('/c.txt', 0, 5)]
 
-    const boosted = applyKeywordBoost(results, ftsResults, 0.6)
+    const fused = reciprocalRankFusion(vectorRanked, ftsRanked, { k: 60, weight: 1 })
 
-    // Both vector results are still returned; the matching one is boosted.
-    expect(boosted).toHaveLength(2)
-    expect(boosted[0]!.filePath).toBe('/a.txt')
-    expect(boosted[0]!.score).toBeCloseTo(0.3125)
-    expect(boosted[1]!.score).toBeCloseTo(0.8)
-  })
-
-  it('should re-sort results by boosted score', () => {
-    const results = [mockResult('/a.txt', 0, 0.5), mockResult('/b.txt', 0, 0.3)]
-    // /b.txt has better vector score, but /a.txt gets keyword boost
-    const ftsResults = [{ filePath: '/a.txt', chunkIndex: 0, _score: 10.0 }]
-    const boosted = applyKeywordBoost(results, ftsResults, 1.0)
-    // /a.txt: 0.5 / (1 + 1.0) = 0.25
-    // /b.txt: 0.3 (no boost)
-    expect(boosted[0]!.filePath).toBe('/a.txt')
-    expect(boosted[0]!.score).toBeCloseTo(0.25)
-    expect(boosted[1]!.filePath).toBe('/b.txt')
-    expect(boosted[1]!.score).toBeCloseTo(0.3)
+    // FTS order dictates ranking; b first.
+    expect(fused[0]!.filePath).toBe('/b.txt')
+    expect(fused[1]!.filePath).toBe('/c.txt')
+    // a contributes 0 (vector weight is 0) → worst score, ranked last.
+    expect(fused[fused.length - 1]!.filePath).toBe('/a.txt')
   })
 })
