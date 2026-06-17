@@ -10,7 +10,7 @@ import { DatabaseError } from './errors.js'
 export const HYBRID_SEARCH_CANDIDATE_MULTIPLIER = 2
 
 /** FTS index name (bump version when changing tokenizer settings) */
-export const FTS_INDEX_NAME = 'fts_index_v2'
+export const FTS_INDEX_NAME = 'fts_index_v3'
 
 /** Threshold for cleaning up old index versions (1 minute) */
 export const FTS_CLEANUP_THRESHOLD_MS = 60 * 1000

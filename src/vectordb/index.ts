@@ -251,17 +251,18 @@ export class VectorStore {
       return
     }
 
-    // Create new FTS index with ngram tokenizer for multilingual support
-    // - min=2: Capture Japanese bi-grams (e.g., "東京", "設計")
-    // - max=3: Balance between precision and index size
-    // - prefixOnly=false: Generate ngrams from all positions for proper CJK support
+    // Create new FTS index with the "simple" word tokenizer + English stemming.
+    // NB: the "ngram" tokenizer was dropped — lance-index 7.0.0's inverted-index
+    // builder panics (index out of bounds in builder.rs) when merging the much
+    // larger ngram posting set on big corpora, which crashed optimize(). The
+    // word tokenizer produces far fewer postings and avoids that overflow path.
+    // Trade-off: no CJK bi-gram matching; English keyword search is unaffected.
     await this.table.createIndex('text', {
       config: Index.fts({
-        baseTokenizer: 'ngram',
-        ngramMinLength: 2,
-        ngramMaxLength: 3,
-        prefixOnly: false,
-        stem: false,
+        baseTokenizer: 'simple',
+        lowercase: true,
+        stem: true,
+        language: 'English',
       }),
       name: FTS_INDEX_NAME,
     })

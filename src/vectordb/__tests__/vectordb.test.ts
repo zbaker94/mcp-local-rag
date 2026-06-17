@@ -356,7 +356,13 @@ describe('VectorStore', () => {
     })
 
     describe('Japanese text support', () => {
-      it('should find Japanese documents with ngram tokenizer', async () => {
+      // NB: the FTS tokenizer is "simple" (word-based), so it does NOT tokenize
+      // space-less CJK into matchable keyword tokens — CJK recall now rides on
+      // vector search, not FTS. (The ngram tokenizer that did CJID keyword
+      // CJK keyword matching was dropped: it overflowed lance-index's inverted builder on
+      // large corpora and crashed optimize().) This asserts CJK docs are still
+      // recalled via the vector path.
+      it('recalls Japanese documents via vector search', async () => {
         const store = new VectorStore({
           dbPath: testDbPath,
           tableName: 'chunks',
@@ -387,7 +393,7 @@ describe('VectorStore', () => {
         const queryVector = createNormalizedVector(1)
         const results = await store.search(queryVector, '依存性注入', 10)
 
-        // Verify Japanese document is found (ngram tokenizer works)
+        // Verify Japanese document is recalled (via vector search)
         const foundJapanese = results.some((r) => r.filePath === '/test/japanese.md')
         expect(foundJapanese).toBe(true)
 
