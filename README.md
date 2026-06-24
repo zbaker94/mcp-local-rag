@@ -1,387 +1,324 @@
-<p align="center">
-  <img src="assets/banner.jpg" alt="MCP Local RAG — Search below the surface." width="600" />
-</p>
-
 # MCP Local RAG
 
-[![GitHub stars](https://img.shields.io/github/stars/shinpr/mcp-local-rag?style=social)](https://github.com/shinpr/mcp-local-rag)
-[![npm version](https://img.shields.io/npm/v/mcp-local-rag.svg)](https://www.npmjs.com/package/mcp-local-rag)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![TypeScript](https://img.shields.io/badge/TypeScript-6.0-blue.svg?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
-[![MCP Registry](https://img.shields.io/badge/MCP-Registry-green.svg)](https://registry.modelcontextprotocol.io/)
+Local retrieval-augmented search over our own documents — specs, wikis, support
+tickets, source trees — exposed to AI coding tools over MCP and to the terminal
+as a CLI. Everything runs on the machine it's installed on: embeddings,
+vector store, search. No documents leave the host, no API keys, no cloud calls
+after the one-time model download.
 
-Local RAG for developers via MCP or CLI.
-Semantic search with keyword boost for exact technical terms — fully private, zero setup.
+Beyond the RAG engine, the repo carries internal tooling under `scripts/` —
+`context-sync` (sweep repos/wikis into the index) and `ado-support-sync` (pull
+Azure DevOps work items into the index). Build the repo locally to use them; see
+[Setup](#setup).
 
-## Features
+## What it does
 
-- **Semantic search with keyword boost**
-  Vector search first, then keyword matching boosts exact matches. Terms like `useEffect`, error codes, and class names rank higher—not just semantically guessed.
+- **Hybrid search.** Vector (semantic) search fused with BM25 keyword search via
+  Reciprocal Rank Fusion. Exact technical terms — `useEffect`, `ERR_CONNECTION_REFUSED`,
+  class names — rank on exact match, not just semantic proximity. Optional
+  cross-encoder reranker for higher precision.
+- **Semantic chunking.** Splits documents at topic boundaries (embedding
+  similarity) rather than fixed character counts. Source code (TS/JS/Python/Java)
+  is chunked at AST boundaries via tree-sitter instead. Markdown code blocks stay
+  intact.
+- **Relevance-gap filtering.** Groups results by score gaps instead of a fixed
+  top-K, so you get fewer but more trustworthy chunks.
+- **Two interfaces.** MCP server for AI tools; CLI for scripts and terminal use.
+  Optional [Agent Skills](#agent-skills) give assistants prompts for forming
+  queries and reading results.
 
-- **Smart semantic chunking**
-  Chunks documents by meaning, not character count. Uses embedding similarity to find natural topic boundaries—keeping related content together and splitting where topics change.
+## Setup
 
-- **Quality-first result filtering**
-  Groups results by relevance gaps instead of arbitrary top-K cutoffs. Get fewer but more trustworthy chunks.
+Set `BASE_DIR` to the directory you want searchable (or `BASE_DIRS` for multiple
+roots — see [Document Roots](#document-roots-base_dir-and-base_dirs)). Only files
+under a configured root are readable. **Scope it narrowly** — see
+[Security](#security).
 
-- **Runs entirely locally**
-  No API keys, no cloud, no data leaving your machine. Works fully offline after the first model download.
+```bash
+pnpm install
+pnpm run build          # compiles TypeScript to dist/
+node dist/index.js      # starts the MCP server on stdio; Ctrl+C to exit
+```
 
-- **Zero-friction setup**
-  One `npx` command. No Docker, no Python, no servers to manage.
-  Use via MCP, CLI, or both. Optional [Agent Skills](#agent-skills) help AI assistants form better queries and interpret results.
+Register the local build with your client by pointing at the absolute path to
+`dist/index.js`:
 
-## Quick Start
+```bash
+# Claude Code
+claude mcp add local-rag --scope user \
+  --env BASE_DIR=/path/to/your/documents \
+  -- node /abs/path/to/mcp-local-rag/dist/index.js
+```
 
-Set `BASE_DIR` to the folder you want to search (or `BASE_DIRS` for multiple roots — see [Configuration](#configuration)). Documents must live under one of the configured roots.
-
-Add the MCP server to your AI coding tool:
-
-**For Cursor** — Add to `~/.cursor/mcp.json`:
 ```json
+// Cursor (~/.cursor/mcp.json)
 {
   "mcpServers": {
     "local-rag": {
-      "command": "npx",
-      "args": ["-y", "mcp-local-rag"],
-      "env": {
-        "BASE_DIR": "/path/to/your/documents"
-      }
+      "command": "node",
+      "args": ["/abs/path/to/mcp-local-rag/dist/index.js"],
+      "env": { "BASE_DIR": "/path/to/your/documents" }
     }
   }
 }
 ```
 
-**For Codex** — Add to `~/.codex/config.toml`:
 ```toml
+# Codex (~/.codex/config.toml — note the underscore in mcp_servers)
 [mcp_servers.local-rag]
-command = "npx"
-args = ["-y", "mcp-local-rag"]
+command = "node"
+args = ["/abs/path/to/mcp-local-rag/dist/index.js"]
 
 [mcp_servers.local-rag.env]
 BASE_DIR = "/path/to/your/documents"
 ```
 
-**For Claude Code** — Run this command:
-```bash
-claude mcp add local-rag --scope user --env BASE_DIR=/path/to/your/documents -- npx -y mcp-local-rag
-```
+Rebuild (`pnpm run build`) and restart the client after changing source. To skip
+the build, point the client at the TypeScript source via `tsx` (`command: "tsx"`,
+`args: [".../src/index.ts"]`). Avoid `pnpm run watch` for a registered server — it
+restarts the process on change and drops the client's stdio connection.
 
-Restart your tool, then start using it:
+Restart the client, then:
 
 ```
 You: "Ingest api-spec.pdf"
 Assistant: Successfully ingested api-spec.pdf (47 chunks created)
 
 You: "What does the API documentation say about authentication?"
-Assistant: Based on the documentation, authentication uses OAuth 2.0 with JWT tokens.
-          The flow is described in section 3.2...
+Assistant: Authentication uses OAuth 2.0 with JWT tokens. The flow is in section 3.2...
 ```
 
-**Or use directly as CLI** — no MCP server needed:
+## MCP tools
 
-```bash
-npx mcp-local-rag ingest ./docs/
-npx mcp-local-rag query "authentication API"
-```
+The server exposes 7 tools: `ingest_file`, `ingest_data`, `query_documents`,
+`read_chunk_neighbors`, `list_files`, `delete_file`, `status`.
 
-That's it. No Docker, no Python, no server setup.
-
-## Why This Exists
-
-You want AI to search your documents—technical specs, research papers, internal docs. But most solutions send your files to external APIs.
-
-**Privacy.** Your documents might contain sensitive data. This runs entirely locally.
-
-**Cost.** External embedding APIs charge per use. This is free after the initial model download.
-
-**Offline.** Works without internet after setup.
-
-**Code search.** Pure semantic search misses exact terms like `useEffect` or `ERR_CONNECTION_REFUSED`. Keyword boost catches both meaning and exact matches.
-
-**Agent reality.** In practice, many AI environments mainly use tool calling. CLI support and Agent Skills make the same workflows available even without full MCP integration.
-
-## Usage
-
-mcp-local-rag provides two interfaces: an **MCP server** for AI coding tools and a **CLI** for direct use from the terminal.
-
-### Using with MCP
-
-The MCP server provides 7 tools: `ingest_file`, `ingest_data`, `query_documents`, `read_chunk_neighbors`, `list_files`, `delete_file`, `status`.
-
-#### Ingesting Documents
+### Ingesting documents
 
 ```
 "Ingest the document at /Users/me/docs/api-spec.pdf"
 ```
 
-Supports PDF, DOCX, TXT, and Markdown. The server extracts text, splits it into chunks, generates embeddings locally, and stores everything in a local vector database.
+Supported: PDF (`mupdf`), DOCX (`mammoth`), TXT, Markdown, and source code
+(TS/TSX, JS/JSX, Python, Java). The server extracts text, chunks it, embeds each
+chunk locally, and stores vectors in LanceDB. Re-ingesting a file replaces the
+old version.
 
-Re-ingesting the same file replaces the old version automatically.
+#### PDFs with figures (visual mode)
 
-##### Ingesting PDFs with figures (visual mode)
+Opt-in. PDFs with charts, tables, or diagrams can add local VLM-generated
+captions to the index, giving visual content some searchable representation in the
+same vector + FTS pipeline. Captions are auxiliary text — not image search, not
+OCR, not a faithful transcription.
 
-PDFs with charts, tables, or diagrams can optionally add local VLM-generated captions to the document index, giving visual content some searchable representation in the same vector + FTS pipeline. Captions are auxiliary text — not image search, not OCR, and not a faithful transcription of the figure.
-
-**Via MCP**:
 ```
-"Ingest /Users/me/docs/api-spec.pdf with visual: true"
+MCP:  "Ingest /Users/me/docs/api-spec.pdf with visual: true"
+CLI:  node dist/index.js ingest ./docs/spec.pdf --visual
 ```
 
-**Via CLI**:
-```bash
-npx mcp-local-rag ingest ./docs/spec.pdf --visual
-```
+Each caption is its own chunk with the envelope `[Visual content on page N: …]`,
+alongside the page-body chunks. It flows through the existing embedder and FTS
+index — no schema differences, no separate index. Normal ingest does not load the
+VLM. Per-page VLM failures are tolerated — that page proceeds with text only.
 
-Each caption is emitted as its own chunk with the envelope `[Visual content on page N: …]`, alongside the page-body chunks. It flows through the existing embedder and FTS index — no schema differences, no separate index.
-
-Visual mode is opt-in; normal ingest does not load the VLM. Per-page VLM failures are tolerated — that page proceeds with text only.
-
-###### Choosing a visual-quality profile
-
-Visual mode offers two profiles, selected per ingest call:
+Two quality profiles, selected per ingest call:
 
 | Profile | Model | Disk (cache) | Per-page inference | Suited for |
 |---|---|---|---|---|
-| `fast` (default) | `HuggingFaceTB/SmolVLM-256M-Instruct` | ~250 MB | baseline | Light visual indexing, quick first-run setup. |
-| `quality` | `onnx-community/Qwen2.5-VL-3B-Instruct-ONNX` | ~2.9 GB | ~2× `fast` | Figures with in-image text (axis labels, panel sub-labels, annotations) where caption fidelity matters more than inference time. |
+| `fast` (default) | `HuggingFaceTB/SmolVLM-256M-Instruct` | ~250 MB | baseline | Light visual indexing, quick first-run. |
+| `quality` | `onnx-community/Qwen2.5-VL-3B-Instruct-ONNX` | ~2.9 GB | ~2× `fast` | Figures with in-image text (axis labels, annotations) where caption fidelity matters more than speed. |
 
-The numbers above are measured on CPU during development on the project's probe PDFs; they may shift with model updates or differ on your hardware.
+Numbers measured on CPU during development against the project's probe PDFs; they
+may shift with model updates or differ on your hardware.
 
-**Via MCP** — `ingest_file` accepts an optional `visualQuality` parameter (enum: `'fast' | 'quality'`, default `'fast'`; ignored when `visual` is false):
 ```
-"Ingest /Users/me/docs/research-paper.pdf with visual: true and visualQuality: 'quality'"
-```
-
-**Via CLI** — `--visual-quality fast|quality` (default `fast`; silently ignored when `--visual` is absent):
-```bash
-npx mcp-local-rag ingest ./docs/research-paper.pdf --visual --visual-quality quality
+MCP:  "Ingest /Users/me/docs/research-paper.pdf with visual: true and visualQuality: 'quality'"
+CLI:  node dist/index.js ingest ./docs/research-paper.pdf --visual --visual-quality quality
 ```
 
-Profile model identifiers and quantization variants are fixed per release. Both profiles share the same `CACHE_DIR` (default: `./models/`); the first run on each profile downloads its model.
+`visualQuality` (enum `'fast' | 'quality'`, default `'fast'`) is ignored when
+`visual` is false. Both profiles share `CACHE_DIR` (default `./models/`); the
+first run on each profile downloads its model.
 
-> **Behavior change from v0.14.0**: Captions are now emitted as dedicated chunks rather than appended to the page text before chunking. As a side effect, `metadata.fileSize` for visual ingests no longer includes the caption character count — it measures the post-extraction body length only. The underlying PDF is unchanged; only the reported `fileSize` for visual-ingested PDFs may shrink across the release boundary.
+> **Behavior change from v0.14.0**: captions are emitted as dedicated chunks
+> rather than appended to page text before chunking. Side effect:
+> `metadata.fileSize` for visual ingests no longer includes caption character
+> count — it measures post-extraction body length only. The underlying PDF is
+> unchanged.
 
-> **Security note**: Visual captions are derived from PDF contents and may inherit attacker-controlled text. Downstream LLM consumers should treat retrieved chunks as untrusted data, not as instructions. The `[Visual content on page N: …]` envelope helps consumers distinguish caption text from prose.
+> **Security note**: visual captions are derived from PDF contents and may
+> inherit attacker-controlled text. Treat retrieved chunks as untrusted data, not
+> instructions. The `[Visual content on page N: …]` envelope helps consumers
+> distinguish caption text from prose. See [Security](#security).
 
-#### Ingesting HTML Content
+#### Ingesting HTML content
 
-Use `ingest_data` to ingest HTML content retrieved by your AI assistant (via web fetch, curl, browser tools, etc.):
+`ingest_data` takes HTML the assistant already fetched (web fetch, curl, browser
+tools):
 
 ```
 "Fetch https://example.com/docs and ingest the HTML"
 ```
 
-The server extracts main content using Readability (removes navigation, ads, etc.), converts to Markdown, and indexes it. Perfect for:
-- Web documentation
-- HTML retrieved by the AI assistant
-- Clipboard content
+The server extracts main content with Readability (drops nav, ads), converts to
+Markdown, and indexes it.
 
-HTML is automatically cleaned—you get the article content, not the boilerplate.
+> The server itself does **not** fetch web content — the assistant retrieves it
+> and passes the HTML to `ingest_data`. This keeps the server fully local. Respect
+> website terms of service and copyright when ingesting external content.
 
-> **Note:** The RAG server itself doesn't fetch web content—your AI assistant retrieves it and passes the HTML to `ingest_data`. This keeps the server fully local while letting you index any content your assistant can access. Please respect website terms of service and copyright when ingesting external content.
-
-#### Searching Documents
+### Searching
 
 ```
 "What does the API documentation say about authentication?"
 "Find information about rate limiting"
-"Search for error handling best practices"
 ```
 
-Search uses semantic similarity with keyword boost. This means `useEffect` finds documents containing that exact term, not just semantically similar React concepts.
+Hybrid search (semantic + keyword boost). Results include text, source file,
+document title, and relevance score. Adjust count with `limit` (1–20, default 10).
+Tune ranking with the [Search Tuning](#search-tuning) variables.
 
-Results include text content, source file, document title, and relevance score. The document title provides context for each chunk, helping identify which document a result belongs to. Adjust result count with `limit` (1-20, default 10).
+### Expanding context around a result
 
-#### Expanding Context Around a Result
+When a result needs surrounding context, `read_chunk_neighbors` reads the chunks
+before and after it. Pass the `filePath` and `chunkIndex` from the search result.
+The response includes the target chunk (`isTarget: true`) plus neighbors, sorted
+by chunk index. Defaults to 2 before and 2 after (up to 50 each).
 
-When a search result needs more surrounding context, use `read_chunk_neighbors` to read the chunks before and after it:
-
-```
-"That result about authentication looks relevant — read the surrounding chunks for the full explanation"
-```
-
-Pass the `filePath` and `chunkIndex` from the search result. The response includes the target chunk (marked `isTarget: true`) plus its neighbors, sorted by chunk index. Defaults to 2 chunks before and 2 after (adjustable up to 50 each).
-
-#### Managing Files
+### Managing files
 
 ```
-"List all files in configured base directories and their ingested status"   # See what's indexed
-"Delete old-spec.pdf from RAG"     # Remove a file
-"Show RAG server status"           # Check system health
+"List all files in configured base directories and their ingested status"
+"Delete old-spec.pdf from RAG"
+"Show RAG server status"
 ```
 
-### Using as CLI
+## CLI
 
-All MCP tools are also available as CLI commands — no MCP server needed:
+Every MCP tool is also a CLI subcommand (`node dist/index.js <subcommand>`):
 
 ```bash
-npx mcp-local-rag ingest ./docs/               # Bulk ingest files
-npx mcp-local-rag query "authentication API"    # Search documents
-npx mcp-local-rag read-neighbors --file-path /abs/path.md --chunk-index 5  # Expand context
-npx mcp-local-rag list                          # Show ingestion status
-npx mcp-local-rag status                        # Database stats
-npx mcp-local-rag delete ./docs/old.pdf         # Remove content
-npx mcp-local-rag delete --source "https://..."  # Remove by source URL
+node dist/index.js ingest ./docs/                              # bulk ingest
+node dist/index.js query "authentication API"                  # search
+node dist/index.js read-neighbors --file-path /abs/path.md --chunk-index 5
+node dist/index.js list                                        # ingestion status
+node dist/index.js status                                      # database stats
+node dist/index.js delete ./docs/old.pdf                       # remove a file
+node dist/index.js delete --source "https://..."               # remove by source URL
 ```
 
-`query`, `read-neighbors`, `list`, `status`, and `delete` output JSON to stdout for piping (e.g., `| jq`). `ingest` outputs progress to stderr. Global options (`--db-path`, `--cache-dir`, `--model-name`) go before the subcommand. Run `npx mcp-local-rag --help` for details.
+`query`, `read-neighbors`, `list`, `status`, and `delete` print JSON to stdout
+(pipe to `jq`). `ingest` prints progress to stderr. Global options (`--db-path`,
+`--cache-dir`, `--model-name`) go *before* the subcommand; subcommand options go
+after. `--help` for details.
 
-> ⚠️ The CLI does **not** read your MCP client config (`mcp.json`, `config.toml`, etc.). Configure the CLI via flags or environment variables as shown below.
+> The CLI does **not** read your MCP client config (`mcp.json`, `config.toml`).
+> Configure it via flags or environment variables.
 
-#### Configuration
+> ⚠️ CLI `--model-name` must match the server's `MODEL_NAME`. A different
+> embedding model against an existing database produces incompatible vectors and
+> silently degrades search quality.
 
-**CLI flags** — global options go before the subcommand, subcommand options go after:
+### Multi-root and symlink flags
+
+`--base-dir` is repeatable on `ingest` and `list`; pass it once per root. When any
+`--base-dir` is supplied, CLI roots **replace** env-var roots (no merge). The
+positional path to `ingest` must sit inside one of the configured roots.
 
 ```bash
-npx mcp-local-rag --db-path ./my-db query "auth" --base-dir ./docs
+node dist/index.js ingest --base-dir ./docs --base-dir ./specs ./docs/readme.md
+node dist/index.js list --base-dir ./docs --base-dir ./specs
 ```
 
-The `--base-dir` flag is repeatable on `ingest` and `list`; pass it once per root:
+`ingest` skips symlinks during directory scans by default. `--follow-symlinks`
+walks symlinked directories and ingests symlinked files. A followed link's
+**target** is still realpath-checked at read time and rejected if it escapes every
+root. To authorize targets *outside* the scanned tree, add `--trusted-dir`
+(repeatable) — it widens the read boundary only, is **not** scanned, and is **not**
+a valid location for the positional path. `--trusted-dir` requires
+`--follow-symlinks`. These flags affect `ingest` only; `list` and `list_files`
+always skip symlinks.
 
 ```bash
-npx mcp-local-rag ingest --base-dir ./docs --base-dir ./specs ./docs/readme.md
-npx mcp-local-rag list --base-dir ./docs --base-dir ./specs
-```
-
-The positional path to `ingest` must sit inside one of the configured roots. When at least one `--base-dir` is supplied, CLI roots replace any env-var roots (no merge).
-
-**Following symlinks** — `ingest` skips symbolic links during a directory scan by default. Pass `--follow-symlinks` to walk symlinked directories and ingest symlinked files (e.g. a curated folder of links into a larger tree).
-
-A followed link's **target** is still realpath-checked at read time and rejected if it escapes every configured root. When your links point *outside* the scanned tree, authorize those real locations with `--trusted-dir` (repeatable). A trusted dir widens the read boundary only — it is **not** scanned and is **not** a valid location for the positional path:
-
-```bash
-npx mcp-local-rag ingest \
-  --base-dir /path/to/curated-links \      # scanned (and holds the positional path)
-  --trusted-dir /path/to/real-tree \       # link targets allowed here; not scanned
+node dist/index.js ingest \
+  --base-dir /path/to/curated-links \   # scanned (holds the positional path)
+  --trusted-dir /path/to/real-tree \    # link targets allowed here; not scanned
   --follow-symlinks  /path/to/curated-links
 ```
 
-`--trusted-dir` requires `--follow-symlinks` (it is meaningless without it) and is subject to the same sensitive-path policy and realpath normalization as `--base-dir`. Followed directories are cycle-guarded by realpath, and the depth limit still applies. These flags affect `ingest` only — `list` and the MCP `list_files` tool still skip symlinks.
-
-**Environment variables** — set in your shell:
-
-```bash
-export DB_PATH=./my-db
-export BASE_DIR=./docs
-npx mcp-local-rag query "auth"
-```
-
-For multiple roots, use `BASE_DIRS` (JSON array of non-empty path strings):
-
-```bash
-export BASE_DIRS='["/Users/me/Documents/work","/Users/me/Projects/specs"]'
-npx mcp-local-rag list
-```
-
-**Sharing config between MCP and CLI** — if your MCP client inherits shell environment variables, you can set them in your shell profile (e.g., `~/.zshrc`) so both use the same values. Otherwise, set them explicitly in your MCP config as well.
-
-```bash
-export BASE_DIR=/path/to/your/documents
-export DB_PATH=/path/to/lancedb
-```
-
-Configuration is resolved in this order:
-
-1. CLI flags (highest priority)
-2. Environment variables
-3. Defaults
-
-For the full list of CLI flags, environment variables, and defaults, see [Configuration](#configuration).
-
-For CLI-only setups (no MCP server), install [Agent Skills](#agent-skills) so your AI assistant can form better queries and interpret results consistently.
-
-> ⚠️ **CLI `--model-name` must match the MCP server's `MODEL_NAME` env var.** Using a different embedding model against an existing database produces incompatible vectors, silently degrading search quality.
-
 ## Search Tuning
-
-Adjust these for your use case:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `RAG_HYBRID_WEIGHT` | `0.6` | RRF fusion blend: keyword (FTS) weight. 0 = semantic only, 1 = keyword only. |
-| `RAG_RERANK` | (off) | `1`/`true` enables the cross-encoder reranker (re-scores top candidates for precision). Loads a ~80MB model lazily on first query. |
+| `RAG_HYBRID_WEIGHT` | `0.6` | RRF blend: keyword (FTS) weight. 0 = semantic only, 1 = keyword only. |
+| `RAG_RERANK` | (off) | `1`/`true` enables the cross-encoder reranker (re-scores top candidates). Loads a ~80MB model lazily on first query. |
 | `RAG_RERANK_MODEL` | `Xenova/ms-marco-MiniLM-L-6-v2` | Override the reranker model. Only used when `RAG_RERANK` is on. |
-| `RAG_GROUPING` | (not set) | `similar` for top group only, `related` for top 2 groups. |
-| `RAG_MAX_DISTANCE` | (not set) | Filter out low-relevance results (e.g., `0.5`). |
-| `RAG_MAX_FILES` | (not set) | Limit results to top N files (e.g., `1` for single best file). |
+| `RAG_GROUPING` | (unset) | `similar` for top group only, `related` for top 2 groups. |
+| `RAG_MAX_DISTANCE` | (unset) | Filter low-relevance results (e.g. `0.5`). |
+| `RAG_MAX_FILES` | (unset) | Limit results to top N files (e.g. `1` for single best file). |
 
-Search is **hybrid** by default: semantic (vector) and keyword (BM25) results are
-fused with Reciprocal Rank Fusion. Enabling `RAG_RERANK` adds a second-stage
-cross-encoder that re-scores the fused top candidates — higher precision at the
-cost of extra per-query latency on CPU.
+Search is hybrid by default — semantic (vector) and keyword (BM25) fused with RRF.
+`RAG_RERANK` adds a second-stage cross-encoder: higher precision, extra per-query
+CPU latency.
 
 ### Code-focused tuning
 
-For codebases and API specs, increase keyword boost so exact identifiers (`useEffect`, `ERR_*`, class names) dominate ranking:
+For codebases and API specs, raise keyword boost so exact identifiers dominate:
 
 ```json
-"env": {
-  "RAG_HYBRID_WEIGHT": "0.7",
-  "RAG_GROUPING": "similar"
-}
+"env": { "RAG_HYBRID_WEIGHT": "0.7", "RAG_GROUPING": "similar" }
 ```
 
-- `0.7` — balanced semantic + keyword
-- `1.0` — aggressive; exact matches strongly rerank results
+`0.7` is balanced; `1.0` makes exact matches strongly rerank results. Keyword
+boost applies *after* semantic filtering, so it improves precision without
+surfacing unrelated matches.
 
-Keyword boost is applied *after* semantic filtering, so it improves precision without surfacing unrelated matches.
+## How it works
 
-## How It Works
+1. The parser extracts text by file type (PDF via `mupdf`, DOCX via `mammoth`,
+   text/source directly).
+2. Source code (TS/JS/Python/Java) is chunked at AST boundaries via tree-sitter;
+   large classes split into per-method chunks. Other text is chunked semantically
+   — split into sentences, regrouped by embedding similarity at topic boundaries.
+   Chunks are typically 500–1000 chars; Markdown code blocks are never split
+   mid-block.
+3. Each chunk is embedded with Transformers.js (default `all-MiniLM-L6-v2`,
+   configurable via `MODEL_NAME`). Vectors are stored in LanceDB, a file-based
+   vector DB with no server process.
+4. On search: the query is embedded with the same model, vector search finds
+   candidates, quality filters apply (distance threshold, grouping), then keyword
+   matches boost rankings for exact-term matches.
 
-**TL;DR:**
-- Documents are chunked by semantic similarity, not fixed character counts
-- Each chunk is embedded locally using Transformers.js
-- Search uses semantic similarity with keyword boost for exact matches
-- Results are filtered based on relevance gaps, not raw scores
+## Internal sync scripts
 
-### Details
+Each sweeps a source into ingestible artifacts and prints the exact `ingest`
+command — neither ingests itself.
 
-When you ingest a document, the parser extracts text based on file type (PDF via `mupdf`, DOCX via `mammoth`, text and source-code files directly). Source code (TS/JS/Python/Java) is then chunked at AST boundaries via tree-sitter; other text is chunked semantically.
-
-The semantic chunker splits text into sentences, then groups them using embedding similarity. It finds natural topic boundaries where the meaning shifts—keeping related content together instead of cutting at arbitrary character limits. This produces chunks that are coherent units of meaning, typically 500-1000 characters. Markdown code blocks are kept intact—never split mid-block—preserving copy-pastable code in search results.
-
-Each chunk goes through a Transformers.js embedding model (default: `all-MiniLM-L6-v2`, configurable via `MODEL_NAME`), converting text into vectors. Vectors are stored in LanceDB, a file-based vector database requiring no server process.
-
-When you search:
-1. Your query becomes a vector using the same model
-2. Semantic (vector) search finds the most relevant chunks
-3. Quality filters apply (distance threshold, grouping)
-4. Keyword matches boost rankings for exact term matching
-
-The keyword boost ensures exact terms like `useEffect` or error codes rank higher when they match.
+- **`scripts/context-sync/`** — sweep one or more source roots (repos, wikis, doc
+  trees) into markdown/text artifacts: READMEs, docs, source files, manifest
+  digests, depth-3 file-tree maps. For indexing whole codebases, not single files.
+  See [`scripts/context-sync/README.md`](scripts/context-sync/README.md).
+- **`scripts/ado-support-sync/`** — export Azure DevOps work items (with full
+  comment threads) to one markdown file per item. Built for support-ticket
+  corpora; works for any work item type. Idempotent re-ingest makes it safe on a
+  schedule. See [`scripts/ado-support-sync/README.md`](scripts/ado-support-sync/README.md).
 
 ## Agent Skills
 
-[Agent Skills](https://agentskills.io/) provide optimized prompts that help AI assistants use RAG tools more effectively. Install skills for better query formulation, result interpretation, and ingestion workflows:
+[Agent Skills](https://agentskills.io/) are prompts that help assistants use the
+RAG tools consistently — query formulation, result interpretation, ingestion
+workflows. Especially useful for CLI-only setups with no MCP server.
 
 ```bash
-# Claude Code (project-level)
-npx mcp-local-rag skills install --claude-code
-
-# Claude Code (user-level)
-npx mcp-local-rag skills install --claude-code --global
-
-# Codex
-npx mcp-local-rag skills install --codex
+node dist/index.js skills install --claude-code           # project-level
+node dist/index.js skills install --claude-code --global  # user-level
+node dist/index.js skills install --codex                 # Codex
 ```
 
-Skills include:
-- **Query optimization**: Better search query formulation
-- **Result interpretation**: Score thresholds and filtering guidelines
-- **HTML ingestion**: Format selection and source naming
+Skills load automatically in most cases (assistants scan skill metadata). To force
+it, either ask in natural language ("use the mcp-local-rag skill for this search")
+or add to your `AGENTS.md` / `CLAUDE.md`:
 
-### Ensuring Skill Activation
-
-Skills are loaded automatically in most cases—AI assistants scan skill metadata and load relevant instructions when needed. For consistent behavior:
-
-**Option 1: Explicit request (natural language)**
-Before RAG operations, request in natural language:
-- "Use the mcp-local-rag skill for this search"
-- "Apply RAG best practices from skills"
-
-**Option 2: Add to agent instruction file**
-Add to your `AGENTS.md`, `CLAUDE.md`, or other agent instruction file:
 ```
 When using query_documents, ingest_file, or ingest_data tools,
 apply the mcp-local-rag skill for better query formulation and result interpretation.
@@ -389,326 +326,182 @@ apply the mcp-local-rag skill for better query formulation and result interpreta
 
 ## Configuration
 
-### Environment Variables and CLI Flags
-
-The MCP server is configured by environment variables only — pass them through your MCP client's `env` block. The CLI accepts the same env vars plus equivalent flags (priority: CLI flag > env > default). CLI flags are not accepted on the bare `mcp-local-rag` (MCP server) launch.
+The server reads configuration from environment variables only — pass them through
+your MCP client's `env` block. The CLI accepts the same env vars plus equivalent
+flags (priority: CLI flag > env > default). CLI flags are not accepted on the bare
+server launch.
 
 | Environment Variable | CLI Flag | Default | Description |
 |---------------------|----------|---------|-------------|
-| `BASE_DIR` | `--base-dir` (repeatable) | Current directory | Single document root directory (security boundary). See [Document Roots](#document-roots-base_dir-and-base_dirs) for multi-root setup. |
-| `BASE_DIRS` | — | (unset) | JSON array of document roots (security boundary). Takes precedence over `BASE_DIR`. See [Document Roots](#document-roots-base_dir-and-base_dirs). |
+| `BASE_DIR` | `--base-dir` (repeatable) | Current directory | Single document root (security boundary). See [Document Roots](#document-roots-base_dir-and-base_dirs). |
+| `BASE_DIRS` | — | (unset) | JSON array of roots (security boundary). Takes precedence over `BASE_DIR`. |
 | `DB_PATH` | `--db-path` | `./lancedb/` | Vector database location |
 | `CACHE_DIR` | `--cache-dir` | `./models/` | Model cache directory |
 | `MODEL_NAME` | `--model-name` | `Xenova/all-MiniLM-L6-v2` | HuggingFace model ID ([available models](https://huggingface.co/models?library=transformers.js&pipeline_tag=feature-extraction)) |
-| `MAX_FILE_SIZE` | `--max-file-size` | `104857600` (100MB) | Maximum file size in bytes (1 to 524288000 / 500MB). A non-numeric or out-of-range value is rejected and the default is used (a warning is surfaced). |
-| `RAG_ALLOW_REMOTE_MODELS` | — | (unset → downloads allowed) | Set to `false` to run transformers.js offline: models are loaded only from the local cache and no HuggingFace Hub download is attempted (applies to embedding and visual-caption models). Useful for air-gapped or locked-down deployments. |
-| `CHUNK_MIN_LENGTH` | `--chunk-min-length` | `50` | Minimum chunk length in characters (1–10000) |
-| `RAG_DEVICE` | — | `cpu` | Execution device. Passed straight to ONNX Runtime. See the [Transformers.js device source code](https://github.com/huggingface/transformers.js/blob/main/packages/transformers/src/utils/devices.js) for the live list of supported backend names. If initialization fails, the server throws an error. |
-| `RAG_DTYPE` | — | `fp32` | Embedding quantization dtype. Opt-in and passed straight through; accepts any dtype the chosen model provides (`fp32`, `fp16`, `q8`, `int8`, …). If the model lacks the requested variant, the server throws an error naming the dtypes it does provide. Changing `RAG_DEVICE`/`RAG_DTYPE` changes the embedding space — re-ingest existing data. |
-| `RAG_RERANK` | — | (off) | Enable the cross-encoder reranker (`1`/`true`). Re-scores the fused top candidates for higher precision; loads a ~80MB model lazily on first query (uses `RAG_DEVICE`/`RAG_DTYPE`). |
-| `RAG_RERANK_MODEL` | — | `Xenova/ms-marco-MiniLM-L-6-v2` | Override the reranker model (sequence-classification cross-encoder). Only used when `RAG_RERANK` is on. |
+| `MAX_FILE_SIZE` | `--max-file-size` | `104857600` (100MB) | Max file size in bytes (1 to 524288000 / 500MB). Out-of-range or non-numeric → default used, warning surfaced. |
+| `RAG_ALLOW_REMOTE_MODELS` | — | (unset → downloads allowed) | Set `false` to run transformers.js offline — models load only from local cache, no Hub download (embedding and visual-caption models). For air-gapped deployments. |
+| `CHUNK_MIN_LENGTH` | `--chunk-min-length` | `50` | Minimum chunk length in chars (1–10000) |
+| `RAG_DEVICE` | — | `cpu` | Execution device, passed to ONNX Runtime. See [Transformers.js device source](https://github.com/huggingface/transformers.js/blob/main/packages/transformers/src/utils/devices.js) for backend names. Init failure throws. |
+| `RAG_DTYPE` | — | `fp32` | Embedding quantization dtype, passed through (`fp32`, `fp16`, `q8`, `int8`, …). Missing variant throws and names what the model provides. Changing `RAG_DEVICE`/`RAG_DTYPE` changes the embedding space — re-ingest. |
+| `RAG_RERANK` | — | (off) | Enable cross-encoder reranker (`1`/`true`). Loads a ~80MB model lazily on first query (uses `RAG_DEVICE`/`RAG_DTYPE`). |
+| `RAG_RERANK_MODEL` | — | `Xenova/ms-marco-MiniLM-L-6-v2` | Override reranker model. Only used when `RAG_RERANK` is on. |
 
-**Model choice tips:**
-- Multilingual docs → e.g., `onnx-community/embeddinggemma-300m-ONNX` (100+ languages)
-- Scientific papers → e.g., `sentence-transformers/allenai-specter` (citation-aware)
-- Code repositories → default often suffices; keyword boost matters more (or `jinaai/jina-embeddings-v2-base-code`)
+Plus the [Search Tuning](#search-tuning) variables above.
 
-⚠️ Changing `MODEL_NAME` changes embedding dimensions. Delete `DB_PATH` and re-ingest after switching models.
+**Resolution order:** CLI flags > environment variables > defaults.
+
+**Model choice:**
+- Multilingual → `onnx-community/embeddinggemma-300m-ONNX` (100+ languages)
+- Scientific papers → `sentence-transformers/allenai-specter` (citation-aware)
+- Code → default usually suffices (keyword boost matters more), or `jinaai/jina-embeddings-v2-base-code`
+
+⚠️ Changing `MODEL_NAME` changes embedding dimensions. Delete `DB_PATH` and
+re-ingest after switching models.
 
 ### Document Roots (`BASE_DIR` and `BASE_DIRS`)
 
-mcp-local-rag enforces a security boundary: only files under a configured root are accessible to ingest, list, delete, or read-neighbor operations.
+Only files under a configured root are accessible to ingest, list, delete, or
+read-neighbor operations. This is the security boundary.
 
-> **Scope the root narrowly.** Every supported file under a configured root is readable by the agent — and its contents become searchable and are returned in `query_documents` results. The default root is the current working directory, so launching the server from a directory that also contains secrets (`.env`, private keys, credentials, `.git`) exposes them. Point `BASE_DIR`/`BASE_DIRS` at a dedicated documents directory; do not use a repository root or home directory that holds secrets. The sensitive-path policy blocks system/credential directories (`/etc`, `~/.ssh`, …) from being used as roots, but it does not filter secret files that live *inside* an otherwise-legitimate root.
-
-**Single root** — use `BASE_DIR`:
+> **Scope the root narrowly.** Every supported file under a root is readable by the
+> agent and becomes searchable — its contents are returned in `query_documents`
+> results. The default root is the current working directory, so launching from a
+> directory that also holds secrets (`.env`, private keys, credentials, `.git`)
+> exposes them. Point at a dedicated documents directory. The sensitive-path policy
+> blocks system/credential directories (`/etc`, `~/.ssh`, …) from being roots, but
+> does **not** filter secret files inside an otherwise-legitimate root.
 
 ```bash
+# Single root
 export BASE_DIR=/Users/me/Documents/work
-```
 
-**Multiple roots** — use `BASE_DIRS` with a JSON array:
-
-```bash
+# Multiple roots — JSON array only
 export BASE_DIRS='["/Users/me/Documents/work","/Users/me/Projects/specs"]'
 ```
 
-Only JSON-array syntax is supported. Delimiter syntax such as `BASE_DIRS=/a:/b` is intentionally **not** supported (avoids ambiguity with spaces, colons, commas, and Windows paths).
+Delimiter syntax (`BASE_DIRS=/a:/b`) is intentionally **not** supported (avoids
+ambiguity with spaces, colons, commas, Windows paths).
 
-**Resolution order** (highest precedence first):
+**Resolution order** (highest first): CLI `--base-dir` > `BASE_DIRS` > `BASE_DIR` >
+`process.cwd()`. CLI roots replace env roots — never merged. `BASE_DIRS` and
+`BASE_DIR` are never merged either; `BASE_DIRS` wins.
 
-1. CLI `--base-dir <path>` flags (repeatable on `ingest` and `list`)
-2. `BASE_DIRS` environment variable
-3. `BASE_DIR` environment variable
-4. `process.cwd()` (current working directory)
+**Precedence warning** — when both `BASE_DIRS` and `BASE_DIR` are set (no CLI
+`--base-dir`), `BASE_DIR` is ignored and a warning is surfaced (in every MCP tool
+response as an extra content block, and on CLI stderr). Unset one to silence it.
 
-CLI roots **replace** env roots — they are never merged. `BASE_DIRS` and `BASE_DIR` are never merged either: `BASE_DIRS` wins when both are set.
+**Nested-root pruning** — if one root sits inside another after realpath
+resolution, the nested child is dropped to avoid duplicate scan results; a warning
+is surfaced. The surviving parent still defines the security boundary.
 
-**Precedence warning** — when `BASE_DIRS` and `BASE_DIR` are both set (and no CLI `--base-dir` is supplied), `BASE_DIR` is ignored and a warning is surfaced. The warning is visible:
+**Invalid `BASE_DIRS`** — malformed JSON, empty array, or non-string elements →
+root-dependent MCP tools return a structured error and CLI subcommands exit
+non-zero. No silent fallback to `BASE_DIR` or `cwd`. The `status` tool stays
+callable so you can diagnose the config error.
 
-- In MCP tool responses (as an additional content block, on every tool — including `status`, `query_documents`, `ingest_file`, `ingest_data`, `list_files`, `delete_file`, `read_chunk_neighbors`).
-- On CLI `stderr`.
+### First run
 
-Unset `BASE_DIR` (or remove `BASE_DIRS`) to silence the warning.
-
-**Nested-root pruning** — if one configured root sits inside another after realpath resolution, the nested child is dropped to avoid duplicate scan results. A pruning warning is surfaced the same way as the precedence warning. The surviving parent root still defines the security boundary.
-
-**Invalid `BASE_DIRS`** — when `BASE_DIRS` is not a valid JSON array of non-empty strings (malformed JSON, empty array, non-string elements, ...), root-dependent MCP tools return a structured error and CLI subcommands exit non-zero. There is **no silent fallback** to `BASE_DIR` or `cwd`. The MCP `status` tool remains callable so you can diagnose the config error through your MCP client.
-
-**MCP client examples** — multi-root setup:
-
-Cursor (`~/.cursor/mcp.json`):
-```json
-{
-  "mcpServers": {
-    "local-rag": {
-      "command": "npx",
-      "args": ["-y", "mcp-local-rag"],
-      "env": {
-        "BASE_DIRS": "[\"/Users/me/Documents/work\",\"/Users/me/Projects/specs\"]"
-      }
-    }
-  }
-}
-```
-
-Codex (`~/.codex/config.toml`):
-```toml
-[mcp_servers.local-rag]
-command = "npx"
-args = ["-y", "mcp-local-rag"]
-
-[mcp_servers.local-rag.env]
-BASE_DIRS = "[\"/Users/me/Documents/work\",\"/Users/me/Projects/specs\"]"
-```
-
-Claude Code:
-```bash
-claude mcp add local-rag --scope user \
-  --env BASE_DIRS='["/Users/me/Documents/work","/Users/me/Projects/specs"]' \
-  -- npx -y mcp-local-rag
-```
-
-**CLI examples** — multi-root invocations:
-
-```bash
-# Repeatable --base-dir
-npx mcp-local-rag ingest --base-dir /Users/me/work --base-dir /Users/me/specs /Users/me/work/readme.md
-npx mcp-local-rag list --base-dir /Users/me/work --base-dir /Users/me/specs
-
-# Or via BASE_DIRS env
-BASE_DIRS='["/Users/me/work","/Users/me/specs"]' npx mcp-local-rag list
-```
-
-### Client-Specific Setup
-
-**Cursor** — Global: `~/.cursor/mcp.json`, Project: `.cursor/mcp.json`
-
-```json
-{
-  "mcpServers": {
-    "local-rag": {
-      "command": "npx",
-      "args": ["-y", "mcp-local-rag"],
-      "env": {
-        "BASE_DIR": "/path/to/your/documents"
-      }
-    }
-  }
-}
-```
-
-**Codex** — `~/.codex/config.toml` (note: must use `mcp_servers` with underscore)
-
-```toml
-[mcp_servers.local-rag]
-command = "npx"
-args = ["-y", "mcp-local-rag"]
-
-[mcp_servers.local-rag.env]
-BASE_DIR = "/path/to/your/documents"
-```
-
-**Claude Code**:
-
-```bash
-claude mcp add local-rag --scope user \
-  --env BASE_DIR=/path/to/your/documents \
-  -- npx -y mcp-local-rag
-```
-
-### First Run
-
-The embedding model (~90MB) downloads on first use. Takes 1-2 minutes, then works offline.
+The embedding model (`all-MiniLM-L6-v2`, ~90MB) downloads on first use (1–2 min),
+then works offline. Visual mode downloads its VLM separately on first use (~250 MB
+`fast`, ~2.9 GB `quality`).
 
 ### Security
 
-- **Path restriction**: Only files within a configured root (`BASE_DIR` or any `BASE_DIRS` / `--base-dir` entry) are accessible. Symlinks resolving outside all configured roots, and sibling-prefix paths (e.g. `/foo/barista` for root `/foo/bar`), are rejected. The CLI `ingest --follow-symlinks` flag only changes directory *discovery* (whether links are walked); it does **not** relax this read-time check, so a followed link whose target escapes every root is still rejected. `--trusted-dir` can add roots that authorize symlink targets without making them scan targets, but those roots are held to the same sensitive-path policy as `--base-dir`.
-- **Local only**: No network requests after model download
-- **Model sources** (all official HuggingFace repositories):
+- **Path restriction.** Only files within a configured root (`BASE_DIR`, any
+  `BASE_DIRS`/`--base-dir` entry) are accessible. Symlinks resolving outside all
+  roots, and sibling-prefix paths (e.g. `/foo/barista` for root `/foo/bar`), are
+  rejected. `ingest --follow-symlinks` only changes directory *discovery* — it does
+  not relax the read-time check. `--trusted-dir` authorizes symlink targets without
+  making them scan targets, held to the same sensitive-path policy as `--base-dir`.
+- **Local only.** No network requests after model download.
+- **Untrusted content.** Ingested document text — especially VLM visual captions,
+  which may reproduce attacker-controlled in-image text including `]` that visually
+  closes the caption envelope — is data, not instructions. Downstream LLM consumers
+  must treat retrieved chunks as untrusted regardless of envelope shape.
+- **Model sources** (all official HuggingFace repos):
   - Embedder: [`Xenova/all-MiniLM-L6-v2`](https://huggingface.co/Xenova/all-MiniLM-L6-v2)
-  - Visual `fast` profile: [`HuggingFaceTB/SmolVLM-256M-Instruct`](https://huggingface.co/HuggingFaceTB/SmolVLM-256M-Instruct)
-  - Visual `quality` profile: [`onnx-community/Qwen2.5-VL-3B-Instruct-ONNX`](https://huggingface.co/onnx-community/Qwen2.5-VL-3B-Instruct-ONNX)
-- **Visual caption fidelity**: The `quality` profile reproduces in-image text more faithfully than `fast`. Both profiles output captions wrapped as `[Visual content on page N: …]`, but a faithful reproduction means attacker-controlled in-image text — including characters like `]` that visually close the envelope — can appear verbatim in retrieved chunks. Downstream LLM consumers should treat retrieved chunks as untrusted data, not as instructions, regardless of envelope shape.
+  - Visual `fast`: [`HuggingFaceTB/SmolVLM-256M-Instruct`](https://huggingface.co/HuggingFaceTB/SmolVLM-256M-Instruct)
+  - Visual `quality`: [`onnx-community/Qwen2.5-VL-3B-Instruct-ONNX`](https://huggingface.co/onnx-community/Qwen2.5-VL-3B-Instruct-ONNX)
+- **Single-user.** No authentication or access control. Designed for single-user,
+  local access. Multi-user would require auth.
 
-<details>
-<summary><strong>Performance</strong></summary>
+### Performance
 
-Tested on MacBook Pro M1 (16GB RAM), Node.js 22:
+Measured on MacBook Pro M1 (16GB RAM), Node.js 22, during development:
 
-**Query Speed**: ~1.2 seconds for 10,000 chunks (p90 < 3s)
+- **Query**: ~1.2 s for 10,000 chunks (p90 < 3 s)
+- **Ingestion (10MB PDF)**: parse ~8s, chunk ~2s, embed ~30s, DB insert ~5s
+- **Memory**: ~200MB idle, ~800MB peak (50MB file ingestion)
+- **Concurrency**: 5 parallel queries without degradation
 
-**Ingestion** (10MB PDF):
-- PDF parsing: ~8s
-- Chunking: ~2s
-- Embedding: ~30s
-- DB insertion: ~5s
+## Troubleshooting
 
-**Memory**: ~200MB idle, ~800MB peak (50MB file ingestion)
+**"No results found"** — documents must be ingested first. Run `list` to verify.
 
-**Concurrency**: Handles 5 parallel queries without degradation.
+**Model download failed** — check connectivity / proxy. The model can be
+[downloaded manually](https://huggingface.co/Xenova/all-MiniLM-L6-v2).
 
-</details>
+**"File too large"** — default limit 100MB. Split the file or raise `MAX_FILE_SIZE`.
 
-<details>
-<summary><strong>Troubleshooting</strong></summary>
+**Slow queries** — check chunk count with `status`. Many chunks slow queries;
+consider splitting very large files.
 
-### "No results found"
+**"Path outside BASE_DIR"** — the path must be within a configured root. Use
+absolute paths.
 
-Documents must be ingested first. Run `"List all ingested files"` to verify.
+**"BASE_DIRS must be a JSON array…"** — `BASE_DIRS` accepts only a JSON array of
+one or more non-empty path strings:
+- Valid: `'["/Users/me/work","/Users/me/specs"]'`
+- Invalid: `/a:/b` (delimiter), `'[]'` (empty), `'["",""]'` (empty element)
 
-### Model download failed
+The `status` tool stays callable so you can inspect the diagnostic.
 
-Check internet connection. If behind a proxy, configure network settings. The model can also be [downloaded manually](https://huggingface.co/Xenova/all-MiniLM-L6-v2).
+**MCP client doesn't see tools** — verify config syntax, fully restart the client
+(Cmd+Q on Mac for Cursor), and test directly: `node dist/index.js` should run
+without errors.
 
-### "File too large"
+**Changed embedding model or `RAG_DEVICE`/`RAG_DTYPE`** — embedding space changed.
+Delete `DB_PATH` and re-ingest, or search quality degrades silently.
 
-Default limit is 100MB. Split large files or increase `MAX_FILE_SIZE`.
-
-### Slow queries
-
-Check chunk count with `status`. Large documents with many chunks may slow queries. Consider splitting very large files.
-
-### "Path outside BASE_DIR"
-
-Ensure file paths are within one of the configured roots (`BASE_DIR`, any `BASE_DIRS` entry, or any CLI `--base-dir`). Use absolute paths.
-
-### "BASE_DIRS must be a JSON array..."
-
-`BASE_DIRS` accepts only a JSON array of one or more non-empty path strings. Examples:
-
-- Valid: `BASE_DIRS='["/Users/me/work","/Users/me/specs"]'`
-- Invalid: `BASE_DIRS=/a:/b` (delimiter syntax not supported)
-- Invalid: `BASE_DIRS='[]'` (empty array)
-- Invalid: `BASE_DIRS='["",""]'` (empty string element)
-
-When invalid, root-dependent operations fail with a clear error rather than silently falling back. The MCP `status` tool remains callable so you can inspect the diagnostic.
-
-### MCP client doesn't see tools
-
-1. Verify config file syntax
-2. Restart client completely (Cmd+Q on Mac for Cursor)
-3. Test directly: `npx mcp-local-rag` should run without errors
-
-</details>
-
-<details>
-<summary><strong>FAQ</strong></summary>
-
-**Is this really private?**
-Yes. After model download, nothing leaves your machine. Verify with network monitoring.
-
-**Can I use this offline?**
-Yes, after the required models are cached locally. Text ingest/search needs the embedding model. PDF visual mode is opt-in and also needs the VLM model on first use; the download is ~250 MB for the default `fast` profile (SmolVLM-256M) or ~2.9 GB for the `quality` profile (Qwen2.5-VL-3B), cached under `CACHE_DIR` (default: `./models/`).
-
-**How does this compare to cloud RAG?**
-Cloud services offer better accuracy at scale but require sending data externally. This trades some accuracy for complete privacy and zero runtime cost.
-
-**What file formats are supported?**
-PDF, DOCX, TXT, Markdown, HTML (via `ingest_data`), and source code: TypeScript/TSX, JavaScript/JSX, Python, and Java (`.ts .tsx .mts .cts .js .jsx .mjs .cjs .py .java`). Code files are chunked at AST boundaries (functions, classes, methods, imports) via tree-sitter rather than by prose-style windows; large classes are split into per-method chunks. Not yet: Excel, PowerPoint, images.
-
-**Can I change the embedding model?**
-Yes, but you must delete your database and re-ingest all documents. Different models produce incompatible vector dimensions.
-
-**GPU acceleration?**
-Opt-in via `RAG_DEVICE`. Devices are passed straight to ONNX Runtime. GPU support is highly dependent on your system, Node.js version, and the underlying ONNX backend. See the [Transformers.js device source code](https://github.com/huggingface/transformers.js/blob/main/packages/transformers/src/utils/devices.js) for the live list of supported backend names. If the requested device fails to initialize, the server throws an error — set `RAG_DEVICE=cpu` to revert.
-
-**Can I change the embedding precision (dtype)?**
-Opt-in via `RAG_DTYPE` (default `fp32`); accepted values are in the env-var table above. A recognized dtype the model lacks errors and lists the available ones; an unrecognized value (a typo) silently falls back to `fp32`. Changing `RAG_DEVICE`/`RAG_DTYPE` changes the embedding space — delete `DB_PATH` and re-ingest.
-
-**Multi-user support?**
-No. Designed for single-user, local access. Multi-user would require authentication/access control.
-
-**How to backup?**
-Copy `DB_PATH` directory (default: `./lancedb/`).
-
-</details>
-
-<details>
-<summary><strong>Development</strong></summary>
-
-### Building from Source
+## Development
 
 ```bash
-git clone https://github.com/shinpr/mcp-local-rag.git
-cd mcp-local-rag
 pnpm install
-```
-
-### Testing
-
-```bash
-pnpm test              # Run all tests
-pnpm run test:watch    # Watch mode
-```
-
-### Code Quality
-
-```bash
+pnpm run build         # tsc → dist/ ; entry point dist/index.js
+pnpm test              # all tests
+pnpm run test:watch    # watch mode
 pnpm run type-check    # TypeScript check
-pnpm run check:fix     # Lint and format
-pnpm run check:deps    # Circular dependency check
-pnpm run check:all     # Full quality check
+pnpm run check:fix     # lint + format
+pnpm run check:deps    # circular dependency check
+pnpm run check:all     # full quality check
 ```
 
-### Project Structure
+### Project structure
 
 ```
 src/
-  index.ts        # Executable entry point (bin) — routes subcommands / starts the server
+  index.ts        # entry point (bin) — routes subcommands / starts server
   cli-main.ts     # CLI subcommand dispatcher
   server-main.ts  # MCP server bootstrap
   server/         # MCP tool handlers
-  cli/            # CLI subcommands (ingest, query, list, delete, read-neighbors, etc.)
-  ingest/         # Shared chunk+embed compute and visual-PDF ingest pipeline
+  cli/            # CLI subcommands (ingest, query, list, delete, read-neighbors, …)
+  ingest/         # shared chunk+embed compute and visual-PDF ingest pipeline
   parser/         # PDF, DOCX, TXT, MD, HTML parsing
   pdf-visual/     # VLM page-captioning subsystem for figure-heavy PDFs
-  chunker/        # Text splitting
+  chunker/        # text splitting
   embedder/       # Transformers.js embeddings
   vectordb/       # LanceDB operations
-  utils/          # Shared kernel (base-dirs, errors, limits, scan, sensitive-path)
-  bin/            # Skills installer
-  __tests__/      # Test suites
+  utils/          # shared kernel (base-dirs, errors, limits, scan, sensitive-path)
+  bin/            # skills installer
+  __tests__/      # test suites
+scripts/
+  context-sync/        # sweep repos/wikis/docs into ingestible artifacts
+  ado-support-sync/    # export Azure DevOps work items to markdown
 ```
 
-### Syncing source trees into the index
-
-`scripts/context-sync/context-sync.sh` sweeps one or more source roots (repos, wikis, doc trees) and emits ingestible markdown/text artifacts — READMEs, docs, manifest digests, and file-tree maps — then prints the exact `ingest` command to run. Useful for indexing whole codebases, not just individual files. See [`scripts/context-sync/README.md`](scripts/context-sync/README.md) for usage, options, and requirements.
-
-</details>
-
-## Contributing
-
-Contributions welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for setup and guidelines.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidelines.
 
 ## License
 
-MIT License. Free for personal and commercial use.
-
-## Blog Posts
-
-- [Building a Local RAG for Agentic Coding](https://www.norsica.jp/blog/local-rag-agentic-coding) — Technical deep-dive into the semantic chunking and hybrid search design.
-
-## Acknowledgments
-
-Built with [Model Context Protocol](https://modelcontextprotocol.io/) by Anthropic, [LanceDB](https://lancedb.com/), and [Transformers.js](https://huggingface.co/docs/transformers.js).
+MIT licensed. Built on [Model Context Protocol](https://modelcontextprotocol.io/),
+[LanceDB](https://lancedb.com/), and [Transformers.js](https://huggingface.co/docs/transformers.js).
